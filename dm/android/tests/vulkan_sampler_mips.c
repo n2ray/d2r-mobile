@@ -16,6 +16,10 @@ static int checks, failures;
 
 static const uint8_t kColors[3][4] = {{200, 10, 10, 255}, {10, 200, 10, 255}, {10, 10, 200, 255}};
 
+// 按字节比较，避免对颜色表做 uint32_t 解引用（对齐/有效类型问题）。
+// Compare bytes to avoid uint32_t dereference of the colour table (alignment/effective-type concerns).
+static int same_rgba(const void *pixel, int level) { return !memcmp(pixel, kColors[level], 4); }
+
 // 生成指定级别尺寸的纯色紧排数据 | build tight solid-colour data for one level
 static uint8_t *solid(uint32_t w, uint32_t h, int level) {
     uint8_t *p = malloc((size_t)w * h * 4);
@@ -48,7 +52,7 @@ int main(int argc, char **argv) {
         memset(px, 0, sizeof px);
         VK_CHECK(dm_vk_sample_draw(&vk, vert, frag, &tex, &nearest_mip, 4, 4, &canvas, 1.0f, (float)level));
         int bad = 0;
-        for (int i = 0; i < 16; i++) if (px[i] != *(const uint32_t *)kColors[level]) bad++;
+        for (int i = 0; i < 16; i++) if (!same_rgba(&px[i], level)) bad++;
         if (bad) fprintf(stderr, "nearest LOD %d: %d/%d texels differ\n", level, bad, 16);
         CHECK(bad == 0);
     }
@@ -63,7 +67,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 16; i++) {
         const uint8_t *got = (const uint8_t *)&px[i];
         for (int c = 0; c < 4; c++) if (abs((int)got[c] - want0_1[c]) > 2) linear_bad++;
-        if (px[i] == *(const uint32_t *)kColors[0] || px[i] == *(const uint32_t *)kColors[1]) blended = 0;
+        if (same_rgba(&px[i], 0) || same_rgba(&px[i], 1)) blended = 0;
     }
     CHECK(linear_bad == 0);
     CHECK(blended == 1);            // 不是任一纯色：与 nearest 结果可区分 | not either endpoint, distinguishable from nearest
@@ -74,7 +78,7 @@ int main(int argc, char **argv) {
     VK_CHECK(dm_vk_sample_draw(&vk, vert, frag, &tex, &nearest_mip, 4, 4, &canvas, 1.0f, 0.5f));
     int nearest_endpoint = 1, nearest_blend = 0;
     for (int i = 0; i < 16; i++) {
-        if (px[i] != *(const uint32_t *)kColors[0] && px[i] != *(const uint32_t *)kColors[1]) nearest_endpoint = 0;
+        if (!same_rgba(&px[i], 0) && !same_rgba(&px[i], 1)) nearest_endpoint = 0;
         if (abs((int)((const uint8_t *)&px[i])[0] - want0_1[0]) <= 2 &&
             abs((int)((const uint8_t *)&px[i])[1] - want0_1[1]) <= 2) nearest_blend = 1;
     }
@@ -90,12 +94,12 @@ int main(int argc, char **argv) {
     dm_vk_sampler clamp_mid; VK_CHECK(dm_vk_sampler_create(&vk, &clamp, &clamp_mid));
     for (int lod = 0; lod <= 2; lod += 2) {
         VK_CHECK(dm_vk_sample_draw(&vk, vert, frag, &tex, &clamp_mid, 4, 4, &canvas, 1.0f, (float)lod));
-        CHECK(px[0] == *(const uint32_t *)kColors[1]);
+        CHECK(same_rgba(&px[0], 1));
     }
     clamp.lod_min = 2; clamp.lod_max = 2;
     dm_vk_sampler clamp_top; VK_CHECK(dm_vk_sampler_create(&vk, &clamp, &clamp_top));
     VK_CHECK(dm_vk_sample_draw(&vk, vert, frag, &tex, &clamp_top, 4, 4, &canvas, 1.0f, 0.0f));
-    CHECK(px[0] == *(const uint32_t *)kColors[2]);
+    CHECK(same_rgba(&px[0], 2));
 
     // NVN 非 mipmap minf=0：有效 LOD 固定 0，即使 lod=2 也读 level 0。
     // NVN non-mipmapped minf=0: effective LOD 0, so lod 2 still reads level 0.
@@ -103,7 +107,7 @@ int main(int argc, char **argv) {
     nvn.minf = 0; nvn.magf = 0; nvn.ws = nvn.wt = nvn.wr = 1; nvn.lod_min = 0; nvn.lod_max = 0; nvn.aniso = 1;
     dm_vk_sampler nonmip; VK_CHECK(dm_vk_sampler_from_nvn(&vk, &nvn, &nonmip));
     VK_CHECK(dm_vk_sample_draw(&vk, vert, frag, &tex, &nonmip, 4, 4, &canvas, 1.0f, 2.0f));
-    CHECK(px[0] == *(const uint32_t *)kColors[0]);
+    CHECK(same_rgba(&px[0], 0));
 
     // 行距变体：带 8 字节填充的 row_bytes 仍必须逐行正确取样。
     // Stride variant: row_bytes with 8 bytes of padding must still sample the same rows.
@@ -114,7 +118,7 @@ int main(int argc, char **argv) {
     dm_vk_texture padded_tex; memset(&padded_tex, 0, sizeof padded_tex);
     VK_CHECK(dm_vk_texture_upload_mips(&vk, 4, 4, 3, pad_levels, &padded_tex));
     VK_CHECK(dm_vk_sample_draw(&vk, vert, frag, &padded_tex, &nearest_mip, 4, 4, &canvas, 1.0f, 0.0f));
-    CHECK(px[0] == *(const uint32_t *)kColors[0] && px[15] == *(const uint32_t *)kColors[0]);
+    CHECK(same_rgba(&px[0], 0) && same_rgba(&px[15], 0));
     dm_vk_texture_destroy(&vk, &padded_tex);
     free(padded);
 

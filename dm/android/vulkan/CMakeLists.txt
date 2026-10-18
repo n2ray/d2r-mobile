@@ -208,6 +208,15 @@ target_link_libraries(dm_vulkan_sampler_mips_test PRIVATE dm_android_vk)
 target_compile_options(dm_vulkan_sampler_mips_test PRIVATE -Wall -Wextra -Werror)
 add_dependencies(dm_vulkan_sampler_mips_test dm_vk_sampler_shaders dm_vk_shaders)
 
+# #13 上传中途失败注入：图像/内存已建后视图创建失败 | #13 mid-pipeline upload failure after image/memory exist
+add_executable(dm_vulkan_texture_mips_createfail_test ../tests/vulkan_texture_mips_createfail.c vk_texture_mips.c)
+target_link_libraries(dm_vulkan_texture_mips_createfail_test PRIVATE dm_android_vk)
+target_compile_options(dm_vulkan_texture_mips_createfail_test PRIVATE -Wall -Wextra -Werror)
+target_compile_definitions(dm_vulkan_texture_mips_createfail_test PRIVATE
+    vkCreateImage=dm_test_vkCreateImage vkAllocateMemory=dm_test_vkAllocateMemory
+    vkCreateImageView=dm_test_vkCreateImageView vkDestroyImage=dm_test_vkDestroyImage
+    vkDestroyImageView=dm_test_vkDestroyImageView vkFreeMemory=dm_test_vkFreeMemory)
+
 if(ANDROID)
     target_link_options(dm_vulkan_sampler_test PRIVATE "-Wl,-z,max-page-size=16384")
     target_link_options(dm_vulkan_sampler_createfail_test PRIVATE "-Wl,-z,max-page-size=16384")
@@ -217,15 +226,18 @@ else()
     add_test(NAME vulkan_sampler_createfail COMMAND dm_vulkan_sampler_createfail_test)
     add_test(NAME vulkan_sampler_nvnmap COMMAND dm_vulkan_sampler_nvnmap_test)
     add_test(NAME vulkan_sampler_mips COMMAND dm_vulkan_sampler_mips_test ${vertex} ${sample_frag})
+    add_test(NAME vulkan_texture_mips_createfail COMMAND dm_vulkan_texture_mips_createfail_test)
     set_tests_properties(vulkan_sampler PROPERTIES TIMEOUT 60)
     set_tests_properties(vulkan_sampler_createfail PROPERTIES TIMEOUT 60)
     set_tests_properties(vulkan_sampler_nvnmap PROPERTIES TIMEOUT 60)
     set_tests_properties(vulkan_sampler_mips PROPERTIES TIMEOUT 60)
+    set_tests_properties(vulkan_texture_mips_createfail PROPERTIES TIMEOUT 60)
     if(APPLE AND DM_MOLTENVK_ICD)
         set_tests_properties(vulkan_sampler PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
         set_tests_properties(vulkan_sampler_createfail PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
         set_tests_properties(vulkan_sampler_nvnmap PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
         set_tests_properties(vulkan_sampler_mips PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
+        set_tests_properties(vulkan_texture_mips_createfail PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
     endif()
 endif()
 

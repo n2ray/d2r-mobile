@@ -120,11 +120,18 @@ VkResult dm_vk_texture_upload_mips(dm_vk *vk, uint32_t width, uint32_t height, u
         VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
     result = dm_vk_submit(vk, command);
     command = VK_NULL_HANDLE;
+// 校验失败时本地回收已建对象（图像/视图/内存），成功时才写入 out。
+// Release locally created objects on failure (image/view/memory); publish out only on success.
 done:
     if (command) vkFreeCommandBuffers(vk->device, vk->pool, 1, &command);
     dm_vk_buffer_destroy(vk, &staging);
     free(copies);
-    if (result == VK_SUCCESS) *out = texture;
-    else dm_vk_texture_destroy(vk, &texture);
+    if (result == VK_SUCCESS) {
+        *out = texture;
+    } else {
+        if (texture.view) vkDestroyImageView(vk->device, texture.view, NULL);
+        if (texture.image) vkDestroyImage(vk->device, texture.image, NULL);
+        if (texture.memory) vkFreeMemory(vk->device, texture.memory, NULL);
+    }
     return result;
 }

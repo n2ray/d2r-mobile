@@ -15,24 +15,24 @@ behaviour on real hardware and is not Adreno/device acceptance.
 `dm_vk_texture_upload_mips` is an explicit owned entry point: the caller supplies linear RGBA8 data and a row stride per
 level. The module does not parse or assume any guest/NVN storage layout, and there is no NVN pool integration.
 
-- 格式固定 `VK_FORMAT_R8G8B8A8_UNORM`，2D、单层、1..完整 mip 链（`levels <= floor(log2(max(w,h)))+1`）。
+- 格式固定 `VK_FORMAT_R8G8B8A8_UNORM`，2D、单层，`levels` 接受 1..完整链的任意前缀（`levels <= floor(log2(max(w,h)))+1`），超出完整链拒绝。
 - `row_bytes = 0` 表示紧排；非 0 必须 ≥ `width*4` 且为 4 的倍数。
 - 每级 `bytes` 必须覆盖 `row_bytes*(h-1) + width*4`（最后一行无需补齐），`size` 用 64 位算术校验。
 - 维度受 `maxImageDimension2D`、`maxMipLevels`、`maxResourceSize` 与 `maxStorageBufferRange` 约束。
 - 全部校验在 `vkCreateImage` 之前完成；失败时 `out` 不被修改，已建对象在 `done:` 统一回收。
-- 既有单级 `dm_vk_texture_upload`（NVN block-linear 描述）未改动，行为保持不变。
+- 既有 NVN block-linear `dm_vk_texture_upload` 已经支持多级，本切片未改动它，行为保持不变。
 
-- Format is fixed to `VK_FORMAT_R8G8B8A8_UNORM`, 2D, single layer, 1..full mip chain.
+- Format is fixed to `VK_FORMAT_R8G8B8A8_UNORM`, 2D, single layer; `levels` accepts any prefix 1..full chain
+  (`levels <= floor(log2(max(w,h)))+1`), values beyond the full chain are rejected.
 - `row_bytes = 0` means tight; otherwise it must be >= `width*4` and a multiple of 4.
 - Each level's `bytes` must cover `row_bytes*(h-1) + width*4` (the last row needs no padding); `size` is checked in 64-bit.
 - Dimensions are bounded by `maxImageDimension2D`, `maxMipLevels`, `maxResourceSize`, `maxStorageBufferRange`.
 - Every check happens before `vkCreateImage`; on failure `out` is untouched and partial objects are released at `done:`.
-- The existing single-level `dm_vk_texture_upload` (NVN block-linear desc) is unchanged.
+- The existing NVN block-linear `dm_vk_texture_upload` already supports multiple levels; it is unchanged by this slice.
 
-要求完整 mip 链是有意的保守约束：部分链、稀疏上传与 mip 生成都不在本切片内。
+接受任意前缀（1..完整链）是刻意的：稀疏上传与 mip 生成不在本切片内。
 
-Requiring the full chain is a deliberate conservative restriction: partial chains, sparse uploads and mip generation are
-out of scope for this slice.
+Accepting any prefix (1..full chain) is deliberate: sparse uploads and mip generation are out of scope for this slice.
 
 ## 采样对照 | Sampling matrix
 
@@ -47,9 +47,11 @@ out of scope for this slice.
 | LOD clamp | `minLod=maxLod=2`，lod 0 | 落在 L2 |
 | NVN 非 mipmap minf=0，lod 2 | LOD 固定 0 | 读 L0 |
 | 行距 | `row_bytes = w*4+8` | 四角像素仍为 L0 |
+| 中途失败注入 | `vkCreateImageView` 在图像/内存/暂存已建后返回错误 | 图像与内存各销毁一次，视图未创建，`out` 字节不变 |
 
 The fixture uses a 4x4 three-level solid-colour texture (L0 red, L1 green, L2 blue) and asserts independent pixel
-oracles. See the table above for the exact criteria.
+oracles. See the table above for the exact criteria. A separate injected test fails `vkCreateImageView` after the image,
+memory and staging buffer exist and checks balanced image/memory destruction plus an unchanged `out`.
 
 ## 明确未知 | Explicit unknowns
 

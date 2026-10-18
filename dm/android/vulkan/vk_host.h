@@ -98,12 +98,12 @@ VkResult dm_vk_texture_read_rows(dm_vk *vk, const dm_vk_texture *texture, uint32
     const dm_vk_region *region, uint32_t row_bytes, void *dest, size_t dest_size);
 
 // #13 显式自有 RGBA8 UNORM 2D 单层多级上传：调用者给出每一级的线性数据与行距，不假设任何 guest 存储布局。
-// 每级 bytes 必须覆盖 (row_bytes×(h-1) + width×4)；row_bytes=0 表示紧排。levels 必须与实际尺寸的完整链一致（1..max）。
+// 每级 bytes 必须覆盖 (row_bytes×(h-1) + width×4)；row_bytes=0 表示紧排。levels 接受 1..完整链的任意前缀，超出完整链拒绝。
 // out 不得已有资源；任一校验失败在创建 GPU 对象之前返回，且不修改 out。
 // #13 explicit owned RGBA8 UNORM 2D single-layer multi-mip upload: the caller provides linear level data and row stride
 // with no assumption about guest storage layout. Each level's bytes must cover (row_bytes*(h-1) + width*4); row_bytes=0
-// means tight. levels must match the actual full chain (1..max). out must not already own resources; any validation
-// failure returns before GPU objects exist and leaves out untouched.
+// means tight. levels accepts any prefix 1..full chain; values beyond the full chain are rejected. out must not already
+// own resources; any validation failure returns before GPU objects exist and leaves out untouched.
 typedef struct {
     const void *bytes;
     size_t size;
