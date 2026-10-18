@@ -26,7 +26,7 @@ struct dm_aaudio_stream {
 };
 
 static int g_start_fail, g_pause_fail, g_stop_fail, g_close_fail_once, g_mismatch, g_mismatch_close_fails;
-static int g_close_calls, g_start_calls, g_pause_calls, g_stop_calls;
+static int g_close_calls, g_start_calls, g_pause_calls, g_stop_calls, g_open_calls;
 static struct dm_aaudio_stream *g_stream;
 
 static dm_audio_result sb_create_builder(dm_aaudio_builder **b) {
@@ -48,6 +48,7 @@ static dm_audio_result sb_open(dm_aaudio_builder *b, dm_aaudio_stream **out) {
     s->error = b->error;
     s->user = b->user;
     g_stream = s;
+    g_open_calls++;
     *out = s;
     return DM_AUDIO_OK;
 }
@@ -107,7 +108,7 @@ static int16_t expect_gain(int16_t sample, uint32_t q15) {
 
 static void reset_stub(void) {
     g_start_fail = g_pause_fail = g_stop_fail = g_close_fail_once = g_mismatch = g_mismatch_close_fails = 0;
-    g_close_calls = g_start_calls = g_pause_calls = g_stop_calls = 0;
+    g_close_calls = g_start_calls = g_pause_calls = g_stop_calls = g_open_calls = 0;
     g_stream = NULL;
 }
 
@@ -297,6 +298,103 @@ static void test_error_replacement_gain(void) {
     CHECK(dm_audio_output_destroy(&o) == 0);
 }
 
+static void test_actual_disconnect_replacement(void) {
+    reset_stub();
+    dm_audio_output o;
+    init_output(&o, 1, 0.5f);
+    play_baseline(&o);
+    CHECK(dm_audio_output_handle(&o, DM_AF_EV_FOCUS_CAN_DUCK) == DM_AF_OK);
+    dm_audio *broken = dm_audio_output_audio(&o);
+    struct dm_aaudio_stream *old_stream = g_stream;
+    CHECK(broken != NULL && old_stream != NULL);
+
+    // 真实 AAudio error callback 断流；不用策略事件代替真实断流。| The real AAudio error callback disconnects.
+    CHECK(old_stream->error != NULL);
+    old_stream->error(old_stream, old_stream->user, -899);
+    dm_audio_stats stats;
+    dm_audio_get_stats(broken, &stats);
+    CHECK(stats.disconnected == 1);
+
+    // 迟到的策略错误只更新状态；随后显式 USER_PLAY 必须退休坏流并真正新建流恢复 PCM。
+    // The policy error only updates state; explicit USER_PLAY must retire the bad stream and open a fresh one.
+    CHECK(dm_audio_output_handle_generation(&o, o.policy.generation, DM_AF_EV_BACKEND_ERROR) == DM_AF_OK);
+    CHECK(o.policy.output == DM_AF_OUT_ERROR);
+    CHECK(dm_audio_output_handle(&o, DM_AF_EV_USER_PLAY) == DM_AF_OK);
+    CHECK(o.opens == 2);
+    CHECK(g_open_calls == 2);
+    CHECK(g_stream != NULL && g_stream != old_stream);
+    CHECK(dm_audio_output_audio(&o) != broken);
+    CHECK(o.replacements == 1);
+
+    static const int16_t src[4] = {2000, -2000, 4000, -4000};
+    CHECK(dm_audio_output_write(&o, src, 2) == 2);
+    int16_t out[4];
+    CHECK(pump(&o, out, 2) == 1);
+    for (int i = 0; i < 4; i++) CHECK(out[i] == expect_gain(src[i], 16384u));   // 新流也服从 duck
+    CHECK(dm_audio_output_destroy(&o) == 0);
+}
+
+static void test_disconnect_stop_failure_retry(void) {
+    reset_stub();
+    dm_audio_output o;
+    init_output(&o, 0, 0.5f);
+    play_baseline(&o);
+    struct dm_aaudio_stream *old_stream = g_stream;
+    old_stream->error(old_stream, old_stream->user, -899);
+
+    // 坏流的 stop 请求失败：仍必须安全 close/释放；首次退休返回失败、保留句柄，绝不把坏流当已恢复。
+    // The bad stream's stop request fails: close/free must still happen; the first retirement fails and retains.
+    g_stop_fail = 1;
+    CHECK(dm_audio_output_handle_generation(&o, o.policy.generation, DM_AF_EV_BACKEND_ERROR) == DM_AF_OK);
+    CHECK(dm_audio_output_handle(&o, DM_AF_EV_USER_PLAY) == DM_AF_BACKEND_REJECTED);
+    CHECK(o.policy.output == DM_AF_OUT_ERROR);
+    CHECK(dm_audio_output_has_handle(&o) == 1);
+    CHECK(o.opens == 1);
+    CHECK(o.retire_failures >= 1);
+
+    // 串行重试完成释放并建立真正的新流。| A serialized retry completes the release and opens a fresh stream.
+    CHECK(dm_audio_output_handle(&o, DM_AF_EV_USER_PLAY) == DM_AF_OK);
+    CHECK(o.opens == 2);
+    CHECK(dm_audio_output_audio(&o) != NULL);
+    static const int16_t src[2] = {700, -700};
+    CHECK(dm_audio_output_write(&o, src, 1) == 1);
+    int16_t out[2];
+    CHECK(pump(&o, out, 1) == 1);
+    CHECK(out[0] == 700 && out[1] == -700);
+    // stop 仍处失败态：destroy 如实报告 stop 未证明、close 已发生，句柄需再串行重试释放。
+    // The stop still fails: destroy reports the unproven stop, close already happened, and a retry releases it.
+    CHECK(dm_audio_output_destroy(&o) != 0);
+    CHECK(dm_audio_output_has_handle(&o) == 1);
+    CHECK(dm_audio_output_destroy(&o) == 0);
+    CHECK(dm_audio_output_has_handle(&o) == 0);
+}
+
+static void test_disconnect_close_failure_retry(void) {
+    reset_stub();
+    dm_audio_output o;
+    init_output(&o, 0, 0.5f);
+    play_baseline(&o);
+    struct dm_aaudio_stream *old_stream = g_stream;
+    old_stream->error(old_stream, old_stream->user, -899);
+
+    // 坏流 close 失败：句柄保留，策略如实报错；重试后 close 成功并新建流。
+    // A failed close on the bad stream retains the handle and reports failure; retry closes and opens afresh.
+    g_close_fail_once = 1;
+    CHECK(dm_audio_output_handle_generation(&o, o.policy.generation, DM_AF_EV_BACKEND_ERROR) == DM_AF_OK);
+    CHECK(dm_audio_output_handle(&o, DM_AF_EV_USER_PLAY) == DM_AF_BACKEND_REJECTED);
+    CHECK(dm_audio_output_has_handle(&o) == 1);
+    CHECK(o.opens == 1);
+    CHECK(dm_audio_output_handle(&o, DM_AF_EV_USER_PLAY) == DM_AF_OK);
+    CHECK(o.opens == 2);
+    CHECK(dm_audio_output_has_handle(&o) == 1);
+    static const int16_t src[2] = {900, -900};
+    CHECK(dm_audio_output_write(&o, src, 1) == 1);
+    int16_t out[2];
+    CHECK(pump(&o, out, 1) == 1);
+    CHECK(out[0] == 900 && out[1] == -900);
+    CHECK(dm_audio_output_destroy(&o) == 0);
+}
+
 int main(void) {
     test_unity_and_duck_pcm();
     test_mute_and_invalid_gain();
@@ -305,6 +403,9 @@ int main(void) {
     test_create_eagain_cleanup_handle();
     test_destroy_close_failure_retry();
     test_error_replacement_gain();
+    test_actual_disconnect_replacement();
+    test_disconnect_stop_failure_retry();
+    test_disconnect_close_failure_retry();
     printf("audio_output: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

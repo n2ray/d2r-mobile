@@ -11,6 +11,7 @@ static int retire_cleanup_handle(dm_audio_output *output) {
     const int result = dm_audio_destroy(output->audio);
     if (result != 0) {                    // 关闭失败/未证明：保留句柄，等下一次串行重试
         output->retry_pending = 1;
+        output->retire_failures++;
         return result;
     }
     output->audio = NULL;
@@ -20,9 +21,33 @@ static int retire_cleanup_handle(dm_audio_output *output) {
     return 0;
 }
 
+// 真实 error callback 已把流标记为 disconnected：坏流不可复用，也不能靠 stop 假装恢复。
+// 真实状态只来自 dm_audio 的 stats，不在此清除 disconnected。| The real error callback marked the stream
+// disconnected; it must not be reused or "cleared", only retired on the control thread.
+static int stream_unusable(const dm_audio_output *output) {
+    if (!output->audio) return 0;
+    dm_audio_stats stats;
+    dm_audio_get_stats(output->audio, &stats);
+    return stats.disconnected != 0 || stats.closing != 0;
+}
+
+static int retire_unusable_stream(dm_audio_output *output) {
+    output->started = 0;
+    const int result = retire_cleanup_handle(output);
+    if (result == 0) output->replace_pending = 1;   // 下一次成功 open 即为替换流 | the next open replaces it
+    return result;
+}
+
 static int backend_start(void *ctx, uint32_t generation) {
     dm_audio_output *output = ctx;
     output->generation = generation;
+
+    // 断流的真实句柄必须先退休（安全 stop/close/重试），再用新 open 恢复；复用它只会再次失败。
+    // A disconnected real handle must be retired first (safe stop/close/retry) and replaced by a new open.
+    if (output->audio && stream_unusable(output)) {
+        if (retire_unusable_stream(output) != 0) { output->start_failures++; return -1; }
+        output->replacements++;
+    }
 
     if (!output->audio) {
         // 先退休上一条清理句柄，成功后才允许创建新流；失败则如实返回，不丢弃句柄。
@@ -42,6 +67,8 @@ static int backend_start(void *ctx, uint32_t generation) {
         if (created != 0 || !audio) { output->start_failures++; return -1; }
         output->audio = audio;
         output->cleanup_only = 0;
+        output->opens++;
+        if (output->replace_pending) { output->replacements++; output->replace_pending = 0; }
     }
     if (output->cleanup_only) { output->start_failures++; return -1; }
 
@@ -56,6 +83,13 @@ static int backend_start(void *ctx, uint32_t generation) {
 static int backend_pause(void *ctx) {
     dm_audio_output *output = ctx;
     if (!output->audio || output->cleanup_only) return -1;
+    if (stream_unusable(output)) {
+        // 已断流的句柄不能 pause；安全退休等价于暂停，失败则保留句柄由调用方重试。
+        // A disconnected handle cannot be paused; retiring it is the honest equivalent, with retention on failure.
+        if (retire_unusable_stream(output) != 0) return -1;
+        output->pauses++;
+        return 0;
+    }
     if (dm_audio_pause(output->audio) != 0) return -1;
     output->started = 0;
     output->pauses++;
@@ -65,6 +99,13 @@ static int backend_pause(void *ctx) {
 static int backend_stop(void *ctx) {
     dm_audio_output *output = ctx;
     if (!output->audio || output->cleanup_only) return -1;
+    if (stream_unusable(output)) {
+        // stop 请求本身可能失败；destroy 仍会 close 并保留失败句柄供串行重试，绝不声明坏流已复活。
+        // The stop request itself may fail; destroy still closes and retains failures for a serialized retry.
+        if (retire_unusable_stream(output) != 0) return -1;
+        output->stops++;
+        return 0;
+    }
     if (dm_audio_stop(output->audio) != 0) return -1;
     output->started = 0;
     output->stops++;

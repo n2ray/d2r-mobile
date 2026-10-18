@@ -24,10 +24,12 @@ typedef struct {
     dm_audio *audio;                  // owned AAudio handle, independent of policy flags
     int cleanup_only;                 // handle came from dm_audio_create -EAGAIN (must be destroyed, not started)
     int retry_pending;                // a previous retirement failed; retry before creating a new stream
+    int replace_pending;              // a bad stream was retired; the next successful open replaces it
     int started;                      // this owner's own dm_audio start state
     int destroy_pending;              // destroy failed; the handle is retained for a serialized retry
     uint32_t generation;              // last accepted start generation (diagnostic)
     uint32_t starts, pauses, stops, gains;
+    uint32_t opens, replacements, retire_failures;
     uint32_t start_failures, destroy_retries, stale_events, create_cleanups;
     int last_status;
 } dm_audio_output;

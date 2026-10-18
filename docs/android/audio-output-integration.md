@@ -31,7 +31,15 @@ The owner retains **every** AAudio handle regardless of the policy's own started
 - `dm_audio_start` 失败时已打开的流仍由 owner 保留，策略进入 ERROR；destroy 会退休该句柄。
 - `dm_audio_destroy` 失败时句柄保留，`destroy_pending`/`destroy_retries` 记录，调用方可串行重试。
 - 策略 `USER_STOP` 只停止流，不释放句柄；句柄只在 destroy 成功后消失。
+- **断流恢复**：真实 AAudio error callback 断流后，下一次串行控制调用（stop/start）会退休坏流并在控制线程上
+  真正 `open` 新流；坏流从不被"清除 disconnected"后复用。退休走 destroy，因此 stop 请求失败仍会尝试 close，
+  close 失败则保留句柄等串行重试；`opens`/`replacements` 记录真实新建与替换次数。
 - data/error callback 从不调用策略、从不 close、从不 destroy；策略与 AAudio 控制只发生在调用方的控制线程。
+
+**Disconnect recovery**: after the real AAudio error callback disconnects a stream, the next serialized control call
+(stop/start) retires the bad stream and really opens a new one on the control thread; a disconnected stream is never
+"cleared" and reused. Retirement goes through destroy, so a failing stop request still attempts close, and a failed
+close keeps the handle for a serialized retry; `opens`/`replacements` count the real opens and replacements.
 
 A create `-EAGAIN` cleanup handle, a stream left open by a failed start and a stream whose close failed are all kept
 here and retired by later serialized destroy calls. Callbacks never call the policy or close anything.
