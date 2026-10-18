@@ -45,6 +45,13 @@ static int padding_untouched(const uint8_t *p, uint32_t width, uint32_t height, 
     return 1;
 }
 
+static uint32_t expected_blend(uint8_t bg, float r, float g, float b, float a) {
+    uint8_t rr = (uint8_t)(r * a * 255.0f + (float)bg * (1.0f - a) + 0.5f);
+    uint8_t gg = (uint8_t)(g * a * 255.0f + (float)bg * (1.0f - a) + 0.5f);
+    uint8_t bb = (uint8_t)(b * a * 255.0f + (float)bg * (1.0f - a) + 0.5f);
+    return (uint32_t)rr | ((uint32_t)gg << 8) | ((uint32_t)bb << 16) | 0xff000000u;
+}
+
 static int observe_snapshot(dm_touch_bridge *b, float density, uint32_t w, uint32_t h,
                             dm_touch_hud_snapshot *s) {
     dm_android_touch_observation o;
@@ -75,17 +82,68 @@ int main(void) {
     CHECK(event(b, DM_TOUCH_ACTION_DOWN, 7, main_x, main_y, 21000000000));
     CHECK(observe_snapshot(b, 2, width, height, &s));
     CHECK(s.pressed_mask == (1u << DM_TC_MAIN));
+    memset(bits, 0x20, (size_t)stride * height * 4u);
     CHECK(dm_touch_hud_overlay_draw(&s, bits, width, height, stride,
                                     (size_t)stride * height * 4u) == 1);
     uint32_t pressed = pixel(bits, stride, (uint32_t)main_x, (uint32_t)main_y);
     CHECK(pressed != unavailable);        // pressed diagnostic differs from unavailable
+    CHECK(pressed == expected_blend(0x20, 0.95f, 0.35f, 0.15f, 0.60f));
+
+    /* Production frame orchestration: every unchanged external redraw must
+       compose HUD even when dirty is clear; fresh baseline is independent. */
+    dm_touch_hud_frame frame; dm_touch_hud_frame_init(&frame);
+    dm_touch_hud_frame_dirty(&frame);
+    CHECK(dm_touch_hud_frame_begin(&frame, 0, 1, 1, 1));
+    dm_touch_hud_frame_composed(&frame, 1);
+    CHECK(dm_touch_hud_frame_complete(&frame, 1));
+    CHECK(!frame.schedule.dirty);
+    for (int redraw = 0; redraw < 2; ++redraw) {
+        memset(bits, 0x40, (size_t)stride * height * 4u);
+        CHECK(dm_touch_hud_frame_begin(&frame, 1, 0, 1, 1)); // dirty is clear
+        CHECK(dm_touch_hud_overlay_draw(&s, bits, width, height, stride,
+                                        (size_t)stride * height * 4u) == 1);
+        dm_touch_hud_frame_composed(&frame, 1);
+        CHECK(dm_touch_hud_frame_complete(&frame, 1));
+        CHECK(pixel(bits, stride, (uint32_t)main_x, (uint32_t)main_y) ==
+              expected_blend(0x40, 0.95f, 0.35f, 0.15f, 0.60f));
+        CHECK(padding_untouched(bits, width, height, stride));
+    }
+
+    /* Post failure must retain retry; a later successful post clears dirty once. */
+    dm_touch_hud_frame_dirty(&frame);
+    CHECK(dm_touch_hud_frame_begin(&frame, 0, 1, 1, 1));
+    memset(bits, 0x40, (size_t)stride * height * 4u);
+    CHECK(dm_touch_hud_overlay_draw(&s, bits, width, height, stride,
+                                    (size_t)stride * height * 4u) == 1);
+    dm_touch_hud_frame_composed(&frame, 1);
+    CHECK(!dm_touch_hud_frame_complete(&frame, 0));
+    CHECK(frame.schedule.dirty && frame.schedule.retries == 1);
+    CHECK(dm_touch_hud_frame_begin(&frame, 0, 1, 1, 1));
+    memset(bits, 0x40, (size_t)stride * height * 4u);
+    CHECK(dm_touch_hud_overlay_draw(&s, bits, width, height, stride,
+                                    (size_t)stride * height * 4u) == 1);
+    dm_touch_hud_frame_composed(&frame, 1);
+    CHECK(dm_touch_hud_frame_complete(&frame, 1));
+    CHECK(!frame.schedule.dirty && frame.schedule.draws == 2);
+
+    /* Readiness gates actual dispatch; dirty survives a not-ready callback. */
+    dm_touch_hud_frame_dirty(&frame);
+    CHECK(!dm_touch_hud_frame_timer_ready(&frame, 0));
+    CHECK(!dm_touch_hud_frame_begin(&frame, 1, 0, 0, 1));
+    CHECK(!dm_touch_hud_frame_begin(&frame, 1, 0, 1, 0));
+    CHECK(frame.schedule.dirty);
+    dm_touch_hud_frame_suppress(&frame);
+    CHECK(!dm_touch_hud_frame_timer_ready(&frame, 1));
+
     CHECK(dm_touch_bridge_cancel_all(b, 21001000000));
     CHECK(observe_snapshot(b, 2, width, height, &s));
     CHECK(s.pressed_mask == 0 && !s.joystick_active);
+    memset(bits, 0x40, (size_t)stride * height * 4u);
     CHECK(dm_touch_hud_overlay_draw(&s, bits, width, height, stride,
                                     (size_t)stride * height * 4u) == 1);
     uint32_t normal = pixel(bits, stride, (uint32_t)main_x, (uint32_t)main_y);
     CHECK(normal != pressed);             // a no-op/stale overlay would leave pressed here
+    CHECK(normal == expected_blend(0x40, 0.45f, 0.45f, 0.45f, 0.16f));
     CHECK(padding_untouched(bits, width, height, stride));
 
     /* Actual joystick observation drives origin/current, no duplicated hit rule. */

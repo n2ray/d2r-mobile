@@ -303,18 +303,23 @@ NativeActivity wrapper only adapts the locked RGBA buffer. It validates
 dimensions, stride and capacity before writing, leaves row padding untouched,
 clips finite centres in double space before any integer conversion (so a finite
 1e30 joystick coordinate cannot trigger float-cast overflow), and returns 0
-without writing on invalid input. The dirty scheduler coalesces repeated marks,
-retains a pending retry after a failed draw, and drops work only for a permanent
-format/extent suppression; lifecycle-not-ready callbacks do not draw.
+without writing on invalid input. The frame orchestration seam separates
+mandatory external redraws from timer initiation: a valid HUD is composed on
+every external redraw even when dirty is clear, while dirty gates only
+unsolicited timer frames. Completion is acknowledged only after the window post
+succeeds; a failed compose or post keeps a pending retry, and permanent
+format/extent invalidity is the only suppression. Lifecycle-not-ready callbacks
+do not dispatch a frame.
 
 The host seam test drives actual bridge MotionEvents through observation,
 conversion and owned Vulkan pixels; the CPU seam test drives the same actual
-events through conversion and the production CPU overlay, including stride
-padding, alpha, density 2/3, cancel/resize, the 1e30 clipping regression,
-invalid no-write and scheduler retry/coalescing/lifecycle behaviour. A stale
-pressed pixel remains visibly different after cancel, so a no-op overlay is
-detected. Android ARM64 cross-builds the diagnostic shared library, CPU seam and
-live seam test.
+events through conversion and the production CPU frame seam, including two
+unchanged external redraws with fresh baselines, exact pressed/neutral pixel
+oracles, stride padding, alpha, density 2/3, cancel/resize, the 1e30 clipping
+regression, invalid no-write, post-failure retry, readiness and suppression.
+Mutants that restore dirty-gated external composition or pre-post
+acknowledgement fail the CPU test. Android ARM64 cross-builds the diagnostic
+shared library, CPU seam and live seam test.
 
 ## What remains unknown
 

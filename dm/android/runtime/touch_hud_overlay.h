@@ -16,6 +16,17 @@ typedef struct dm_touch_hud_schedule {
     unsigned retries;
 } dm_touch_hud_schedule;
 
+// Small explicit frame orchestration seam used by NativeActivity. Dirtiness
+// starts timer-initiated frames; it never removes HUD content from a mandatory
+// external redraw. Completion is acknowledged only after a successful post.
+typedef struct dm_touch_hud_frame {
+    dm_touch_hud_schedule schedule;
+    int open;
+    int composed_ok;
+    int external;
+    unsigned frames;
+} dm_touch_hud_frame;
+
 void dm_touch_hud_schedule_init(dm_touch_hud_schedule *schedule);
 void dm_touch_hud_schedule_dirty(dm_touch_hud_schedule *schedule);
 int dm_touch_hud_schedule_should_draw(const dm_touch_hud_schedule *schedule, int ready);
@@ -24,6 +35,19 @@ void dm_touch_hud_schedule_draw_done(dm_touch_hud_schedule *schedule, int succes
 // permanent unavailability (wrong buffer format/extent) drops pending work
 // rather than retrying every timer tick.
 void dm_touch_hud_schedule_suppress(dm_touch_hud_schedule *schedule);
+
+void dm_touch_hud_frame_init(dm_touch_hud_frame *frame);
+void dm_touch_hud_frame_dirty(dm_touch_hud_frame *frame);
+void dm_touch_hud_frame_suppress(dm_touch_hud_frame *frame);
+int dm_touch_hud_frame_timer_ready(const dm_touch_hud_frame *frame, int ready);
+// external_redraw composes valid HUD regardless of dirty; timer_tick may start
+// only when dirty. ready and hud_valid gate actual frame dispatch.
+int dm_touch_hud_frame_begin(dm_touch_hud_frame *frame, int external_redraw,
+                             int timer_tick, int ready, int hud_valid);
+void dm_touch_hud_frame_composed(dm_touch_hud_frame *frame, int success);
+// Returns 1 only when composed HUD and post both succeeded. A successful post
+// clears dirty exactly once; failed compose/post keeps a pending retry.
+int dm_touch_hud_frame_complete(dm_touch_hud_frame *frame, int post_success);
 
 // Draw the bounded geometric overlay into RGBA8 bytes. Visible extent is
 // width x height; stride is in pixels and may include padding (left untouched).

@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 static const float COLOR_NORMAL[4] = {0.15f, 0.65f, 0.95f, 0.30f};
 static const float COLOR_PRESSED[4] = {0.95f, 0.35f, 0.15f, 0.60f};
@@ -103,4 +104,56 @@ void dm_touch_hud_schedule_draw_done(dm_touch_hud_schedule *schedule, int succes
 
 void dm_touch_hud_schedule_suppress(dm_touch_hud_schedule *schedule) {
     if (schedule) schedule->dirty = 0;
+}
+
+void dm_touch_hud_frame_init(dm_touch_hud_frame *frame) {
+    if (!frame) return;
+    memset(frame, 0, sizeof *frame);
+    dm_touch_hud_schedule_init(&frame->schedule);
+}
+
+void dm_touch_hud_frame_dirty(dm_touch_hud_frame *frame) {
+    if (frame) dm_touch_hud_schedule_dirty(&frame->schedule);
+}
+
+void dm_touch_hud_frame_suppress(dm_touch_hud_frame *frame) {
+    if (!frame) return;
+    dm_touch_hud_schedule_suppress(&frame->schedule);
+    frame->open = 0;
+    frame->composed_ok = 0;
+}
+
+int dm_touch_hud_frame_timer_ready(const dm_touch_hud_frame *frame, int ready) {
+    return frame && ready && frame->schedule.dirty;
+}
+
+int dm_touch_hud_frame_begin(dm_touch_hud_frame *frame, int external_redraw,
+                             int timer_tick, int ready, int hud_valid) {
+    if (!frame || !ready || !hud_valid) return 0;
+    if (!external_redraw && !(timer_tick && frame->schedule.dirty)) return 0;
+    frame->open = 1;
+    frame->composed_ok = 0;
+    frame->external = external_redraw != 0;
+    frame->frames++;
+    return 1;
+}
+
+void dm_touch_hud_frame_composed(dm_touch_hud_frame *frame, int success) {
+    if (!frame || !frame->open) return;
+    frame->composed_ok = success != 0;
+}
+
+int dm_touch_hud_frame_complete(dm_touch_hud_frame *frame, int post_success) {
+    if (!frame || !frame->open) return 0;
+    int ack = frame->composed_ok && post_success;
+    if (ack) {
+        if (frame->schedule.dirty) frame->schedule.draws++;
+        frame->schedule.dirty = 0;
+    } else {
+        frame->schedule.dirty = 1;
+        frame->schedule.retries++;
+    }
+    frame->open = 0;
+    frame->composed_ok = 0;
+    return ack;
 }
