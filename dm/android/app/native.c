@@ -321,7 +321,7 @@ static uint32_t gamepad_next_generation(app_state*s){
     return s->gamepad_generation;
 }
 static int gamepad_source(int32_t source){
-    return source==AINPUT_SOURCE_GAMEPAD||source==AINPUT_SOURCE_JOYSTICK;
+    return dm_gamepad_source_is_gamepad(source);
 }
 static void gamepad_sample_from_state(const dm_npad_state*state,dm_pad_sample*sample){
     memset(sample,0,sizeof(*sample));
@@ -598,8 +598,20 @@ static void handle_motion(app_state*s,AInputEvent*event){
         translated.points[i].x_px=AMotionEvent_getX(event,(size_t)i);
         translated.points[i].y_px=AMotionEvent_getY(event,(size_t)i);
     }
+    dm_input_source before=dm_input_arbiter_source(s->arbiter);
     if(!dm_input_arbiter_touch(s->arbiter,&translated))
         LOG("touch event rejected action=%d count=%u",action,count);
+    else if(before==DM_INPUT_SOURCE_GAMEPAD&&
+            dm_input_arbiter_source(s->arbiter)==DM_INPUT_SOURCE_TOUCH){
+        /* A valid touch takeover retires the old controller contribution and
+           prior sample. Admission/id/generation stay intact, but a neutral
+           MotionEvent cannot republish a canceled button. A rejected touch
+           event never reaches this branch. */
+        if(s->gamepad_admitted){
+            dm_gamepad_context_init(&s->gamepad_context);
+            memset(&s->gamepad_state,0,sizeof(s->gamepad_state));
+        }
+    }
     touch_consume(s,"event");
 }
 /* Android getters report device IDs as non-negative int32 values. The arbiter

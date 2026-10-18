@@ -107,6 +107,7 @@ typedef int VkResult;
 #define AINPUT_SOURCE_GAMEPAD 0x00000401
 #define AINPUT_SOURCE_JOYSTICK 0x01000010
 #define AINPUT_SOURCE_MOUSE 0x00002002
+#define AINPUT_SOURCE_KEYBOARD 0x00000101
 #define AINPUT_SOURCE_UNKNOWN 0
 #define AKEY_EVENT_ACTION_DOWN 0
 #define AKEY_EVENT_ACTION_UP 1
@@ -613,14 +614,27 @@ static int gamepad_cases(void) {
     /* Raw Android id 42 is outside the old 0..15 table. A neutral joystick
        sample may admit the device but must not take ownership from touch. */
     queue_gamepad_motion(&q, AMOTION_EVENT_ACTION_MOVE, AINPUT_SOURCE_JOYSTICK, 42, 11);
+    q.event.source = AINPUT_SOURCE_GAMEPAD | AINPUT_SOURCE_JOYSTICK;
     CHECK(input_ready(0, 0, &activity) == 1);
     CHECK(q.finish_calls == 1 && q.last_handled == 1);
     CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_TOUCH);
     CHECK(s.gamepad_admitted && s.gamepad_id == 42);
 
+    /* Pure keyboard/mouse sources are not gamepad members; leave the event
+       unhandled and do not mutate admission. */
+    queue_gamepad_key(&q, AKEY_EVENT_ACTION_DOWN, AKEYCODE_BUTTON_A, 42, 11);
+    q.event.source = AINPUT_SOURCE_KEYBOARD;
+    CHECK(input_ready(0, 0, &activity) == 1);
+    CHECK(q.finish_calls == 1 && q.last_handled == 0);
+    CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_TOUCH);
+    q.event.source = AINPUT_SOURCE_MOUSE;
+    CHECK(input_ready(0, 0, &activity) == 1);
+    CHECK(q.finish_calls == 1 && q.last_handled == 0);
+
     /* The first active key switches source once; the first-neutral boundary is
        consumed by touch_consume, so the next read is actual gamepad output. */
     queue_gamepad_key(&q, AKEY_EVENT_ACTION_DOWN, AKEYCODE_BUTTON_A, 42, 12);
+    q.event.source = AINPUT_SOURCE_GAMEPAD | AINPUT_SOURCE_JOYSTICK;
     CHECK(input_ready(0, 0, &activity) == 1);
     CHECK(q.finish_calls == 1 && q.last_handled == 1);
     CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_GAMEPAD);
@@ -669,6 +683,34 @@ static int gamepad_cases(void) {
     CHECK((after_state.buttons & (DM_BTN_LEFT | DM_BTN_ZL)) == 0);
     CHECK(after_state.lx == 0 && after_state.ly == 0);
 
+    /* A held controller button is present at the moment touch takes over. */
+    queue_gamepad_key(&q, AKEY_EVENT_ACTION_DOWN, AKEYCODE_BUTTON_A, 42, 18);
+    CHECK(input_ready(0, 0, &activity) == 1);
+    CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_GAMEPAD);
+    CHECK(dm_input_arbiter_read(s.arbiter, &state));
+    CHECK((state.buttons & DM_BTN_A) != 0);
+
+    /* A rejected touch MOVE must not clear the held controller contribution;
+       a neutral joystick sample can then still republish the held A. */
+    memset(&q.event, 0, sizeof q.event);
+    q.has_event = 1;
+    q.finish_calls = q.last_handled = 0;
+    q.event.type = AINPUT_EVENT_TYPE_MOTION;
+    q.event.source = AINPUT_SOURCE_TOUCHSCREEN;
+    q.event.action = AMOTION_EVENT_ACTION_MOVE;
+    q.event.time_ns = 18;
+    q.event.pointer_count = 1;
+    q.event.ids[0] = 8;
+    q.event.xs[0] = 210;
+    q.event.ys[0] = 160;
+    CHECK(input_ready(0, 0, &activity) == 1);
+    CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_GAMEPAD);
+    queue_gamepad_motion(&q, AMOTION_EVENT_ACTION_MOVE, AINPUT_SOURCE_JOYSTICK, 42, 18);
+    CHECK(input_ready(0, 0, &activity) == 1);
+    CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_GAMEPAD);
+    CHECK(dm_input_arbiter_read(s.arbiter, &state));
+    CHECK((state.buttons & DM_BTN_A) != 0);
+
     /* A fresh touch DOWN returns to touch after the neutral boundary. */
     memset(&q.event, 0, sizeof q.event);
     q.has_event = 1;
@@ -676,7 +718,7 @@ static int gamepad_cases(void) {
     q.event.type = AINPUT_EVENT_TYPE_MOTION;
     q.event.source = AINPUT_SOURCE_TOUCHSCREEN;
     q.event.action = AMOTION_EVENT_ACTION_DOWN;
-    q.event.time_ns = 18;
+    q.event.time_ns = 19;
     q.event.pointer_count = 1;
     q.event.ids[0] = 8;
     q.event.xs[0] = 200;
@@ -684,6 +726,16 @@ static int gamepad_cases(void) {
     CHECK(input_ready(0, 0, &activity) == 1);
     CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_TOUCH);
     CHECK(dm_input_arbiter_read(s.arbiter, &state) && state.attributes == 1);
+
+    /* The touch takeover retired the old controller contribution. A neutral
+       joystick sample must not resurrect A or steal TOUCH. */
+    queue_gamepad_motion(&q, AMOTION_EVENT_ACTION_MOVE, AINPUT_SOURCE_JOYSTICK, 42, 19);
+    CHECK(input_ready(0, 0, &activity) == 1);
+    CHECK(q.finish_calls == 1 && q.last_handled == 1);
+    CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_TOUCH);
+    CHECK(s.gamepad_admitted);
+    CHECK(dm_input_arbiter_read(s.arbiter, &state));
+    CHECK((state.buttons & DM_BTN_A) == 0);
 
     /* Pause retires converter/admission; an old timestamp is rejected and only
        fresh post-resume input can take the source again. */
@@ -1081,6 +1133,10 @@ def main() -> int:
          "if(s->arbiter&&!dm_input_arbiter_pause(s->arbiter,1))LOG(\"arbiter pause invalidation rejected\");\n    gamepad_rearm(s);",
          "if(s->arbiter&&!dm_input_arbiter_pause(s->arbiter,1))LOG(\"arbiter pause invalidation rejected\");",
          "!s.gamepad_admitted"),
+        ("omit-touch-gamepad-retire",
+         "if(before==DM_INPUT_SOURCE_GAMEPAD&&\n            dm_input_arbiter_source(s->arbiter)==DM_INPUT_SOURCE_TOUCH){",
+         "if(0){",
+         "dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_TOUCH"),
     ]
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
