@@ -9,9 +9,11 @@
 #include <unistd.h>
 
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); abort(); } } while (0)
+#if defined(__aarch64__)
 static void put_word(uint8_t *where, uint32_t word) {
     for (unsigned b = 0; b < 4; b++) where[b] = (uint8_t)(word >> (b * 8));
 }
+#endif
 
 static void rejects_patch_when_instruction_unsupported(void) {
     dm_patch_request request = {.instruction = 0xd503201f, .original_offset = 0, .stub_offset = 128, .host_gate = 1};
