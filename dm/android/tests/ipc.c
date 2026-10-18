@@ -4,6 +4,7 @@
 #include "../runtime/ipc.h"
 #include "../runtime/lm.h"
 #include "../runtime/sm.h"
+#include "../runtime/internal.h"
 #include <errno.h>
 #include <pthread.h>
 #include <errno.h>
@@ -19,6 +20,13 @@
 static dm_host *host;
 static dm_guest_context *context;
 static uint8_t *tls;
+
+extern int test_output_pin_fail;
+extern dm_host *test_output_pin_host;
+extern uintptr_t test_output_pin_tls;
+extern int test_output_pin_calls;
+extern int test_output_pin_injections;
+extern uint32_t test_created_handle;
 
 typedef struct {
     dm_host *host;
@@ -613,6 +621,89 @@ static void sm_lm_discovery_tests(uint8_t *base) {
     CHECK(dm_lm_packet_count(host) == 0);
 }
 
+// Output-pin failure after GetServiceHandle has allocated its real lm session
+// but before the move handle is published. The test-only object library renames
+// dm_host_memory_pin_locked and dm_host_ipc_create_session; canonical SM/IPC
+// code and the real SVC 0x21 path remain in use.
+static void sm_getservice_pin_rollback_tests(void) {
+    size_t baseline_sessions = dm_host_ipc_open_sessions(host);
+    size_t baseline_clients = dm_sm_registered_clients(host);
+    uint32_t sm = connect_name("sm:");
+    build_register(0, 0x540u, 1, 10);
+    CHECK(send_request(sm) == 0);
+    expect_empty_reply(0x540u);
+    CHECK(dm_sm_registered_clients(host) == baseline_clients + 1);
+
+    build_get_service("lm", 0x541u);
+    uint8_t before[DM_IPC_BUFFER_SIZE];
+    memcpy(before, tls, sizeof before);
+    test_created_handle = 0;
+    test_output_pin_calls = 0;
+    test_output_pin_injections = 0;
+    test_output_pin_host = host;
+    test_output_pin_tls = (uintptr_t)tls;
+    test_output_pin_fail = 1;
+
+    CHECK(send_request(sm) == DM_SVC_INVALID_ADDRESS);
+    CHECK(test_output_pin_calls == 1);
+    CHECK(test_output_pin_injections == 1);
+    CHECK(test_created_handle != 0);
+    CHECK(!memcmp(before, tls, sizeof before));       // no reply bytes published
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions);
+    CHECK(dm_sm_registered_clients(host) == baseline_clients);
+    CHECK(close_handle(sm) == 0xe401);                // sm closed by the error rule
+
+    // The allocated lm session handle was cleared, not merely omitted from TLS.
+    pthread_mutex_lock(&host->mutex);
+    unsigned slot = 0, index = 0;
+    int live = dm_host_handle_lookup_locked(host, test_created_handle, 4, &slot, &index) == 0;
+    pthread_mutex_unlock(&host->mutex);
+    CHECK(!live);
+
+    // Capacity/state recovered: a subsequent genuine discovery succeeds.
+    uint32_t root = 0, child = 0;
+    uint32_t lm = log_session_from_sm(0x542u, &root, &child);
+    CHECK(root == 1u && child == 2u);
+    CHECK(close_handle(lm) == 0);
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions);
+    CHECK(dm_sm_registered_clients(host) == baseline_clients);
+}
+
+// Exercise the real SM GetServiceHandle capacity path. The existing generic
+// 32-session case uses a convenience endpoint; this fills 31 lm sessions, adds
+// the sm session, and makes GetServiceHandle's own create_session return ENOSPC.
+static void sm_getservice_capacity_tests(void) {
+    size_t baseline_sessions = dm_host_ipc_open_sessions(host);
+    size_t baseline_clients = dm_sm_registered_clients(host);
+    uint32_t fixtures[31];
+    for (unsigned i = 0; i < 31; i++) fixtures[i] = connect_name("lm");
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions + 31);
+
+    uint32_t sm = connect_name("sm:");
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions + 32);
+    build_register(0, 0x550u, 1, 10);
+    CHECK(send_request(sm) == 0);
+    build_get_service("lm", 0x551u);
+    uint8_t before[DM_IPC_BUFFER_SIZE];
+    memcpy(before, tls, sizeof before);
+    CHECK(send_request(sm) == DM_SVC_OUT_OF_RESOURCE);
+    CHECK(!memcmp(before, tls, sizeof before));
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions + 31);
+    CHECK(dm_sm_registered_clients(host) == baseline_clients);
+    CHECK(close_handle(sm) == 0xe401);
+
+    for (unsigned i = 0; i < 31; i++) CHECK(close_handle(fixtures[i]) == 0);
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions);
+
+    // Capacity is genuinely recovered, not merely reported as such.
+    uint32_t root = 0, child = 0;
+    uint32_t lm = log_session_from_sm(0x552u, &root, &child);
+    CHECK(root == 1u && child == 2u);
+    CHECK(close_handle(lm) == 0);
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions);
+    CHECK(dm_sm_registered_clients(host) == baseline_clients);
+}
+
 typedef struct {
     dm_host *host;
     pthread_mutex_t lock;
@@ -1142,6 +1233,8 @@ int main(void) {
         CHECK(tls && (uintptr_t)tls % 16 == 0);
         log_tests(log_base, readonly_base);
         sm_lm_discovery_tests(log_base);
+        sm_getservice_pin_rollback_tests();
+        sm_getservice_capacity_tests();
         CHECK(dm_lm_packet_count(host) == 0);
         dm_host *primary = host;
         CHECK(dm_guest_detach() == 0);
