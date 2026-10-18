@@ -3,6 +3,7 @@
 #include "../runtime/host.h"
 #include "../runtime/ipc.h"
 #include "../runtime/lm.h"
+#include "../runtime/lm_wire.h"
 #include "../runtime/sm.h"
 #include "../runtime/internal.h"
 #include <errno.h>
@@ -318,7 +319,34 @@ static void domain_tests(void) {
 }
 
 static uint8_t log_rest[DM_IPC_BUFFER_SIZE - 48u];
+#define WIRE_ADDRESS_LIMIT (1ull << 39)
+// The HIPC Log wire format carries only address bits 0..38. OS hints can be
+// ignored, so verify the returned mapping is below the encode limit and near
+// the requested low range; never use MAP_FIXED. The second range is a portable
+// fallback for hosts (notably macOS) that reject the first hint.
+static uint8_t *wire_page(unsigned slot) {
+    const uintptr_t hints[] = {
+        0x400000000ull + (uintptr_t)slot * 0x10000ull,
+        0x100000000ull + (uintptr_t)slot * 0x10000ull,
+    };
+    for (unsigned h = 0; h < sizeof hints / sizeof hints[0]; h++) {
+        for (unsigned retry = 0; retry < 4; retry++) {
+            uintptr_t hint = hints[h] + (uintptr_t)retry * 0x1000ull;
+            uint8_t *p = mmap((void *)hint, 4096, PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANON, -1, 0);
+            if (p == MAP_FAILED) continue;
+            uintptr_t address = (uintptr_t)p;
+            if (address >= hint && address - hint < 0x40000000ull &&
+                address < WIRE_ADDRESS_LIMIT &&
+                WIRE_ADDRESS_LIMIT - address >= 4096) return p;
+            CHECK(munmap(p, 4096) == 0);
+        }
+    }
+    return NULL;
+}
 static void build_log(uint32_t child, uint32_t token, uintptr_t pointer, uint32_t length) {
+    CHECK(pointer != 0 && pointer < WIRE_ADDRESS_LIMIT);
+    CHECK(length != 0 && (uint64_t)length <= WIRE_ADDRESS_LIMIT - pointer);
     memset(tls, 0x5a, DM_IPC_BUFFER_SIZE);
     put32(tls, 0x00110006u); put32(tls + 4, 12u);
     memset(tls + 8, 0, 8);                         // null static descriptor
@@ -334,6 +362,10 @@ static void build_log(uint32_t child, uint32_t token, uintptr_t pointer, uint32_
     put32(tls + 48, 0x49434653u); put32(tls + 52, 1u);
     put32(tls + 56, 0u); put32(tls + 60, 0u);
     memset(tls + 64, 0x3c, 12);                    // ignored trailing padding
+    dm_lm_wire_log_request decoded;
+    CHECK(dm_lm_wire_decode_log_request(tls, 76u, &decoded) == DM_LM_WIRE_OK);
+    CHECK(decoded.pointer == pointer && decoded.length == length &&
+          decoded.object_id == child && decoded.token == token);
     memcpy(log_rest, tls + 48, sizeof log_rest);   // bytes beyond the 48-byte reply
 }
 static void expect_log_reply(uint32_t token) {
@@ -1217,13 +1249,11 @@ int main(void) {
     {
         host = dm_host_create_process_layout(64 * UNIT, 16 * UNIT, 32 * UNIT);
         CHECK(host);
-        uint8_t *log_base = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
-                                 MAP_PRIVATE | MAP_ANON, -1, 0);
-        CHECK(log_base != MAP_FAILED);
+        uint8_t *log_base = wire_page(0);
+        CHECK(log_base != NULL);
         CHECK(dm_host_register_writable(host, log_base, 4096) == 0);
-        uint8_t *readonly_base = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
-                                      MAP_PRIVATE | MAP_ANON, -1, 0);
-        CHECK(readonly_base != MAP_FAILED);
+        uint8_t *readonly_base = wire_page(1);
+        CHECK(readonly_base != NULL);
         memset(readonly_base, 0x99, 4096);
         CHECK(mprotect(readonly_base, 4096, PROT_READ) == 0);
         CHECK(dm_host_register_executable(host, readonly_base, 4096) == 0);
@@ -1244,9 +1274,8 @@ int main(void) {
         // Second host has an independent queue; same numeric ids do not leak into primary.
         host = dm_host_create_process_layout(64 * UNIT, 16 * UNIT, 32 * UNIT);
         CHECK(host);
-        uint8_t *other_base = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
-                                   MAP_PRIVATE | MAP_ANON, -1, 0);
-        CHECK(other_base != MAP_FAILED);
+        uint8_t *other_base = wire_page(2);
+        CHECK(other_base != NULL);
         CHECK(dm_host_register_writable(host, other_base, 4096) == 0);
         CHECK(dm_guest_attach(host, &gates) == 0);
         tls = (uint8_t *)dm_guest_current()->slots[DM_SLOT_TLS];
