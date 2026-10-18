@@ -937,6 +937,29 @@ static void provider_use_replacement_and_invalidations(void) {
     f.now = 13550000000;
     CHECK(dm_touch_game_bridge_tick(g, 13550000000));
     CHECK(f.actions == 0);
+    /* A replacement provider cannot consume an action queued under the old one. */
+    f.now = 13600000000;
+    CHECK(dm_touch_game_bridge_refresh(g, 13600000000));
+    CHECK(dm_android_touch_down(t, 65, 300, 180, 13600000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 65, 300, 180, 13600000000));
+    CHECK(dm_android_touch_up(t, 65, 13610000000));
+    CHECK(dm_android_touch_down(t, 65, 300, 180, 13620000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 65, 300, 180, 13620000000));
+    CHECK(dm_android_touch_up(t, 65, 13630000000));       /* USE queued under old provider */
+    provider_fixture f2;
+    provider_reset(&f2);
+    f2.scene = DM_TGP_SCENE_PANEL;
+    f2.hit_kind = DM_TGP_HIT_ITEM;
+    f2.item_id = 0x603;
+    f2.item_address = 0x20040;
+    f2.item_size = 32;
+    dm_tgp_provider p2 = provider_from(&f2);
+    dm_touch_game_bridge_destroy(g);                      /* old provider releases state */
+    f2.now = 13640000000;
+    g = dm_touch_game_bridge_create(t, &p2);
+    CHECK(g != NULL);
+    CHECK(dm_touch_game_bridge_tick(g, 13640000000));
+    CHECK(f2.actions == 0 && dm_touch_game_bridge_acked_actions(g) == 0);
     dm_touch_game_bridge_destroy(g);
     dm_android_touch_destroy(t);
     dm_android_pad_destroy(pad);
