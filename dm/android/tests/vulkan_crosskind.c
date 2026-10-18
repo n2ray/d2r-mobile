@@ -23,8 +23,9 @@ static void set_limits(dm_vk *v) {
     l->maxVertexInputBindings = 1;
     l->maxVertexInputAttributes = 2;
 }
-static void expect_clean(const uint8_t *bytes, size_t n) {
-    for (size_t i = 0; i < n; i++) if (bytes[i] != 0x5a) { fprintf(stderr, "FAIL: canvas changed at %zu\n", i); return; }
+static int expect_clean(const uint8_t *bytes, size_t n) {
+    for (size_t i = 0; i < n; i++) if (bytes[i] != 0x5a) { fprintf(stderr, "FAIL: canvas changed at %zu\n", i); return 1; }
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -51,7 +52,7 @@ int main(int argc, char **argv) {
     printf("textured->colored r=%d queries=%d\n", (int)r1, queries);
     int fail = 0;
     if (r1 != VK_ERROR_INITIALIZATION_FAILED || queries != 0) { fprintf(stderr, "FAIL textured->colored guard\n"); fail = 1; }
-    expect_clean(output, sizeof output);
+    fail |= expect_clean(output, sizeof output);
 
     // valid textured draw, colored plan -> textured wrapper must reject before format query.
     dm_vk_indexed_textured_vertex tv[4] = {
@@ -67,7 +68,7 @@ int main(int argc, char **argv) {
     VkResult r2 = dm_vk_draw_indexed_textured_plan_offscreen(&vk, &td, &colored, &pixels);
     printf("colored->textured r=%d queries=%d\n", (int)r2, queries);
     if (r2 != VK_ERROR_INITIALIZATION_FAILED || queries != 0) { fprintf(stderr, "FAIL colored->textured guard\n"); fail = 1; }
-    expect_clean(output, sizeof output);
+    fail |= expect_clean(output, sizeof output);
 
     dm_vk_graphics_plan_free(&colored);
     dm_vk_graphics_plan_free(&textured);
