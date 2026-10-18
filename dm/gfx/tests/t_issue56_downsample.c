@@ -36,6 +36,30 @@ static int count_named(const char *path) {
     return lines;
 }
 
+// stderr 重定向：任一步失败都返回 0，调用方必须在发起被测调用之前终止，避免在未捕获状态下误报诊断证据。
+// stderr redirection: any failing step returns 0 and the caller must stop before invoking the entry, so a diagnostic
+// proof is never reported from an uncaptured run.
+static int g_saved = -1;
+
+static int capture_begin(const char *path) {
+    int fd = open(path, O_WRONLY | O_TRUNC);
+    if (fd < 0) return 0;
+    fflush(stderr);
+    g_saved = dup(2);
+    if (g_saved < 0) { close(fd); return 0; }
+    if (dup2(fd, 2) < 0) { close(g_saved); g_saved = -1; close(fd); return 0; }
+    close(fd);
+    return 1;
+}
+
+static int capture_end(void) {
+    fflush(stderr);
+    int ok = g_saved >= 0 && dup2(g_saved, 2) >= 0;
+    if (g_saved >= 0) close(g_saved);
+    g_saved = -1;
+    return ok;
+}
+
 int main(void) {
     // 1. 生产取址路径：bootstrap → GetProcAddress → 本入口跳板。
     // 1. Production lookup path: bootstrap -> GetProcAddress -> this entry's thunk.
@@ -64,11 +88,13 @@ int main(void) {
     memset(&dst, 0x22, sizeof dst);
     memset(&src_view, 0x33, sizeof src_view);
     memset(&dst_view, 0x44, sizeof dst_view);
-    unsigned char cmd_before[sizeof cmd], src_before[sizeof src], dv_before[sizeof dst_view];
+    unsigned char cmd_before[sizeof cmd], src_before[sizeof src], dst_before[sizeof dst];
+    unsigned char sv_before[sizeof src_view], dv_before[sizeof dst_view];
     memcpy(cmd_before, &cmd, sizeof cmd);
     memcpy(src_before, &src, sizeof src);
+    memcpy(dst_before, &dst, sizeof dst);
+    memcpy(sv_before, &src_view, sizeof src_view);
     memcpy(dv_before, &dst_view, sizeof dst_view);
-    (void)dst; (void)src_view;
 
     // 3. 捕获 stderr，重复调用：前 3 次只允许 1 条具名诊断。
     // 3. Capture stderr and repeat the call: the first 3 calls may emit exactly one named diagnostic.
@@ -78,34 +104,33 @@ int main(void) {
     int fd = mkstemp(path);
     CHECK(fd >= 0);
     if (fd < 0) return 1;
-    fflush(stderr);
-    int saved = dup(2);
-    dup2(fd, 2);
-    for (int i = 0; i < 3; i++) fn(&cmd, &src, &src_view, &dst, &dst_view);
-    fflush(stderr);
-    dup2(saved, 2);
-    close(saved);
     close(fd);
+    int ok = capture_begin(path);
+    CHECK(ok);
+    if (!ok) { unlink(path); return 1; }
+    for (int i = 0; i < 3; i++) fn(&cmd, &src, &src_view, &dst, &dst_view);
+    ok = capture_end();
+    CHECK(ok);
+    if (!ok) { unlink(path); return 1; }
     CHECK(count_named(path) == 1);
 
     // 4. 计数节律：uint8 计数器在调用 257 时回绕并再次打印（文档已写明 1/257）。
     // 4. Counter rhythm: the uint8 counter wraps and logs again on call 257 (documented as 1/257).
-    fd = open(path, O_WRONLY | O_TRUNC);
-    CHECK(fd >= 0);
-    fflush(stderr);
-    saved = dup(2);
-    dup2(fd, 2);
+    ok = capture_begin(path);
+    CHECK(ok);
+    if (!ok) { unlink(path); return 1; }
     for (int i = 0; i < 254; i++) fn(&cmd, &src, &src_view, &dst, &dst_view);
-    fflush(stderr);
-    dup2(saved, 2);
-    close(saved);
-    close(fd);
+    ok = capture_end();
+    CHECK(ok);
+    if (!ok) { unlink(path); return 1; }
     CHECK(count_named(path) == 1);
 
-    // 5. 不产生任何记录/资源变化：自有命令缓冲、texture、view 字节完全不变。
-    // 5. No recording or resource change: the owned command buffer, textures and views stay byte-identical.
+    // 5. 不产生任何记录/资源变化：五个自有对象（cmd/src/dst/src_view/dst_view）字节完全不变。
+    // 5. No recording or resource change: all five owned objects stay byte-identical.
     CHECK(!memcmp(cmd_before, &cmd, sizeof cmd));
     CHECK(!memcmp(src_before, &src, sizeof src));
+    CHECK(!memcmp(dst_before, &dst, sizeof dst));
+    CHECK(!memcmp(sv_before, &src_view, sizeof src_view));
     CHECK(!memcmp(dv_before, &dst_view, sizeof dst_view));
 
     unlink(path);
