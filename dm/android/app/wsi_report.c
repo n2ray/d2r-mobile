@@ -39,13 +39,12 @@ static void clear_negotiated(dm_wsi_report *report) {
 
 void dm_wsi_report_attempt(dm_wsi_report *report, uint32_t width, uint32_t height) {
     if (!report) return;
-    // 每次真实尝试都更新请求尺寸；同一未结束尝试不重复计数。| Every real attempt updates the request; one open attempt counts once.
+    // 观察者保证每次真实打开只调用一次；因此这里总是计一次尝试，并更新请求尺寸。
+    // The observer guarantees one call per real open, so every call counts one attempt and updates the request.
+    report->open_attempts++;
+    if (report->open_failures) report->retries++;   // 失败后的再次尝试是明确的 retry | retry after a failure
     report->config.requested_width = width;
     report->config.requested_height = height;
-    if (!report->attempt_open) {
-        report->open_attempts++;
-        if (report->open_failures) report->retries++;   // 失败后的再次尝试是明确的 retry | retry after a failure
-    }
     report->attempt_open = 1;
     report->attempt_failed = 0;
     report->dirty = 1;
@@ -72,20 +71,29 @@ void dm_wsi_report_negotiated(dm_wsi_report *report, uint32_t width, uint32_t he
     report->dirty = 1;
 }
 
-int dm_wsi_report_failure(dm_wsi_report *report, dm_wsi_stage stage, int code, int unsupported) {
+int dm_wsi_report_failure(dm_wsi_report *report, dm_wsi_stage stage, int code, int unsupported, int open_failure) {
     if (!report) return 0;
-    if (report->attempt_failed) return 0;   // 每次尝试只记一次失败 | one failure record per attempt
-    if (!report->attempt_open) report->open_attempts++;   // 桥在 wsi_open 之前失败也要留下尝试记录
-    report->attempt_open = 0;
+    // 同一次失败穿过多个回调层只记一次；出现新的成功帧/下一次真实打开后才允许新的失败。
+    // One failure seen through several callback layers is recorded once; a new successful frame or the next real
+    // open starts a new episode.
+    if (report->attempt_failed) return 0;
     report->attempt_failed = 1;
-    report->open_failures++;
+    if (open_failure) {
+        report->attempt_open = 0;
+        report->open_failures++;
+        clear_negotiated(report);
+    }
     if (unsupported) report->unsupported++;
     else report->errors++;
-    report->last_stage = (int)stage;
-    report->has_code = code != DM_WSI_CODE_UNKNOWN;
-    report->last_code = report->has_code ? code : 0;
+    // 首次观察到的阶段/原始码保留；通用兜底不能覆盖更精确的观察（此处已由 episode 保护）。
+    // The first observed stage/code is kept; a generic fallback cannot overwrite a more precise observation
+    // (the episode guard above already guarantees that).
+    if (stage != DM_WSI_STAGE_UNKNOWN || !report->has_code) {
+        report->last_stage = (int)stage;
+        report->has_code = code != DM_WSI_CODE_UNKNOWN;
+        report->last_code = report->has_code ? code : 0;
+    }
     report->last_status = unsupported ? DM_WSI_UNSUPPORTED : DM_WSI_ERROR;
-    clear_negotiated(report);
     report->snapshot_pending = 1;
     report->dirty = 1;
     return 1;
@@ -104,29 +112,41 @@ void dm_wsi_report_result(dm_wsi_report *report, dm_wsi_status status) {
     switch (status) {
     case DM_WSI_OK:
         report->queued_presents++;   // 只有真实排队的 present 才计数 | only a real queued present counts
+        report->attempt_failed = 0;  // 成功呈现结束上一段失败 | a presented frame ends the previous failure episode
+        report->has_code = 0;
+        report->last_code = 0;
+        report->last_stage = DM_WSI_STAGE_UNKNOWN;
         report->dirty = 1;
         break;
     case DM_WSI_SUBOPTIMAL:
         report->queued_presents++;
         report->suboptimal++;
+        report->attempt_failed = 0;
+        report->has_code = 0;
+        report->last_code = 0;
+        report->last_stage = DM_WSI_STAGE_UNKNOWN;
         report->dirty = 1;
         break;
     case DM_WSI_REBUILD:
         report->rebuild_requests++;
+        report->attempt_failed = 0;  // 重建是新一次尝试的开始 | a rebuild starts the next attempt
         report->dirty = 1;
         break;
     case DM_WSI_SURFACE_LOST:
         report->surface_lost++;
+        report->attempt_failed = 1;  // 已是一个终态观察 | already a terminal observation
         report->snapshot_pending = 1;
         report->dirty = 1;
         break;
     case DM_WSI_ERROR:
         report->errors++;            // 失败绝不成为有效帧 | a failure never becomes a valid frame
+        report->attempt_failed = 1;  // 精确的帧内观察优先于后续通用兜底 | precise frame observation wins
         report->snapshot_pending = 1;
         report->dirty = 1;
         break;
     case DM_WSI_UNSUPPORTED:
         report->unsupported++;
+        report->attempt_failed = 1;
         report->snapshot_pending = 1;
         report->dirty = 1;
         break;

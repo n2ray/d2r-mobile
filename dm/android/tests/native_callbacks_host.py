@@ -212,6 +212,10 @@ static int closed(void *ctx) { (void)ctx; return fail_close ? 1 : 0; }
 static int framed(void *ctx) { (void)ctx; frame_calls++; return frame_status; }
 static int created(void *ctx, void *w) { return dm_app_lifecycle_surface_created(ctx, w); }
 static int destroyed(void *ctx, void *w) { return dm_app_lifecycle_surface_destroyed(ctx, w); }
+/* Mirror of the production observer: attempts are recorded only at the real open boundary. */
+static void opened_observed(void *ctx, uint32_t w, uint32_t h) {
+    app_state *st = ctx; dm_wsi_report_attempt(&st->report, w, h);
+}
 
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 '''
@@ -231,6 +235,7 @@ int main(void) {
     CHECK(dm_app_lifecycle_start(s.lifecycle));
     dm_wsi_ops wops = {.ctx = &s, .open = opened, .close = closed, .frame = framed};
     dm_wsi_init(&s.wsi, &wops, 1);
+    dm_wsi_set_open_observer(&s.wsi, opened_observed, &s);
     dm_wsi_lifecycle_ops lops = {.ctx = s.lifecycle, .surface_created = created,
                                  .surface_destroyed = destroyed, .trace = NULL};
     dm_wsi_bridge_init(&s.wsi_bridge, &s.wsi, &lops);
@@ -385,6 +390,59 @@ int main(void) {
     memset(&s.view, 0, sizeof s.view);
     draw_diagnostic(&activity, &B, 1);
     CHECK(lock_calls == 1);
+
+    /* #147 repair: open attempts belong to real opens, not to redraw callbacks. */
+    s.wsi.enabled = 1;
+    s.wsi.error = 0;
+    s.wsi.paused = 0;
+    s.resumed = 1;
+    ANativeWindow F = {900, 700, 0};
+    window_ready(&activity, &F);
+    CHECK(F.refs == 1);
+    uint64_t attempts_after_open = s.report.open_attempts;
+    CHECK(attempts_after_open >= 2);
+    window_ready(&activity, &F);
+    CHECK(s.report.open_attempts == attempts_after_open);   /* repeated redraw adds no attempt */
+
+    /* A same-window dimension change is a legitimate REBUILD: no open failure, timer stays armed, and the
+       rebuild performs exactly one real open with the new requested extent. */
+    int failures_before_rebuild = (int)s.report.open_failures;
+    int fd_before_rebuild = s.frame_fd;
+    uint64_t attempts_before_rebuild = s.report.open_attempts;
+    F.width = 1024; F.height = 768;
+    window_resized(&activity, &F);
+    CHECK(s.report.open_failures == failures_before_rebuild);
+    CHECK(s.frame_fd != -1);
+    frame_status = DM_WSI_OK;
+    frame_timer(devnull, 0, &s);
+    CHECK(s.report.open_attempts == attempts_before_rebuild + 1);
+    CHECK(s.report.config.requested_width == 1024 && s.report.config.requested_height == 768);
+    F.width = 900; F.height = 700;
+
+    /* Present DEVICE_LOST during a rebuild: the callback fallback must not double count or erase the code. */
+    s.report.attempt_failed = 0;
+    dm_wsi_report_note_stage(&s.report, DM_WSI_STAGE_PRESENT, -4);
+    dm_wsi_report_result(&s.report, DM_WSI_ERROR);
+    int errors_before_fallback = (int)s.report.errors;
+    fail_close = 1;
+    s.wsi.needs_rebuild = 1;
+    frame_status = DM_WSI_OK;
+    window_resized(&activity, &F);
+    CHECK(s.report.errors == errors_before_fallback);
+    CHECK(s.report.last_stage == DM_WSI_STAGE_PRESENT);
+    CHECK(s.report.has_code == 1 && s.report.last_code == -4);
+    fail_close = 0;
+    s.wsi.needs_rebuild = 0;
+
+    /* A timer failure is recorded, but never counted as an open attempt or open failure. */
+    s.report.attempt_failed = 0;
+    uint64_t attempts_before_timer = s.report.open_attempts;
+    int failures_before_timer = (int)s.report.open_failures;
+    int errors_before_timer = (int)s.report.errors;
+    frame_timer(devnull, ALOOPER_EVENT_ERROR, &s);
+    CHECK(s.report.errors == errors_before_timer + 1);
+    CHECK(s.report.open_attempts == attempts_before_timer);
+    CHECK(s.report.open_failures == failures_before_timer);
 
     fail_close = 0;
     window_destroyed(&activity, &B);

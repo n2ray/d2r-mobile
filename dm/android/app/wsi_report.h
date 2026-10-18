@@ -65,7 +65,8 @@ typedef struct {
     uint64_t snapshots;         // 已输出的最终快照数 | final snapshots emitted
     int last_status;
     int last_stage;             // dm_wsi_stage
-    int last_code;              // 原始 VkResult/系统码；has_code=0 时未知，不推断 | raw code; unknown when has_code=0
+    int last_code;              // 原始 VkResult/系统码；has_code=0 时未知（DM_WSI_CODE_UNKNOWN），不推断
+                                // raw code; unknown (DM_WSI_CODE_UNKNOWN) when has_code=0, never inferred
     int has_code;
     int attempt_open;           // 一次尝试正在进行 | an attempt is in flight
     int attempt_failed;         // 本次尝试已记过失败，避免重复计数 | failure already recorded for this attempt
@@ -86,10 +87,12 @@ void dm_wsi_report_negotiated(dm_wsi_report *report, uint32_t width, uint32_t he
                               int format, int present_mode, uint32_t image_count, int maintenance1);
 // 标记一个终态（窗口丢失/排空）欠一次最终快照。| Mark a terminal transition (window loss/drain) as owing one snapshot.
 void dm_wsi_report_mark_terminal(dm_wsi_report *report);
-// 真实失败：保留阶段与原始码（未知传 -1），每次尝试只记一次，并清除先前的成功协商。
-// Real failure: keeps the stage and original code (-1 when unknown), records once per attempt, and clears any
-// earlier successful negotiation.
-int dm_wsi_report_failure(dm_wsi_report *report, dm_wsi_stage stage, int code, int unsupported);
+// 真实失败：保留阶段与原始码（未知传 DM_WSI_CODE_UNKNOWN），同一次失败在多个回调层只记一次；只有真实打开
+// （open_failure=1）才计入打开尝试失败，排空/定时器/帧失败不会伪造打开尝试。先前的成功协商会被清除。
+// Real failure: keeps the stage and original code (DM_WSI_CODE_UNKNOWN when unknown); one failure observed through
+// several callback layers is recorded once; only a real open (open_failure=1) counts as an open failure, while
+// drain/timer/frame failures never fabricate an open attempt. An earlier successful negotiation is cleared.
+int dm_wsi_report_failure(dm_wsi_report *report, dm_wsi_stage stage, int code, int unsupported, int open_failure);
 // 帧内失败阶段/码（不计数）：由 acquire/submit/present 包装器在真实调用点登记，避免从控制器枚举推断。
 // Frame-internal failure stage/code without counting, noted by the acquire/submit/present wrappers at the real call
 // site so no Vulkan code is inferred from a controller enum.

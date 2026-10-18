@@ -158,7 +158,7 @@ static void test_attempts_and_failures(void) {
     // 一次失败：保留阶段与原始码，清除先前的成功协商，并欠一个快照。
     // A failure keeps the stage/code, clears the earlier success and owes one snapshot.
     dm_wsi_report_attempt(&r, 1280, 720);
-    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_SWAPCHAIN, -9, 0) == 1);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_SWAPCHAIN, -9, 0, 1) == 1);
     CHECK(r.open_failures == 1);
     CHECK(r.errors == 1);
     CHECK(r.unsupported == 0);
@@ -169,13 +169,13 @@ static void test_attempts_and_failures(void) {
     CHECK(r.config.extent_width == 0 && r.config.format == -1 && r.config.maintenance1 == -1);
     CHECK(r.config.requested_width == 1280 && r.config.requested_height == 720);
     // 同一尝试重复到达的失败不重复计数。| A repeated failure for the same attempt is not counted twice.
-    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_PRESENT, -3, 0) == 0);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_PRESENT, -3, 0, 0) == 0);
     CHECK(r.open_failures == 1 && r.errors == 1);
     CHECK(r.last_stage == DM_WSI_STAGE_SWAPCHAIN);   // 保持第一次真实阶段 | the first real stage is kept
 
     // 能力缺失：没有 VkResult 可报，保持 unknown 而不是编造。| Missing capability: unknown, never invented.
     dm_wsi_report_attempt(&r, 800, 600);
-    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_INIT, DM_WSI_CODE_UNKNOWN, 1) == 1);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_INIT, DM_WSI_CODE_UNKNOWN, 1, 1) == 1);
     CHECK(r.unsupported == 1);
     CHECK(r.has_code == 0 && r.last_code == 0);
     CHECK(r.retries == 1);                       // 第二次尝试明确记为 retry | the second attempt is a named retry
@@ -199,7 +199,7 @@ static void test_exactly_once_snapshots(void) {
     dm_wsi_report_init(&r, 1, 0);
     // 失败只欠一次快照，重复输出不再产生。| A failure owes one snapshot; repeats emit nothing.
     dm_wsi_report_attempt(&r, 640, 480);
-    dm_wsi_report_failure(&r, DM_WSI_STAGE_INIT, DM_WSI_CODE_UNKNOWN, 1);
+    dm_wsi_report_failure(&r, DM_WSI_STAGE_INIT, DM_WSI_CODE_UNKNOWN, 1, 1);
     CHECK(dm_wsi_report_take_snapshot(&r, 1000) == 1);
     CHECK(dm_wsi_report_take_snapshot(&r, 2000) == 0);
     CHECK(r.snapshots == 1);
@@ -233,6 +233,70 @@ static void test_transitions_idempotent(void) {
     CHECK(r.paused == 2);
 }
 
+static void test_failure_order_preserved(void) {
+    dm_wsi_report r;
+    dm_wsi_report_init(&r, 1, 0);
+    dm_wsi_report_attempt(&r, 1280, 720);
+    dm_wsi_report_negotiated(&r, 1280, 720, 37, 2, 3, 0);
+    uint64_t attempts = r.open_attempts;
+
+    // 生产顺序：present 包装器 note(PRESENT, VK_ERROR_DEVICE_LOST) → 帧翻译 ERROR → 回调层通用兜底。
+    // Production order: present wrapper note(PRESENT, DEVICE_LOST) -> translated frame ERROR -> generic callback fallback.
+    dm_wsi_report_note_stage(&r, DM_WSI_STAGE_PRESENT, -4);
+    dm_wsi_report_result(&r, DM_WSI_ERROR);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_UNKNOWN, DM_WSI_CODE_UNKNOWN, 0, 1) == 0);
+    CHECK(r.errors == 1);                 // 一次失败，不是两次 | one failure, not two
+    CHECK(r.open_failures == 0);          // 帧错误不是打开失败 | a frame error is not an open failure
+    CHECK(r.open_attempts == attempts);   // 也没有伪造尝试 | and no fabricated attempt
+    CHECK(r.last_stage == DM_WSI_STAGE_PRESENT);
+    CHECK(r.has_code == 1 && r.last_code == -4);
+    CHECK(dm_wsi_report_take_snapshot(&r, 1000) == 1);
+    CHECK(dm_wsi_report_take_snapshot(&r, 2000) == 0);   // 终态只快照一次 | one snapshot only
+
+    // 之后一次成功的帧开启新的一段；不同的排空失败必须照常计数，不被先前帧错误吞掉。
+    // A later successful frame starts a new episode; a distinct drain failure must still count.
+    dm_wsi_report_result(&r, DM_WSI_OK);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_DRAIN, -13, 0, 0) == 1);
+    CHECK(r.errors == 2);
+    CHECK(r.open_failures == 0);
+    CHECK(r.last_stage == DM_WSI_STAGE_DRAIN);
+    CHECK(r.has_code == 1 && r.last_code == -13);
+}
+
+static void test_attempts_only_at_real_open(void) {
+    dm_wsi_report r;
+    dm_wsi_report_init(&r, 1, 0);
+    // 三次真实打开 = 三次尝试；redraw 不经过这里，因此不会增加。
+    // Three real opens are three attempts; a redraw never reaches this, so it adds nothing.
+    dm_wsi_report_attempt(&r, 800, 600);
+    dm_wsi_report_negotiated(&r, 800, 600, 37, 2, 4, 1);
+    CHECK(r.open_attempts == 1);
+    dm_wsi_report_attempt(&r, 801, 601);          // 尺寸变化的真实重建打开 | real rebuild open with a new extent
+    dm_wsi_report_negotiated(&r, 801, 601, 37, 2, 3, 1);
+    CHECK(r.open_attempts == 2);
+    CHECK(r.config.requested_width == 801);
+    CHECK(r.open_failures == 0 && r.retries == 0);
+
+    // 定时器/排空失败不伪造打开尝试。| A timer or drain failure never fabricates an open attempt.
+    dm_wsi_report_result(&r, DM_WSI_ERROR);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_TIMER, -11, 0, 0) == 0);   // 同一段失败 | same episode
+    CHECK(r.open_attempts == 2 && r.open_failures == 0);
+    dm_wsi_report_result(&r, DM_WSI_OK);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_TIMER, -11, 0, 0) == 1);
+    CHECK(r.open_attempts == 2 && r.open_failures == 0);
+    CHECK(r.last_stage == DM_WSI_STAGE_TIMER && r.last_code == -11);
+
+    // 真实打开失败才计入打开失败与 retry。| Only a real open failure counts as an open failure and retry.
+    dm_wsi_report_result(&r, DM_WSI_OK);
+    dm_wsi_report_attempt(&r, 1024, 768);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_SWAPCHAIN, -9, 0, 1) == 1);
+    CHECK(r.open_failures == 1);
+    CHECK(r.open_attempts == 3);
+    dm_wsi_report_attempt(&r, 1024, 768);
+    CHECK(r.retries == 1);
+    CHECK(r.open_attempts == 4);
+}
+
 int main(void) {
     test_config_lines();
     test_counters_never_count_failure();
@@ -242,6 +306,8 @@ int main(void) {
     test_attempts_and_failures();
     test_exactly_once_snapshots();
     test_transitions_idempotent();
+    test_failure_order_preserved();
+    test_attempts_only_at_real_open();
     printf("wsi_report: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
