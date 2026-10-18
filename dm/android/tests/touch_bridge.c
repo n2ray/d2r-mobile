@@ -683,6 +683,46 @@ static void provider_reset(provider_fixture *f) {
     f->action_result = 1;
 }
 
+static void provider_attached_retirement_rejected_preserves_state(void) {
+    provider_fixture f;
+    provider_reset(&f);
+    dm_tgp_provider p = provider_from(&f);
+    dm_touch_bridge *b = dm_touch_bridge_create(667, 375, 2.0f);
+    dm_tc_layout layout;
+    dm_npad_state before, after;
+    float bx, by;
+    CHECK(b != NULL);
+    CHECK(dm_touch_bridge_attach_game(b, &p));
+    CHECK(dm_touch_bridge_set_belt_context(b, 4, 1));
+    dm_tc_layout_make(&layout, 667, 375);
+
+    /* Generate one actual provider action and leave a pointer held. */
+    belt_upper_point(&layout, 1, 1, &bx, &by);
+    f.now = 9200000000;
+    down(b, 70, bx, by, 9200000000);
+    CHECK(f.actions == 1 && f.acked == 1);
+    f.now = 9201000000;
+    down(b, 71, layout.target[DM_TC_MAIN].x, layout.target[DM_TC_MAIN].y, 9201000000);
+    before = read_state(b);
+    int actions = f.actions, acked = f.acked, rejected = f.rejected_action;
+
+    /* Provider-attached retirement is deliberately unsupported: reject before
+       mutation, leaving pointer/output/provider state untouched. */
+    CHECK(!dm_touch_bridge_retire_requests(b, 9202000000));
+    after = read_state(b);
+    CHECK(after.buttons == before.buttons && after.lx == before.lx &&
+          after.ly == before.ly && after.rx == before.rx && after.ry == before.ry);
+    CHECK(f.actions == actions && f.acked == acked && f.rejected_action == rejected);
+
+    /* The held pointer remains owned: MOVE and UP are accepted, not canceled. */
+    dm_touch_event e = event(DM_TOUCH_ACTION_MOVE, 0, 9203000000);
+    point(&e, 71, layout.target[DM_TC_MAIN].x, layout.target[DM_TC_MAIN].y, 2.0f);
+    CHECK(dm_touch_bridge_event(b, &e));
+    up(b, 71, layout.target[DM_TC_MAIN].x, layout.target[DM_TC_MAIN].y, 9204000000);
+    CHECK(f.actions == actions && f.acked == acked);
+    dm_touch_bridge_destroy(b, NULL);
+}
+
 static void provider_belt_action_exactly_once(void) {
     provider_fixture f;
     provider_reset(&f);
@@ -1331,6 +1371,7 @@ int main(void) {
     CASE(portal_bridge_request_ack_and_release);
     CASE(portal_bridge_invalid_same_repeat_provider);
     CASE(portal_provider_attach_disables_latent_binding);
+    CASE(provider_attached_retirement_rejected_preserves_state);
     CASE(provider_belt_action_exactly_once);
     CASE(provider_action_reject_not_acked);
     CASE(provider_stale_action_not_retagged);

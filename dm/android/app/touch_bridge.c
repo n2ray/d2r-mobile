@@ -448,7 +448,7 @@ int dm_touch_bridge_cancel_all(dm_touch_bridge *bridge, int64_t time_ns) {
 }
 
 int dm_touch_bridge_retire_requests(dm_touch_bridge *bridge, int64_t time_ns) {
-    if (!bridge || time_ns < 0) return 0;
+    if (!bridge || time_ns < 0 || bridge->game) return 0; /* standalone-only; provider path unproven */
     if (!dm_android_touch_retire_requests(bridge->touch, time_ns)) return 0;
     active_clear(bridge);
     (void)consume(bridge);
