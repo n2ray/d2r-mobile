@@ -158,6 +158,17 @@ target_link_libraries(dm_input_policy_test PRIVATE dm_android_input_policy dm_an
 target_compile_options(dm_input_policy_test PRIVATE -Wall -Wextra -Werror)
 add_test(NAME input_policy COMMAND dm_input_policy_test)
 set_tests_properties(input_policy PROPERTIES TIMEOUT 30)
+# #153 音频焦点/播放意图策略：纯 C，无 Android/AAudio 头文件，后端完全注入；不发起真实焦点请求或播放。
+# #153 audio-focus / desired-play policy: plain C without Android/AAudio headers, backend fully injected; it performs
+# no real focus request and no playback.
+add_library(dm_android_app_audio_focus STATIC app/audio_focus.c)
+target_include_directories(dm_android_app_audio_focus PUBLIC app)
+target_compile_options(dm_android_app_audio_focus PRIVATE -Wall -Wextra -Werror)
+add_executable(dm_audio_focus_test tests/audio_focus.c)
+target_link_libraries(dm_audio_focus_test PRIVATE dm_android_app_audio_focus m)
+target_compile_options(dm_audio_focus_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME audio_focus COMMAND dm_audio_focus_test)
+set_tests_properties(audio_focus PROPERTIES TIMEOUT 30)
 # #117 自有诊断场景与窗口呈现策略：纯 C，无 Vulkan/Android 头文件，故在 CI 的 Vulkan=OFF 配置下也构建并运行。
 # #117 owned diagnostic scene and window presentation policy: plain C without Vulkan/Android headers, so it builds
 # and runs in the Vulkan=OFF CI configurations too.
@@ -422,6 +433,14 @@ if(NOT ANDROID)
                 --app ${CMAKE_CURRENT_SOURCE_DIR}/app
                 --cc ${CMAKE_C_COMPILER})
         set_tests_properties(native_callbacks PROPERTIES TIMEOUT 120)
+        # #153 私有变异：忽略代次或用户意图必须让真实控制器测试失败。
+        # #153 private mutations: ignoring the generation or the user intent must make the real tests fail.
+        add_test(NAME audio_focus_mutation
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_focus_mutation.py
+                --app ${CMAKE_CURRENT_SOURCE_DIR}/app
+                --tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_focus.c
+                --cc ${CMAKE_C_COMPILER})
+        set_tests_properties(audio_focus_mutation PROPERTIES TIMEOUT 120)
     endif()
 endif()
 
