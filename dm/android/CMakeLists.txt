@@ -337,12 +337,24 @@ if(DM_ANDROID_VULKAN)
     target_link_libraries(dm_touch_hud_test PRIVATE dm_android_touch_hud)
     target_compile_options(dm_touch_hud_test PRIVATE -Wall -Wextra -Werror)
     add_dependencies(dm_touch_hud_test dm_touch_hud_shaders)
+    # Fault/accounting variant compiles the renderer with the begin call renamed
+    # so the test can inject a command-begin failure and count owned objects.
+    add_executable(dm_touch_hud_fault_test runtime/touch_hud.c tests/touch_hud_faults.c)
+    target_include_directories(dm_touch_hud_fault_test PRIVATE runtime ../ios/Sources vulkan)
+    target_compile_definitions(dm_touch_hud_fault_test PRIVATE
+        DM_TOUCH_HUD_TEST_ACCOUNTING dm_vk_begin=dm_touch_hud_begin_test)
+    target_link_libraries(dm_touch_hud_fault_test PRIVATE dm_android_vk dm_android_touch_core)
+    target_compile_options(dm_touch_hud_fault_test PRIVATE -Wall -Wextra -Werror)
+    add_dependencies(dm_touch_hud_fault_test dm_touch_hud_shaders)
     if(ANDROID)
         target_link_options(dm_touch_hud_test PRIVATE "-Wl,-z,max-page-size=16384")
+        target_link_options(dm_touch_hud_fault_test PRIVATE "-Wl,-z,max-page-size=16384")
     else()
         add_test(NAME touch_hud_offscreen COMMAND dm_touch_hud_test
             ${dm_hud_vert} ${dm_hud_frag} ${CMAKE_CURRENT_BINARY_DIR}/touch-hud-artifacts)
         set_tests_properties(touch_hud_offscreen PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77)
+        add_test(NAME touch_hud_faults COMMAND dm_touch_hud_fault_test ${dm_hud_vert} ${dm_hud_frag})
+        set_tests_properties(touch_hud_faults PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77)
     endif()
 endif()
 

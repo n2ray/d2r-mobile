@@ -243,6 +243,13 @@ geometry with no stale positions. Local PNGs for normal, pressed, unavailable,
 hit-overlay and resized review are written by the host test; no device, HUD
 acceptance, real provider or full-art claim is made.
 
+Failure paths propagate shader-load and command-begin `VkResult` failures; the
+fault test asserts output bytes stay unchanged and every previously created
+owned object is destroyed. Preflight rejects non-finite/oversized point
+dimensions and validates `point * density` in double before any float-to-integer
+conversion, so infinity, NaN, FLT_MAX and product-overflow snapshots never
+reach GPU allocation.
+
 ## What remains unknown
 
 - Whether every source-backed Apple gesture has an exact game-visible equivalent

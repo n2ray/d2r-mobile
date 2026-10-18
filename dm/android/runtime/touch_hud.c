@@ -8,6 +8,16 @@
 #define SEGMENTS 28
 #define BG_A (-1.0f)
 
+#ifdef DM_TOUCH_HUD_TEST_ACCOUNTING
+static int owned_live;
+int dm_touch_hud_test_live_objects(void) { return owned_live; }
+#define OWNED_ADD() (++owned_live)
+#define OWNED_DEL() (--owned_live)
+#else
+#define OWNED_ADD() ((void)0)
+#define OWNED_DEL() ((void)0)
+#endif
+
 typedef struct { float x, y, r, g, b, a; } vertex;
 typedef struct { vertex v[DM_TOUCH_HUD_VERTEX_CAP]; uint32_t n; } batch;
 
@@ -59,6 +69,19 @@ static void line(batch *b, const dm_touch_hud_snapshot *s,
     tri(b, s, x0 + nx, y0 + ny, x1 - nx, y1 - ny, x0 - nx, y0 - ny, c);
 }
 
+static VkResult owned_buffer_create(dm_vk *vk, const dm_vk_buffer_info *info, dm_vk_buffer *out)
+{
+    VkResult result = dm_vk_buffer_create(vk, info, out);
+    if (result == VK_SUCCESS) OWNED_ADD();
+    return result;
+}
+
+static void owned_buffer_destroy(dm_vk *vk, dm_vk_buffer *buffer)
+{
+    if (buffer->handle || buffer->memory || buffer->mapped) OWNED_DEL();
+    dm_vk_buffer_destroy(vk, buffer);
+}
+
 const char *dm_touch_hud_art_status(void)
 {
     return "unavailable: no licensed glyph atlas; owned geometric shapes only";
@@ -67,14 +90,21 @@ const char *dm_touch_hud_art_status(void)
 int dm_touch_hud_validate(const dm_touch_hud_snapshot *s)
 {
     if (!s) return 0;
+    if (!isfinite(s->width_pt) || !isfinite(s->height_pt) || !isfinite(s->density)) return 0;
     if (!(s->width_pt > 0.0f) || !(s->height_pt > 0.0f)) return 0;
-    if (!(s->density > 0.0f) || !isfinite(s->density)) return 0;
+    if (!(s->density > 0.0f)) return 0;
+    if (s->width_pt > (float)MAX_DIM || s->height_pt > (float)MAX_DIM) return 0;
     if (!s->pixel_width || !s->pixel_height) return 0;
     if (s->pixel_width > MAX_DIM || s->pixel_height > MAX_DIM) return 0;
-    if (s->pixel_width > (uint32_t)(s->width_pt * s->density + 0.5f) ||
-        s->pixel_width + 1u < (uint32_t)(s->width_pt * s->density + 0.5f)) return 0;
-    if (s->pixel_height > (uint32_t)(s->height_pt * s->density + 0.5f) ||
-        s->pixel_height + 1u < (uint32_t)(s->height_pt * s->density + 0.5f)) return 0;
+    // Validate the product in double before any float-to-integer conversion.
+    double expected_w = (double)s->width_pt * (double)s->density;
+    double expected_h = (double)s->height_pt * (double)s->density;
+    if (!isfinite(expected_w) || !isfinite(expected_h)) return 0;
+    if (expected_w > (double)MAX_DIM + 1.0 || expected_h > (double)MAX_DIM + 1.0) return 0;
+    uint32_t rounded_w = (uint32_t)(expected_w + 0.5);
+    uint32_t rounded_h = (uint32_t)(expected_h + 0.5);
+    if (s->pixel_width > rounded_w || s->pixel_width + 1u < rounded_w) return 0;
+    if (s->pixel_height > rounded_h || s->pixel_height + 1u < rounded_h) return 0;
     if (s->enabled_mask & ~((1u << DM_TC_COUNT) - 1u)) return 0;
     if (s->available_mask & ~((1u << DM_TC_COUNT) - 1u)) return 0;
     if (s->pressed_mask & ~((1u << DM_TC_COUNT) - 1u)) return 0;
@@ -184,8 +214,12 @@ int dm_touch_hud_render(dm_vk *vk, const dm_touch_hud_snapshot *s, dm_vk_pixels 
     (void)depth;
     if (b->n == 0) { free(b); return 0; }
 
-    if (dm_vk_shader_load(vk, vert, &vs) != VK_SUCCESS) goto done;
-    if (dm_vk_shader_load(vk, frag, &fs) != VK_SUCCESS) goto done;
+    VkResult shader_result = dm_vk_shader_load(vk, vert, &vs);
+    if (shader_result != VK_SUCCESS) { result = shader_result; goto done; }
+    OWNED_ADD();
+    shader_result = dm_vk_shader_load(vk, frag, &fs);
+    if (shader_result != VK_SUCCESS) { result = shader_result; goto done; }
+    OWNED_ADD();
     VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
         .extent = {s->pixel_width, s->pixel_height, 1}, .mipLevels = 1, .arrayLayers = 1,
@@ -193,6 +227,7 @@ int dm_touch_hud_render(dm_vk *vk, const dm_touch_hud_snapshot *s, dm_vk_pixels 
         .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     if ((result = vkCreateImage(vk->device, &ci, NULL, &image)) != VK_SUCCESS) goto done;
+    OWNED_ADD();
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(vk->device, image, &req);
     uint32_t type = UINT32_MAX;
@@ -205,11 +240,13 @@ int dm_touch_hud_render(dm_vk *vk, const dm_touch_hud_snapshot *s, dm_vk_pixels 
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = req.size, .memoryTypeIndex = type};
     if ((result = vkAllocateMemory(vk->device, &ai, NULL, &memory)) != VK_SUCCESS) goto done;
+    OWNED_ADD();
     if ((result = vkBindImageMemory(vk->device, image, memory, 0)) != VK_SUCCESS) goto done;
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = image, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
         .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1}};
     if ((result = vkCreateImageView(vk->device, &vi, NULL, &view)) != VK_SUCCESS) goto done;
+    OWNED_ADD();
     VkAttachmentDescription att = {.format = VK_FORMAT_R8G8B8A8_UNORM,
         .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -226,14 +263,17 @@ int dm_touch_hud_render(dm_vk *vk, const dm_touch_hud_snapshot *s, dm_vk_pixels 
         .attachmentCount = 1, .pAttachments = &att, .subpassCount = 1, .pSubpasses = &sub,
         .dependencyCount = 1, .pDependencies = &dep};
     if ((result = vkCreateRenderPass(vk->device, &rp, NULL, &pass)) != VK_SUCCESS) goto done;
+    OWNED_ADD();
     VkFramebufferCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
         .renderPass = pass, .attachmentCount = 1, .pAttachments = &view,
         .width = s->pixel_width, .height = s->pixel_height, .layers = 1};
     if ((result = vkCreateFramebuffer(vk->device, &fi, NULL, &fb)) != VK_SUCCESS) goto done;
+    OWNED_ADD();
     VkPushConstantRange range = {.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .offset = 0, .size = 8};
     VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .pushConstantRangeCount = 1, .pPushConstantRanges = &range};
     if ((result = vkCreatePipelineLayout(vk->device, &pl, NULL, &layout)) != VK_SUCCESS) goto done;
+    OWNED_ADD();
     VkPipelineShaderStageCreateInfo stages[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
          .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
@@ -272,17 +312,19 @@ int dm_touch_hud_render(dm_vk *vk, const dm_touch_hud_snapshot *s, dm_vk_pixels 
         .pViewportState = &vps, .pRasterizationState = &rs, .pMultisampleState = &ms,
         .pColorBlendState = &bs, .layout = layout, .renderPass = pass, .basePipelineIndex = -1};
     if ((result = vkCreateGraphicsPipelines(vk->device, VK_NULL_HANDLE, 1, &gp, NULL, &pipeline)) != VK_SUCCESS) goto done;
+    OWNED_ADD();
     dm_vk_buffer_info bi = {.size = (VkDeviceSize)b->n * sizeof(vertex),
         .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
     dm_vk_buffer_info ri = {.size = (VkDeviceSize)bytes, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
-    if ((result = dm_vk_buffer_create(vk, &ri, &readback)) != VK_SUCCESS) goto done;
+    if ((result = owned_buffer_create(vk, &ri, &readback)) != VK_SUCCESS) goto done;
     // readback buffer is reused below as the vertex staging buffer: create a separate one.
     {
         dm_vk_buffer vb = {0};
-        if ((result = dm_vk_buffer_create(vk, &bi, &vb)) != VK_SUCCESS) goto done;
+        if ((result = owned_buffer_create(vk, &bi, &vb)) != VK_SUCCESS) goto done;
         memcpy(vb.mapped, b->v, (size_t)bi.size);
-        if ((result = dm_vk_buffer_sync(vk, &vb, 1)) != VK_SUCCESS) { dm_vk_buffer_destroy(vk, &vb); goto done; }
-        if (dm_vk_begin(vk, &cmd) != VK_SUCCESS) { dm_vk_buffer_destroy(vk, &vb); goto done; }
+        if ((result = dm_vk_buffer_sync(vk, &vb, 1)) != VK_SUCCESS) { owned_buffer_destroy(vk, &vb); goto done; }
+        result = dm_vk_begin(vk, &cmd);
+        if (result != VK_SUCCESS) { owned_buffer_destroy(vk, &vb); goto done; }
         VkClearValue clear = {.color = {.float32 = {0, 0, 0, 0}}};
         VkRenderPassBeginInfo rbi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .renderPass = pass, .framebuffer = fb, .renderArea = {.extent = {s->pixel_width, s->pixel_height}},
@@ -313,23 +355,23 @@ int dm_touch_hud_render(dm_vk *vk, const dm_touch_hud_snapshot *s, dm_vk_pixels 
             0, 0, NULL, 1, &hb, 0, NULL);
         result = dm_vk_submit(vk, cmd);
         cmd = VK_NULL_HANDLE;
-        dm_vk_buffer_destroy(vk, &vb);
+        owned_buffer_destroy(vk, &vb);
         if (result != VK_SUCCESS) goto done;
         if (dm_vk_buffer_sync(vk, &readback, 0) != VK_SUCCESS) { result = VK_ERROR_UNKNOWN; goto done; }
         memcpy(out->bytes, readback.mapped, (size_t)bytes);
     }
 done:
     if (cmd) vkFreeCommandBuffers(vk->device, vk->pool, 1, &cmd);
-    dm_vk_buffer_destroy(vk, &readback);
-    if (pipeline) vkDestroyPipeline(vk->device, pipeline, NULL);
-    if (layout) vkDestroyPipelineLayout(vk->device, layout, NULL);
-    if (fb) vkDestroyFramebuffer(vk->device, fb, NULL);
-    if (pass) vkDestroyRenderPass(vk->device, pass, NULL);
-    if (vs) vkDestroyShaderModule(vk->device, vs, NULL);
-    if (fs) vkDestroyShaderModule(vk->device, fs, NULL);
-    if (view) vkDestroyImageView(vk->device, view, NULL);
-    if (image) vkDestroyImage(vk->device, image, NULL);
-    if (memory) vkFreeMemory(vk->device, memory, NULL);
+    owned_buffer_destroy(vk, &readback);
+    if (pipeline) { OWNED_DEL(); vkDestroyPipeline(vk->device, pipeline, NULL); }
+    if (layout) { OWNED_DEL(); vkDestroyPipelineLayout(vk->device, layout, NULL); }
+    if (fb) { OWNED_DEL(); vkDestroyFramebuffer(vk->device, fb, NULL); }
+    if (pass) { OWNED_DEL(); vkDestroyRenderPass(vk->device, pass, NULL); }
+    if (vs) { OWNED_DEL(); vkDestroyShaderModule(vk->device, vs, NULL); }
+    if (fs) { OWNED_DEL(); vkDestroyShaderModule(vk->device, fs, NULL); }
+    if (view) { OWNED_DEL(); vkDestroyImageView(vk->device, view, NULL); }
+    if (image) { OWNED_DEL(); vkDestroyImage(vk->device, image, NULL); }
+    if (memory) { OWNED_DEL(); vkFreeMemory(vk->device, memory, NULL); }
     free(b);
     return result == VK_SUCCESS ? 1 : 0;
 }
