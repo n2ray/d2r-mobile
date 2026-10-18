@@ -42,6 +42,7 @@ struct dm_android_touch {
     uint64_t seen_mouse_click;
     int32_t use_pointer;
     uint64_t use_token;
+    float use_x, use_y;
     int use_ambiguous;
     int portal_available;
     uint64_t portal_mask;
@@ -207,6 +208,7 @@ static void release_all(dm_android_touch *touch) {
     touch->release_waiting = 0;
     touch->use_pointer = -1;
     touch->use_token = 0;
+    touch->use_x = touch->use_y = 0;
     touch->use_ambiguous = 0;
     dm_tc_cancel_all(&touch->state);
     action_baseline(touch);
@@ -287,6 +289,8 @@ int dm_android_touch_up(dm_android_touch *touch, int32_t pointer_id, int64_t tim
     if (touch->state.use_seq != use_before) {
         touch->use_pointer = pointer_id;
         touch->use_token = token;
+        touch->use_x = touch->state.pointer_x;   /* freeze the originating gesture point */
+        touch->use_y = touch->state.pointer_y;
     }
     touch->used[slot] = 0;
     touch->pointer_id[slot] = -1;
@@ -523,7 +527,8 @@ int dm_android_touch_take_action(dm_android_touch *touch, dm_android_touch_actio
     if (s->use_seq != touch->seen_use) {
         touch->seen_use++;   /* one action per sequence; do not collapse two pending USEs */
         out->kind = DM_ANDROID_ACTION_USE;
-        out->x = s->pointer_x; out->y = s->pointer_y;
+        out->x = touch->use_ambiguous ? 0 : touch->use_x;
+        out->y = touch->use_ambiguous ? 0 : touch->use_y;
         out->sequence = touch->seen_use;
         out->source_pointer = touch->use_pointer;
         out->source_token = touch->use_ambiguous ? 0 : touch->use_token;

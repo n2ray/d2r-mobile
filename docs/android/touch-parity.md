@@ -206,7 +206,10 @@ down coordinates. On a `USE` action it resolves that token (a later DOWN or
 reused pointer id cannot overwrite it), rechecks the current snapshot
 module/generation/scene and provider address range, then re-hits the retained
 coordinates and requires the same nonzero identity before dispatching the
-retained `object_id`. A same-coordinate replacement, changed cohort/generation,
+retained `object_id`. The `USE` source coordinates are frozen when that action is
+produced; later DOWN/move/hit, including the same pointer id or a separate
+pointer, cannot mutate them, and reset/cancel/ambiguity clears or invalidates
+the snapshot. A same-coordinate replacement, changed cohort/generation,
 scene/world/UI/panel change, stale snapshot, cancel or interleaved hit is
 rejected and cleared, never retried or acknowledged with a guessed/zero ID.
 Two unread USEs are explicitly ambiguous and both rejected, not collapsed or

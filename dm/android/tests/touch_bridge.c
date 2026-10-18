@@ -1024,6 +1024,10 @@ static void provider_use_reused_id_and_many_single_ids(void) {
     f.item_id = 0x801;
     f.item_address = 0x20020;
     f.item_size = 32;
+    f.item_id_b = 0x802;
+    f.item_address_b = 0x20040;
+    f.item_size_b = 32;
+    f.item_split_x = 400;
     dm_tgp_provider p = provider_from(&f);
     dm_android_pad *pad = dm_android_pad_create();
     dm_android_touch *t = dm_android_touch_create(pad, 667, 375);
@@ -1037,15 +1041,20 @@ static void provider_use_reused_id_and_many_single_ids(void) {
     CHECK(dm_android_touch_down(t, 61, 300, 180, 15020000000));
     CHECK(dm_touch_game_bridge_pointer_down(g, 61, 300, 180, 15020000000));
     CHECK(dm_android_touch_up(t, 61, 15030000000));    /* USE A pending */
-    /* Reused ID hits B at the same coordinates before tick: never dispatch B. */
-    f.item_id = 0x802;
-    f.item_address = 0x20040;
+    /* A separate pointer also hits B before tick; it must not mutate A's source. */
+    f.now = 15035000000;
+    CHECK(dm_android_touch_down(t, 62, 500, 180, 15035000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 62, 500, 180, 15035000000));
+    CHECK(dm_android_touch_move(t, 62, 520, 180, 15036000000));
+    /* Reused ID hits B at 500 before tick: A stays the source, with A's coords. */
     f.now = 15040000000;
-    CHECK(dm_android_touch_down(t, 61, 300, 180, 15040000000));
-    CHECK(dm_touch_game_bridge_pointer_down(g, 61, 300, 180, 15040000000));
+    CHECK(dm_android_touch_down(t, 61, 500, 180, 15040000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 61, 500, 180, 15040000000));
     CHECK(dm_touch_game_bridge_tick(g, 15040000000));
-    CHECK(f.actions == 0);                              /* stale A rejected; B not retargeted */
+    CHECK(f.actions == 1 && f.last_object_id == 0x801);
+    CHECK(fabsf(f.last_x - 300) < 0.001f && fabsf(f.last_y - 180) < 0.001f);
     CHECK(dm_android_touch_up(t, 61, 15050000000));
+    f.actions = f.acked = 0;
     dm_touch_game_bridge_destroy(g);
     dm_android_touch_destroy(t);
     dm_android_pad_destroy(pad);
@@ -1053,6 +1062,7 @@ static void provider_use_reused_id_and_many_single_ids(void) {
        reclaimed, then a new valid double tap still dispatches the current item. */
     f.item_id = 0x803;
     f.item_address = 0x20060;
+    f.item_split_x = 0;
     dm_touch_bridge *b = dm_touch_bridge_create(667, 375, 2.0f);
     CHECK(b != NULL);
     CHECK(dm_touch_bridge_attach_game(b, &p));
