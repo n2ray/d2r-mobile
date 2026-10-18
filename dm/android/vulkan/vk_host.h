@@ -1,15 +1,38 @@
 // 可移植 Vulkan 底座：设备、缓冲、同步与离屏 GPU 作业；依据 Vulkan 1.1，不含 NVN 游戏语义。
 // Portable Vulkan foundation: device, buffers, synchronization and offscreen GPU jobs; based on Vulkan 1.1, no game NVN semantics.
 #pragma once
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <vulkan/vulkan.h>
 #include "../../gfx/nvn/nvn_tex.h"
+
+// 显式 opt-in 的验证层诊断（#42）：缺省关闭，dm_vk_create 的行为与签名不变。
+// Explicit opt-in validation diagnostics (#42): off by default; dm_vk_create keeps its signature and behaviour.
+typedef enum {
+    DM_VK_VALIDATION_OFF = 0,        // 不请求验证层 | do not request the layer
+    DM_VK_VALIDATION_OPTIONAL = 1,   // 有则启用并记录；没有则继续但状态写明未验证 | enable if present, otherwise continue with status "unavailable"
+    DM_VK_VALIDATION_REQUIRED = 2    // 请求即必须：缺失时失败（VK_ERROR_LAYER_NOT_PRESENT），绝不静默跑未验证
+} dm_vk_validation_mode;             // required: fail when missing, never run unvalidated silently
+
+typedef struct {
+    uint32_t struct_size;            // 必须是 sizeof(dm_vk_options) | must equal sizeof(dm_vk_options)
+    uint32_t validation;             // dm_vk_validation_mode
+} dm_vk_options;
+#define DM_VK_OPTIONS_INIT { sizeof(dm_vk_options), DM_VK_VALIDATION_OFF }
+
 typedef struct {
     VkInstance instance; VkPhysicalDevice physical; VkDevice device; VkQueue queue;
     uint32_t family; VkCommandPool pool;
     VkPhysicalDeviceMemoryProperties memory;
     VkPhysicalDeviceProperties properties;
+    // 验证诊断：仅当通过 dm_vk_create_ex 请求时分配（堆上，生命周期与实例一致）。
+    // Validation diagnostics, allocated on the heap only when requested through dm_vk_create_ex; lifetime matches the instance.
+    uint32_t api_version;            // loader 报告的实例版本 | instance version reported by the loader
+    uint32_t driver_api_version;     // VkPhysicalDeviceProperties::apiVersion
+    uint32_t validation;             // 1 = VK_LAYER_KHRONOS_validation 已启用 | layer enabled
+    struct dm_vk_diag *diag;         // 私有；accessors 读取 | private, read through the accessors
+    VkDebugUtilsMessengerEXT messenger;
 } dm_vk;
 typedef struct {
     VkBuffer handle; VkDeviceMemory memory; void *mapped;
@@ -21,6 +44,12 @@ typedef struct { uint32_t width, height; uint8_t *bytes; size_t capacity; } dm_v
 // 同一上下文的调用须由宿主串行化；销毁前先让全部 GPU 作业完成。
 // Host must serialize calls using the same context; complete all GPU jobs before destruction.
 VkResult dm_vk_create(dm_vk *out);
+VkResult dm_vk_create_ex(const dm_vk_options *options, dm_vk *out);   // 显式 opt-in 诊断；options == NULL 等价于 dm_vk_create
+int dm_vk_validation_enabled(const dm_vk *vk);
+uint32_t dm_vk_validation_errors(const dm_vk *vk);
+uint32_t dm_vk_validation_warnings(const dm_vk *vk);
+const char *dm_vk_validation_status(const dm_vk *vk);
+const char *dm_vk_validation_first_error(const dm_vk *vk);
 void dm_vk_destroy(dm_vk *vk);
 VkResult dm_vk_buffer_create(dm_vk *vk, const dm_vk_buffer_info *info, dm_vk_buffer *out);
 void dm_vk_buffer_destroy(dm_vk *vk, dm_vk_buffer *buffer);
