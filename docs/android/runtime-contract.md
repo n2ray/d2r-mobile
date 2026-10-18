@@ -12,192 +12,214 @@ open-source reference implementations pinned to exact commits:
 - libnx `20cbcfd90567f7bf84df7725f27e345e2164fa6b`
 - Atmosphère `6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8`
 
-Atmosphère's mesosphere kernel is a clean-room *reference mechanism*. It is not the
-proprietary kernel, and this contract does not require proprietary source. Where only
-the reference describes a behavior, the claim is tagged **[ref]**. Claims read from
-this repository are tagged **[repo]**. Proposals are tagged **[design]**, and open
-questions are tagged **[unknown]**.
+Atmosphère's mesosphere kernel is a clean-room *reference mechanism*, not the
+proprietary kernel. This contract does not require proprietary source. Each claim is
+tagged:
 
-## 1. Observable events per platform
+| Tag | Meaning |
+|---|---|
+| **[repo]** | Read from this repository. |
+| **[ref]** | Read from the pinned reference sources. |
+| **[design]** | A proposed admission obligation. It does not exist in code today. |
+| **[unknown]** | An open question. |
 
-"Recoverable" means execution can return to the interrupted guest instruction stream
-with guest-visible state intact. Every entry not listed fails closed.
+## 1. Observable events: current behavior vs. proposed obligation
 
-| Event | Android ARM64 (`dm/android/runtime`) | macOS host owned tests (same runtime, `tpidrro_el0` key) | Linux host | Upstream macOS game host (`dm/host`) |
-|---|---|---|---|---|
-| Gate round trip (rewritten SVC/TLS/TLR/x18 site) | **[repo]** Recoverable. `dm_bridge_gate_entry` looks up the TP key, validates domain, active frame, SP alignment and stack bounds, saves a 160-byte frame below the RUN frame, runs the service on the native stack and restores x18/x29/FPCR/FPSR/LR (`dm/android/runtime/bridge.S:16-157`). Unknown gate return address aborts (`dm/android/runtime/dispatch.c:26-28`). Not executed on device for the current tree. | **[repo]** Same code path. The owned bridge/gate tests are the only execution evidence (`dm/android/BASELINE.md:16-21`). | **[unknown]** Same source compiles with `tpidr_el0`. Linux execution is Issue #64's scope and not claimed here. | **[repo]** Different mechanism (`dm/host/hle.c:85-99`). Out of scope for Android admission. |
-| Gate reentry (gate called while `domain` is SERVICE or EXITING, or `active != 0`) | **[repo]** Not recoverable. `brk #0xd18` (`bridge.S:43-47,186-187`). This covers a signal handler or callback that reaches the gate during a service. | **[repo]** Same. | **[unknown]** | n/a |
-| Asynchronous signal while guest code runs (GUEST domain) | **[unknown]** No handler is installed by the runtime. A host handler without `SA_ONSTACK` would run on the *guest* stack, whose production minimum is 4096 bytes (`bridge.c:33`), using the native TP. bionic allocates a per-thread alternate signal stack, but only `SA_ONSTACK` handlers use it ([bionic `pthread_create.cpp`](https://android.googlesource.com/platform/bionic/+/refs/heads/main/libc/bionic/pthread_create.cpp), `__init_alternate_signal_stack`). Whether ART, sigchain or vendor handlers fire on game threads is unverified. | **[repo]** Only the separate diagnostic child installs handlers, and it terminates with exit 80/81 (`dm/android/startup_diagnostic_svc.c:50-56`). That is a stop, not a resume. | **[unknown]** | **[repo]** `dm/host/crash.c:134-184` handles crashes, and `dm/host/diag.c:525` samples with SIGUSR2. This is not an Android contract. |
-| Asynchronous signal while a service runs (SERVICE domain) | **[repo]** The handler runs on the native stack. Reentry into the gate traps. Any other handler effect on guest state is outside the contract. | **[repo]** Same. | **[unknown]** | n/a |
-| Host → guest callback (native code calling guest code) | **[repo]** Not supported. There is no callback entry in the bridge, and a nested entry during SERVICE traps (row 2). | Same. | Same. | n/a |
-| ExitThread (SVC 0x0a) from a guest thread | **[repo]** Recoverable for the *host* only. `dm_bridge_request_exit` accepts only a registered SVC 0x0a gate site and sets `action=1` (`bridge.c:207-212`). The terminal path returns to RUN via `dm_thread_stack_leave` (`bridge.S:158-176`, `thread_stack.S` LEAVE). Then the host detaches TLS and publishes completion (`dm/android/runtime/sync.c:169-175`). External or registered threads get `BAD_STATE` (`sync.c:257`). | Same, plus the sanitized retire path. | **[unknown]** | **[repo]** `dm/host/hle_thread.c:463`. |
-| Guest entry function returns without ExitThread | **[repo]** Not recoverable. Production RUN sets LR to `brk #0` (`thread_stack.S` RUN `1:`), and the sanitized path calls `dm_thread_returned` → abort (`dispatch.c:48`). | Same. | **[unknown]** | n/a |
-| Native thread exit while attached | **[repo]** The TSD destructor runs `release`, which aborts if the bridge is active or the thread is off the native stack (`context.c:21-30`, `bridge.c:77-82`). | Same. | **[unknown]** | n/a |
-| Synchronous exception in guest code (SIGSEGV/SIGBUS/SIGILL/BRK) | **[repo]** Not recoverable. No handler is installed, so the process terminates with the platform default (debuggerd on Android). There is no guest-visible exception delivery (no Horizon user exception handler emulation). | Same. Only the diagnostic child reports it. | **[unknown]** | **[repo]** `crash.c` logs and terminates. |
-| Preemption of a guest thread by the host scheduler | **[repo]** Always possible. Guest threads are plain pthreads (`sync.c:240-245`). Mapping virtual priority and core affinity is explicitly *not* done (`sync.c:209-210`). | Same. | Same. | Same. |
-| Horizon "pin on interrupt while `disable_count != 0`" | **[unknown]**/not emulated. See §2. | Same. | Same. | Not emulated. |
-| SVC 0x36 SynchronizePreemptionState | **[repo]** Falls into `default`, which writes `0x4201` to x0 and returns (`dm/android/runtime/svc.c:49-52`). **This is not the target contract**; see §3. | Same. | Same. | **[repo]** The `default` case logs once and returns *success* (`dm/host/hle_svc.c:248-250`). This placeholder success must not be ported. |
-| Any other unknown SVC number | **[repo]** `0x4201` in x0, guest resumes (`svc.c:16,49-52`). | Same. | Same. | Placeholder success (same lines). |
+"Guest resumes" means execution continues in the interrupted guest instruction stream.
+"Host recovers" means the host keeps running safely, while the guest thread may end.
+The *Current* column describes today's code. It does **not** guarantee detection or
+stopping beyond what the cited lines do. The *Obligation* column describes what
+admission (Issue #5) would require.
 
-## 2. TLR+0x100 / TLR+0x102: producer, consumer, nesting, unwind
-
-### Layout (source-backed)
-
-**[ref]** `ams::svc::ThreadLocalRegion` (arm64) places `volatile u16 disable_count` at
-0x100, `volatile u16 interrupt_flag` at 0x102 and `cache_maintenance_flag` at 0x104,
-with `static_assert`s on all three offsets
-([`svc_thread_local_region.hpp:24-36`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libvapours/include/vapours/svc/arch/arm64/svc_thread_local_region.hpp#L24-L36)).
-
-**[repo]** Android places the TLR at `tls + 8192` inside an `8192+0x600` allocation
-(`dm/android/runtime/context.c:60-70`), with the thread object at TLR+0x200
-(`context.c:71-72`). The `calloc` path zero-fills it. The accounting path
-(`dm_host_accounting_local_create`) is assumed zero. **[unknown]** That assumption was
-not re-proved here. The runtime never reads or writes TLR+0x100..0x103. The guest reaches
-the TLR only through the `DM_GATE_TLR_READ` gate (`dispatch.c:35`).
-
-### Roles in the reference mechanism
-
-| Field | Producer | Consumer | Source |
+| Event | Current Android ARM64 behavior (`dm/android/runtime`) | Guest resumes / host recovers (current) | Proposed admission obligation |
 |---|---|---|---|
-| `disable_count` (+0x100) | **User code.** It increments before a "must not be preempted" section and decrements after it. Nesting is a counter, not a flag. | **Kernel**, on an interrupt or user-mode exception entry. If `disable_count != 0` and no thread is pinned on this core, the kernel pins the current thread and sets `interrupt_flag`. | **[ref]** [`kern_k_interrupt_manager.cpp:187-194`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/source/arch/arm64/kern_k_interrupt_manager.cpp#L187-L194), [`kern_exception_handlers.cpp:609-616`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/source/arch/arm64/kern_exception_handlers.cpp#L609-L616), [`kern_k_thread.hpp:648`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/include/mesosphere/kern_k_thread.hpp#L648) |
-| `interrupt_flag` (+0x102) | **Kernel**: `SetInterruptFlag()` writes 1 when pinning, and `ClearInterruptFlag()` writes 0 in SVC 0x36. | **User code**: after decrementing `disable_count` to zero, it checks the flag. If set, it calls SVC 0x36 to unpin. | **[ref]** [`kern_k_thread.hpp:649-650`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/include/mesosphere/kern_k_thread.hpp#L649-L650), [`kern_svc_synchronization.cpp:119-132`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/source/svc/kern_svc_synchronization.cpp#L119-L132). For user-side gating on `InfoType_IsSvcPermitted`, see [`os_disable_counter.os.horizon.hpp:24-26`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libstratosphere/source/os/impl/os_disable_counter.os.horizon.hpp#L24-L26). |
+| Gate round trip at a registered site | **[repo]** TP lookup, domain/active/SP/bounds checks, 160-byte frame below the RUN frame, service on the native stack, then x18/x29/LR/FPCR/FPSR restored (`bridge.S:16-157`). | yes / yes | Keep as is. Device evidence is still required. |
+| Unregistered gate return address | **[repo]** `abort()` (`dispatch.c:26-28`). | no / no (process ends) | Keep fail-stop. |
+| Gate reentry (`domain` SERVICE/EXITING or `active != 0`) | **[repo]** `brk #0xd18` (`bridge.S:43-47,186-187`). This covers signal handlers or callbacks that reach the gate during a service. | no / no | Keep fail-stop. |
+| Async signal while the guest runs | **[repo]** The runtime installs no handler. A non-`SA_ONSTACK` host handler would run on the guest stack (production minimum 4096 bytes, `bridge.c:33`) with the native TP, and its effect is uncontained. bionic gives each pthread an alternate signal stack, which only `SA_ONSTACK` handlers use ([bionic `pthread_create.cpp`](https://android.googlesource.com/platform/bionic/+/refs/heads/main/libc/bionic/pthread_create.cpp), `__init_alternate_signal_stack`). | **[unknown]**, no containment exists | **[design]** Only handlers listed and reviewed as benign may return into the guest. Any other delivery must stop. No handler is listed today. |
+| Async signal during a service (SERVICE domain) | **[repo]** The handler runs on the native stack, and gate reentry traps. | depends on the handler / **[unknown]** | Same rule as the previous row. |
+| Host → guest callback | **[repo]** No entry point exists. Nested entry during SERVICE traps. | no / no | Out of envelope. |
+| ExitThread (SVC 0x0a) from a started guest thread | **[repo]** Only a registered 0x0a site sets `action=1` (`bridge.c:207-212`). The terminal path leaves to RUN (`bridge.S:158-176`, `thread_stack.S` LEAVE), and the host detaches TLS and signals completion (`sync.c:169-175`). External or registered threads get `BAD_STATE` (`sync.c:257`). | no (thread ends) / **yes** | Keep. See §2 for TLR state at exit. |
+| Guest entry returns without ExitThread | **[repo]** `brk #0` (`thread_stack.S` RUN `1:`). The sanitized build aborts via `dispatch.c:48`. | no / no | Keep fail-stop. |
+| Native thread exit while attached | **[repo]** The TSD `release` aborts if the bridge is active or the thread is off the native stack (`context.c:21-30`, `bridge.c:77-82`). | no / no in that case | Keep. |
+| Synchronous exception in guest code (SEGV/BUS/ILL/BRK) | **[repo]** No handler, so the platform default applies (debuggerd on Android). There is no Horizon user-exception emulation. | no / no | Out of envelope. |
+| Host preemption of a guest thread | **[repo]** Guest threads are plain pthreads (`sync.c:240-245`). Virtual priority and affinity are not mapped (`sync.c:209-210`). | yes / yes | Preemption remains possible at any instruction. §2 defines what the guest may observe about it. |
+| SVC 0x36 SynchronizePreemptionState | **[repo]** `dm_host_svc` `default` writes `0x4201` to x0 and returns (`svc.c:16,49-52`). | yes, with x0 clobbered / yes | **[design]** §3. |
+| GetInfo(26 IsSvcPermitted) via SVC 0x29 | **[repo]** `svc.c:19` routes to `get_info` (`memory.c:130-160`). A call with handle 0 and sub-ID 0x36 returns `DM_SVC_INVALID_COMBINATION` at `memory.c:138`, because `r[3] != 0` for every ID other than 11. ID 26 is also absent from the switch, whose `default` returns `DM_SVC_NOT_IMPLEMENTED`. | yes (an error Result) / yes | **[design]** §3, rule 3. |
+| Other unknown SVC numbers | **[repo]** `0x4201` in x0, and the guest resumes (`svc.c:16,49-52`). | yes / yes | **[design]** Allowed only for SVCs whose ABI returns a Result in x0. Otherwise, fail-stop. |
 
-**[unknown]** The exact user-side instruction sequence inside *this* SDK (where it
-increments, the order of the decrement and flag check, and whether it re-reads the flag
-after SVC 0x36) has not been traced from the guest binary. Reading game or SDK dumps
-was out of scope for this trial. Issue #5 must establish it from the admitted input,
-without publishing bytes.
+The macOS owned tests run the same `dm/android/runtime` source, keyed by `tpidrro_el0`.
+They are the only execution evidence (`dm/android/BASELINE.md:16-21`), and they do
+not exercise signals or SVC 0x36. Linux execution is Issue #64's scope and is not
+claimed here. The upstream macOS game host (`dm/host`) uses a different gate. Its
+`default` SVC case logs once and returns **success** (`dm/host/hle_svc.c:248-250`),
+and its ExitThread is at `dm/host/hle_thread.c:463`. That placeholder success must not
+be ported.
 
-### Mechanism versus required observable behavior
+## 2. TLR+0x100 / +0x102 state machine
 
-The mechanism (kernel pinning a thread to a core) is not required on Android. These
-guest-observable properties are required, and are the only behavior a design may
-claim:
+### Layout and allocation
 
-1. **[design] O1 (count ownership).** `disable_count` is guest-owned. The runtime never
-   writes it, and its value survives every gate round trip, signal and host
-   preemption unchanged. This is falsifiable by the round-trip counterexample C1.
-2. **[design] O2 (flag only by host).** `interrupt_flag` changes only through runtime
-   action. It is set only while `disable_count != 0`, and cleared only by SVC 0x36.
-   The guest never observes `interrupt_flag == 1` while `disable_count == 0` unless it
-   wrote that itself.
-3. **[design] O3 (progress).** A guest section with `disable_count != 0` must not wait
-   indefinitely on a thread that the same section starves. On Horizon, pinning makes
-   the section run to completion on its core. With Android pthreads the host may
-   preempt it at any time (§1). The guest's correctness argument therefore rests on
-   *other* threads not observing a half-finished section. That is **[unknown]** for this
-   SDK and is the real risk Issue #5 must evaluate.
+- **[ref]** `ams::svc::ThreadLocalRegion` (arm64) places `volatile u16 disable_count`
+  at 0x100 and `volatile u16 interrupt_flag` at 0x102, with `static_assert`s
+  ([`svc_thread_local_region.hpp:24-36`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libvapours/include/vapours/svc/arch/arm64/svc_thread_local_region.hpp#L24-L36)).
+- **[repo]** On Android, the TLR is at `tls + 8192` inside an `8192+0x600` allocation
+  (`context.c:60-70`). The runtime never reads or writes TLR+0x100..0x103. The guest
+  locates the TLR only through the `DM_GATE_TLR_READ` gate (`dispatch.c:35`).
+- **[repo] Initial bytes are zero on both allocation paths.**
+  - Without accounting, the allocation comes from `calloc` (`context.c:60`).
+  - With accounting, `dm_host_accounting_local_create` makes a slot inside the arena
+    readable and writable (`accounting.c:129-147`). The arena lies inside the private
+    anonymous `PROT_NONE` reservation (`heap.c:56`). The only shared remap covers the
+    heap (`heap.c:68`), and `MapMemory` remaps only the stack region (`memory.c:56,64`).
+  - Retired locals are reset with a fixed private anonymous `mmap` before their slot
+    is freed (`accounting.c:152-157`, `image_map.c:114-118`). Retired locals that are
+    still pinned stay in the list and count as occupied (`accounting.c:141-142,155`).
+  - Private anonymous pages are zero-filled ([mmap(2)](https://man7.org/linux/man-pages/man2/mmap.2.html), `MAP_ANONYMOUS`).
+- Zero at attach is therefore the *initial* state only. It says nothing about later
+  transitions, so no conclusion about the pending path may be drawn from it.
 
-### Proposed Android realization
+### Reference transitions
 
-- **[design] Option A (minimal, recommended first).** Never set `interrupt_flag`.
-  Under this model the flag stays zero forever, and the guest takes its "not
-  interrupted" path. This is honest only if O3 holds for the specific SDK sequences
-  that use the counter. **This option rests on an assumption.** It must not be
-  argued as "the field is zero at start, so the pending path never exists"; see C2
-  and C3.
-- **[design] Option B (emulated pinning).** At gate entry with `disable_count != 0`,
-  record that a host preemption *could* have occurred, and set `interrupt_flag = 1`
-  before returning to the guest. Implement SVC 0x36 as "clear the flag and unpin", with
-  no-op unpinning. This exercises the guest's pending path without claiming real
-  pinning. It still does not provide O3.
-- **Nesting.** The guest counts nesting itself. The runtime must neither saturate nor
-  reset the counter, and gate frames never save or restore it (`bridge.S:98-110`
-  saves only registers).
-- **Unwind and thread exit.** On ExitThread or a fatal stop with `disable_count != 0`,
-  **[design]** the runtime must treat the state as a guest contract violation: a
-  diagnostic stop on Android, never a silent clear. On Horizon the reference unpins a
-  terminating pinned thread through the scheduler, which is a kernel detail and not a
-  guest-observable value.
+The state is `(count = TLR+0x100, flag = TLR+0x102, P = "this thread is pinned")`.
+`P` is kernel state and is not visible in the TLR.
+
+| # | Trigger | Guard | Effect | Source |
+|---|---|---|---|---|
+| T1 | Guest increments or decrements `count` | none (guest memory) | `count ± 1`. Nesting is counting. | **[ref]** The user owns it. The kernel only reads it (`kern_k_thread.hpp:648`). |
+| T2 | Interrupt, or a user-mode exception handled by `HandleException`, taken from EL0 | `count != 0` and no thread pinned on this core | `P := 1`, `flag := 1` | **[ref]** [`kern_k_interrupt_manager.cpp:187-194`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/source/arch/arm64/kern_k_interrupt_manager.cpp#L187-L194), [`kern_exception_handlers.cpp:609-616`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/source/arch/arm64/kern_exception_handlers.cpp#L609-L616), [`kern_k_thread.hpp:649-650`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/include/mesosphere/kern_k_thread.hpp#L648-L650) |
+| T2' | Same trigger | already pinned, or `count == 0` | no change | Same guard. |
+| T3 | Guest decrements `count` to 0 (outermost exit) | — | `count := 0`. **`flag` stays 1 if T2 happened.** `(0, 1, P=1)` is the valid *pending* state until the acknowledgement in T4. | Follows from T1, T2 and T4. |
+| T4 | SVC 0x36 | the current thread is the pinned thread on this core | `flag := 0`, `P := 0` | **[ref]** [`kern_svc_synchronization.cpp:119-132`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/source/svc/kern_svc_synchronization.cpp#L119-L132) |
+| T4' | SVC 0x36 | not pinned | **no change**, including a `flag` the guest wrote itself. Repeated calls are idempotent. | Same lines. The clear is conditional on pinning. |
+
+A guest write to `flag` is ordinary memory traffic. The reference clears the flag only
+in T4, and only for the pinned thread. **[unknown]**: the exact sequence this SDK uses
+around these fields (the increment site, the order of decrement and check, any re-read
+after SVC 0x36). Issue #5 must trace it from the admitted input without publishing
+bytes.
+
+### Observable invariants (the guest-visible contract)
+
+The kernel pinning *mechanism* is not required. The required observable behavior is:
+
+- **[design] O1.** `count` is guest-owned. The runtime never writes it, and its value
+  is unchanged across every gate round trip, host preemption and contained signal.
+- **[design] O2.** The runtime changes `flag` only through T2 (0→1, only while
+  `count != 0` and its emulated `P == 0`) and T4 (1→0, only while emulated `P == 1`).
+  `flag == 1` together with `count == 0` is **allowed**: it is the pending state of
+  T3. The runtime never clears a `flag` that it did not set (T4').
+- **[design] O3 (scope note, not a guarantee).** T2 guarantees that the pinned thread
+  is not migrated or descheduled in favor of process peers on that core. No Android
+  design here provides that. Neither option below gives critical-section atomicity or
+  forward-progress equivalence. Whether the SDK depends on it is **[unknown]** (A2).
+
+### Candidate realizations (conditional, neither admitted)
+
+- **[design] Candidate A, never pin.** The emulated `P` is always 0, so T2 never fires,
+  and SVC 0x36 always takes T4' (a no-op). The observable range is
+  `flag ∈ {0, guest-written values}`. This matches the reference for an execution in
+  which no interrupt landed inside a counted section. It is a *legal subset* of
+  reference traces, not an equivalent emulation. It is refuted for this SDK if any SDK
+  section needs T2's exclusion (A2, counterexample C9).
+- **[design] Candidate B, synthetic pin.** The runtime holds a per-thread emulated `P`.
+  At a chosen host-observable point while `count != 0`, it applies T2. Because
+  reference interrupt timing is nondeterministic, this also produces a legal reference
+  trace. SVC 0x36 applies T4 or T4'. This exercises the guest's pending path but does
+  not provide pinning (O3).
+- **Thread exit with `count != 0` or `P == 1`.** The reference unpins inside the
+  kernel, which is not guest-observable. **[design, bounded choice]** The runtime
+  clears its emulated `P`, records one diagnostic event (thread ID and the values of
+  both fields), and completes ExitThread normally. This is a choice for diagnosability,
+  not a requirement implied by the reference ABI.
 
 ## 3. SVC 0x36 (SynchronizePreemptionState) ABI
 
-- **[ref]** The SVC number is 0x36. It takes no input and has no output
-  (`void svcSynchronizePreemptionState(void)`, introduced in 8.0.0, and described as
-  "used during abort/panic") ([libnx `svc.h:1000-1004`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/include/switch/kernel/svc.h#L1000-L1004)).
-  The kernel side is `void SynchronizePreemptionState64()` with no `Result`
+- **[ref]** SVC number 0x36 takes no input and returns nothing
+  (`void svcSynchronizePreemptionState(void)`, 8.0.0+, documented as "used during
+  abort/panic") ([libnx `svc.h:1000-1004`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/include/switch/kernel/svc.h#L1000-L1004)).
+  The kernel handler is `void SynchronizePreemptionState64()`
   ([`kern_svc_synchronization.cpp:154-156`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/source/svc/kern_svc_synchronization.cpp#L154-L156)).
-  Its use is permission-gated (`InfoType_IsSvcPermitted = 26`,
-  [libnx `svc.h:212`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/include/switch/kernel/svc.h#L212)).
-- **Consequence.** The guest cannot observe failure, because it reads no Result. A
-  returned error code is therefore not a failure report. It is silent continuation, and
-  it clobbers x0, which the caller is entitled to assume is unspecified anyway.
-  **[unknown]**: which registers Horizon preserves across a void SVC. The current
-  `dm_host_svc` writes x0 unconditionally (`svc.c:51`), and only the gate frame's saved
-  registers are restored.
-- **[design] Required behavior.**
-  1. Until Option A or Option B is admitted, SVC 0x36 must **fail-stop**: a
-     diagnostic trap with SVC number and site, the same class as an unknown gate. It
-     must not return `0x4201`, and it must not return success (the upstream macOS
-     `hle_svc.c:248-250` behavior).
-  2. Once admitted, it clears `interrupt_flag` (+0x102), leaves `disable_count` (+0x100)
-     and all general registers except those the ABI marks clobbered unchanged, and
-     returns to the next instruction.
-  3. If the process did not report the SVC as permitted through GetInfo(26), any call
-     is a contract violation and must stop. **[unknown]**: whether the Android runtime's
-     GetInfo currently answers ID 26. The observed real-stage GetInfo IDs did not
-     include 26 (`dm/android/README.md:402`).
+  Permission can be queried through `InfoType_IsSvcPermitted = 26`
+  ([libnx `svc.h:212`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/include/switch/kernel/svc.h#L212)).
+  Atmosphère's own OS library aborts unless that query reports the SVC as permitted
+  ([`os_disable_counter.os.horizon.hpp:24-26`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libstratosphere/source/os/impl/os_disable_counter.os.horizon.hpp#L24-L26)).
+  That library is not the game SDK, so whether the game SDK performs the same check is
+  **[unknown]**.
+- **Consequence.** The caller reads no Result, so a returned error code cannot be
+  observed as a failure. Today's `0x4201` (`svc.c:51`) behaves like a silent T4' no-op
+  that also clobbers x0. **[unknown]**: Horizon's register-preservation rule for void
+  SVCs (A5).
+- **[design] Admission rules.**
+  1. Before admission: SVC 0x36 must fail-stop with a diagnostic (SVC number and site).
+     It must not return `0x4201`, and it must not return success.
+  2. After admission: implement T4/T4' exactly. Leave `count` and all registers other
+     than the ABI's clobber set unchanged, and resume at the next instruction.
+  3. GetInfo(26, handle 0, sub-ID 0x36) must report the outcome the chosen candidate
+     supports: permitted when SVC 0x36 is implemented, not permitted otherwise. Today it
+     returns `DM_SVC_INVALID_COMBINATION` (§1). Whether the SDK reacts to that by
+     aborting, by skipping the counter, or by ignoring it is **[unknown]**.
 
-## 4. Finite support envelope and unknown-event failures
+## 4. Finite support envelope
 
-Supported (claimable only after the listed counterexamples pass on the stated platform):
+Today's code does **not** enforce this envelope. It is the target that admission must
+prove.
 
-- Synchronous gate round trips for registered sites only, on an attached thread, with
-  the stack bounds in `bridge.S:48-91`.
-- ExitThread from a started guest thread at a registered SVC 0x0a site.
-- Host preemption of guest pthreads, with TLR+0x100/+0x102 semantics per §2
-  Option A or B once admitted.
+- **Inside the envelope:**
+  - gate round trips at registered sites under the stack bounds of `bridge.S:48-91`;
+  - ExitThread from a started guest thread at a registered 0x0a site;
+  - host preemption, under O1 and O2 and one admitted candidate from §2;
+  - signal handlers listed as reviewed benign (none today).
+- **Outside the envelope, must stop:**
+  - callbacks into the guest;
+  - guest-visible exception delivery;
+  - any unlisted signal delivery, including one that would *successfully* resume the
+    guest;
+  - unregistered gates and entry returns;
+  - SVC 0x36 before admission;
+  - every SVC without a Result in x0;
+  - unknown SVCs, unless the Result-only rule in §1 is proved per SVC number.
 
-Everything else is **outside the envelope and must stop, not continue**. This covers
-callbacks into the guest, guest-visible exception delivery, signal-driven guest
-resumption, unregistered gates, guest entry return, SVC 0x36 before admission, any
-SVC whose ABI has no Result, and **[design]** any unknown SVC. The current code
-returns `0x4201` for unknown SVCs (`svc.c:16,49-52`). That is acceptable only for
-SVCs whose ABI returns a Result in x0 *and* whose caller is known to check it. Issue #5
-must either prove that per SVC number or change the default to a fail-stop. This
-document does not change runtime behavior.
+## 5. Counterexamples (plans only, none implemented)
 
-## 5. Counterexamples (falsification plan)
+These tests are owned and game-free. A host run is a synthetic falsification of the
+runtime design, not proof of guest compatibility. Android results require a device run
+with the review material that `dm/android/BASELINE.md` requires.
 
-Each counterexample is an owned, game-free test. A design claim is refuted if the
-test observes the stated outcome. None of these tests is implemented in this change.
-Running them on macOS or Linux hosts does not prove guest compatibility. Android
-results require a device run with the review material that `dm/android/BASELINE.md`
-requires.
-
-| ID | Refutes | Setup | Refuting observation |
-|---|---|---|---|
-| C1 | O1 | An owned guest fragment writes `disable_count = 3` (a nonzero, non-1 value), performs N gate round trips (SVC 0x1e, TLR read) with forced host preemption (a competing thread plus `sched_yield`), then reads the field back. | Any value other than 3, or `interrupt_flag` changing under Option A. |
-| C2 | "zero-initialized ⇒ the pending path never runs" | The guest pre-sets `interrupt_flag = 1` before entering a counted section, which is legal guest memory. It then decrements `disable_count` to 0 and calls SVC 0x36. | The run continues with the flag still 1, or SVC 0x36 returns `0x4201` or 0 instead of the designed fail-stop or clear. |
-| C3 | "zero-initialized TLR" itself | Attach a thread through the *accounting* allocation path (`context.c:62-65`) after another thread used and released the same local. Read TLR+0x100..0x103 before guest entry. | A nonzero byte. That would show that zero is not guaranteed on that path. |
-| C4 | §3 rule 1 | Guest executes `svc #0x36` at a registered gate site with no admission. | Execution reaches the next guest instruction. |
-| C5 | O2 with nesting | `disable_count` goes 0→1→2→1→0 across gate calls, with Option B active. | The flag is set while the count is 0, or cleared by anything except SVC 0x36. |
-| C6 | Envelope (signal) | Raise a non-`SA_ONSTACK` signal on a guest thread running on a 4 KiB guest stack. | The guest resumes with corrupted guest stack below SP, instead of a contained stop. |
-| C7 | Envelope (exit) | ExitThread with `disable_count != 0`. | A silent clean exit with no diagnostic. |
-| C8 | Unknown SVC | Guest issues an SVC with no Result ABI (0x36 now, others as found) through the default path. | The guest continues with a fabricated x0. |
+| ID | Kind | Refutes | Setup | Refuting observation |
+|---|---|---|---|---|
+| C1 | synthetic | O1 | The guest sets `count = 3`, then makes N gate round trips (SVC 0x1e, TLR read) under forced host preemption. | `count != 3`, or `flag` changed under Candidate A. |
+| C2 | synthetic | "zero at attach ⇒ the pending path never runs" | Under Candidate B, force T2 with `count = 1`, then decrement to 0 (T3). | `flag` reads 0 before SVC 0x36, which means the pending state was lost. Or `flag` stays 1 after SVC 0x36 (T4 not applied). |
+| C3 | regression | The zero-fill proof in §2 | Attach, retire and re-attach on the accounting path, then read TLR+0x100..0x103 before guest entry. | Any nonzero byte. |
+| C4 | synthetic | §3 rule 1 | `svc #0x36` at a registered site before admission. | The next guest instruction executes. |
+| C5 | synthetic | O2 and T4' | The guest writes `flag = 1` with emulated `P == 0`, then calls SVC 0x36 twice. | `flag` changes. The reference keeps it at 1 for an unpinned thread, and this test does not assume an unconditional clear. |
+| C6 | synthetic | §4 signal rule | A non-listed, non-`SA_ONSTACK` signal arrives on a guest thread with a 4 KiB stack. | The guest resumes, with or without corruption, instead of stopping. |
+| C7 | synthetic | The §2 thread-exit choice | ExitThread with `count = 2` and emulated `P == 1`. | No diagnostic event, or ExitThread fails, or `P` is still set afterwards. |
+| C8 | synthetic | The unknown-SVC rule | A non-Result SVC goes through the default path. | The guest continues with a fabricated x0. |
+| C9 | reference equivalence | Candidate A for this SDK (A2) | Two guest threads contend on an SDK section protected by the counter, under host preemption. | Any outcome the SDK's single-core pinned execution forbids, such as a torn update. This requires the traced SDK sequence (#5). |
 
 ## 6. Assumption register
 
 | # | Assumption | Status | Closes when |
 |---|---|---|---|
-| A1 | The mesosphere TLR layout (0x100/0x102) matches the console kernel this SDK targets. | Reference-backed, not proven for the target. | The field offsets are confirmed from the SDK's own access sequence in Issue #5, without proprietary kernel source. |
-| A2 | This SDK uses the counter/flag pair only around short critical sections. | Unknown. | The SDK sequence is traced, and O3 is argued per site. |
-| A3 | The accounting-path TLR is zero-filled. | Unproved. | C3 passes. |
-| A4 | No host signal handler runs on guest stacks on Android. | Unknown. | C6, plus a device survey of installed handlers (`SA_ONSTACK` flags). |
-| A5 | Horizon register preservation for void SVCs. | Unknown. | The libnx/mesosphere SVC entry path is reviewed, and the gate restore set is matched. |
-| A6 | Android scheduling (big.LITTLE, no core pinning) does not violate O3. | Unknown. This is the main risk. | An argument per SDK site, plus a stress run on the Xiaomi 15 Ultra. |
+| A1 | The mesosphere TLR offsets match the target console kernel. | Reference-backed, not proven for the target. | The SDK's own accesses are traced (#5). Proprietary source is not needed. |
+| A2 | No SDK section depends on T2 exclusion. | Unknown. | The per-site argument is made and C9 passes. |
+| A3 | The accounting-path TLR is zero at attach. | **Source-traced** (§2). | C3 runs as a regression test. |
+| A4 | No host signal handler runs on guest stacks on Android. | Unknown. | C6 passes, plus a device survey of installed handlers. |
+| A5 | Horizon register preservation for void SVCs. | Unknown. | The reference SVC entry path is reviewed, and the gate restore set matches it. |
+| A6 | Unpinned host scheduling does not break SDK sections on the target device. | Unknown. No scheduling proof exists. | A2 is closed, followed by a device stress run. |
 
-Nothing here unblocks production admission by itself. It defines what Issue #5 must
-implement and what evidence refutes it.
+Nothing here unblocks production admission by itself.
 
 ## 中文摘要
 
 本文件是 #3 的设计与可证伪验收方案，**未实现、未在 Android 上验证**，没有执行游戏、SDK、原始 rtld 或手机。
-事件表（§1）区分了 Android、macOS、Linux 与上游 macOS 宿主。在 Android 上，只有已登记门往返和 ExitThread 可以恢复；
-信号、回调、客体异常和入口函数直接返回都必须停止。
-TLR+0x100（disable_count）归客体所有，客体负责递增、递减和嵌套计数；TLR+0x102（interrupt_flag）只由宿主置位，只由 SVC 0x36 清除。
-参考机制来自 Atmosphère（固定提交），不以专有源码作为完成条件。
-SVC 0x36 没有 Result 输出，客体无法察觉失败，所以在准入前必须失败停止，不能返回 0x4201，更不能返回成功。
-上游 `hle_svc.c` 的占位成功不得移植。
-§5 的反例 C1–C8 用于证伪；其中 C2 和 C3 专门反驳“TLR 初始全零就说明待处理路径不存在”的推断。
-§6 逐项登记了剩余假设。
+§1 把“现有行为”和“拟定准入义务”分列，现有代码并不保证会检测或停止未列事件。
+ExitThread 由宿主回收线程，客体不再继续；信号目前没有任何拦截。
+§2 用状态机描述 TLR+0x100（disable_count，客体所有）和 +0x102（interrupt_flag）。
+宿主只能在计数非零时置位 flag；最外层递减到 0 之后，flag 可以保持为 1，即待处理状态，直到 SVC 0x36 确认。
+SVC 0x36 只在当前线程已被钉住时清除 flag（参考 `kern_svc_synchronization.cpp:119-132`），否则不做任何改变。
+候选 A 和 B 都只是有条件的设计，都不提供临界区原子性。
+在 `calloc` 和记账两条分配路径上，TLR 的初始全零都已由源码证明；但这只说明初始状态，不能据此推断待处理路径不存在。
+GetInfo(26) 当前返回 INVALID_COMBINATION。
+C1–C9 都只是计划，并标注为合成证伪或参考等价；§6 登记剩余假设。
