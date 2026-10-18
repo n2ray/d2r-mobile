@@ -31,19 +31,27 @@ destroy。未来异步游戏／引擎所有者必须保留控制器指针，在�
 `work_end`，并仅在 `dm_app_lifecycle_pending_work()` 归零后重试 stop/destroy；
 不得在工作完成前释放控制器或代替 Activity 回调释放 Surface。
 
-## 输入交付缺口（#32）
+## MotionEvent 交付与诊断消费（#32）
 
-当前输入 looper 只处理 Android Back 键，没有把 `MotionEvent` 触点交给 r2d
-核心。下一片必须在同一输入／核心线程创建唯一的 `dm_android_pad` 和
-`dm_android_touch`，把 `MotionEvent` pointer ID 当作不透明 ID，使用非负
-`CLOCK_MONOTONIC` 纳秒时间戳，并按 view density 把物理像素转换为逻辑点后调用
-`dm_android_touch_down/move/up/cancel`。消费端必须调用
-`dm_android_touch_read`（不得直接读 `dm_android_pad_read`）以取得有序队列视图。
+NativeActivity 输入 looper 现在通过 `app/touch_bridge.c` 把 Android
+`MotionEvent` 转交给复用的 r2d 触控核心。`DOWN`、`POINTER_DOWN`、`MOVE`、
+`UP`、`POINTER_UP`、`CANCEL` 都在同一 looper／核心线程处理。pointer ID 是不透明
+Android ID；事件时间使用 `CLOCK_MONOTONIC` 纳秒；调用适配器前按 Activity density
+把物理像素换算为逻辑点；动作索引支持不连续 ID。
 
-适配器的 16 槽脉冲环有界。环满导致变更事件被拒绝时，App 必须在输入线程排空
-读取后重试，不能静默丢弃；即使环满，`ACTION_UP`/`ACTION_CANCEL` 也必须在同一
-线程完成（无法排队时回退 `cancel_all`，避免指针卡住）。该接线不属于生命周期
-切片，#32 仍保持开放。
+同一 looper 上的 `timerfd` 让 `dm_android_touch_tick` 在之后没有新触点时仍推进
+定时器（ZL 领先、延迟脉冲、判定和重复）。窗口尺寸和配置 density 变化会取消当前
+手势并原子重建核心布局；失焦、暂停、窗口／输入队列丢失和销毁都会取消活动指针与
+排队脉冲，并只消费一次中性快照。重复／陈旧输入队列和 timer 回调会被忽略或清理，
+不保留失效指针。
+
+bridge 是明确的诊断消费者：每次 read 最多取一个有序脉冲并保存有界快照，供限流
+日志观察；`diagnostic_reads` 只表示 bridge 消费了快照，不表示客体／游戏 HID
+收到。UP 被拒绝时先排空一个脉冲重试；仍不能排队则回退 `cancel_all`，16 槽环满
+不会留下卡住指针。即使平台 CANCEL 帧没有可用坐标／触点，也会释放全部所有权。
+
+当前 App 仍是自有诊断：消费快照只写日志，没有连接游戏状态／HID／HUD。真实客体
+HID 与游戏手势／验收路径仍是 #32/#33–40 的后续工作。
 
 ## 构建
 
