@@ -7,6 +7,7 @@
 static int checks, failures;
 static VkSemaphore pending_present[3];
 static VkSemaphore acquire_still_pending;
+static VkFence pending_present_fences[3], pending_acquire_fence;
 #define CHECK(c) do { checks++; if (!(c)) { failures++; fprintf(stderr, "FAIL %d: %s\n", __LINE__, #c); } } while (0)
 #define H(t, v) ((t)(uintptr_t)(v))
 
@@ -79,11 +80,16 @@ VKAPI_ATTR VkResult VKAPI_CALL test_vkCreateFence(VkDevice d, const VkFenceCreat
 VKAPI_ATTR void VKAPI_CALL test_vkDestroyFence(VkDevice d, VkFence f, const VkAllocationCallbacks *a) { (void)d; (void)f; (void)a; g_fence_destroyed++; event('g'); }
 VKAPI_ATTR VkResult VKAPI_CALL test_vkWaitForFences(VkDevice d, uint32_t n, const VkFence *f, VkBool32 all, uint64_t t) {
     (void)d; (void)n; (void)all; (void)t; g_wait_fence_count++; event('W');
-    if (g_fail_wait && f && (uintptr_t)*f == 0x8005) return VK_ERROR_DEVICE_LOST;
+    if (g_fail_wait && f && *f == pending_acquire_fence) return VK_ERROR_DEVICE_LOST;
     if (f) {
-        uintptr_t v = (uintptr_t)*f;
-        if (v >= 0x8001 && v <= 0x8003) { pending_present[(v - 0x8001) % 3] = VK_NULL_HANDLE; g_present_wait_count++; }
-        if (v == 0x8005) acquire_still_pending = VK_NULL_HANDLE;
+        for (unsigned k = 0; k < 3; k++) {
+            if (*f == pending_present_fences[k]) {
+                pending_present[k] = VK_NULL_HANDLE;
+                pending_present_fences[k] = VK_NULL_HANDLE;
+                g_present_wait_count++;
+            }
+        }
+        if (*f == pending_acquire_fence) acquire_still_pending = VK_NULL_HANDLE;
     }
     return VK_SUCCESS;
 }
@@ -91,7 +97,7 @@ VKAPI_ATTR VkResult VKAPI_CALL test_vkResetFences(VkDevice d, uint32_t n, const 
 VKAPI_ATTR VkResult VKAPI_CALL test_vkQueueWaitIdle(VkQueue q) { (void)q; g_queue_wait_count++; event('Q'); return VK_SUCCESS; }
 VKAPI_ATTR VkResult VKAPI_CALL test_vkDeviceWaitIdle(VkDevice d) { (void)d; if (g_fail_device_wait) return VK_ERROR_DEVICE_LOST; event('D'); return VK_SUCCESS; }
 VKAPI_ATTR VkResult VKAPI_CALL test_vkAcquireNextImageKHR(VkDevice d, VkSwapchainKHR s, uint64_t t, VkSemaphore sem, VkFence f, uint32_t *i) {
-    (void)d; (void)s; (void)t; (void)f; g_acquire_count++; event('a'); if (g_acquire_result == VK_SUCCESS || g_acquire_result == VK_SUBOPTIMAL_KHR) acquire_still_pending = sem;
+    (void)d; (void)s; (void)t; (void)f; g_acquire_count++; event('a'); if (g_acquire_result == VK_SUCCESS || g_acquire_result == VK_SUBOPTIMAL_KHR) { acquire_still_pending = sem; pending_acquire_fence = f; }
     if (g_acquire_result == VK_ERROR_OUT_OF_DATE_KHR) return g_acquire_result;
     if (g_acquire_result == VK_SUBOPTIMAL_KHR) { *i = (g_acquire_count - 1) % 3; return g_acquire_result; }
     *i = (g_acquire_count - 1) % 3; return VK_SUCCESS;
@@ -107,6 +113,7 @@ VKAPI_ATTR VkResult VKAPI_CALL test_vkQueuePresentKHR(VkQueue q, const VkPresent
     CHECK(p->pNext != NULL);
     if (p->pNext) CHECK(((const VkSwapchainPresentFenceInfoEXT *)p->pNext)->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT);
     pending_present[p->pImageIndices[0]] = p->pWaitSemaphores[0];
+    pending_present_fences[p->pImageIndices[0]] = ((const VkSwapchainPresentFenceInfoEXT *)p->pNext)->pFences[0];
     if (g_present_result != VK_SUCCESS) return g_present_result;
     return VK_SUCCESS;
 }
@@ -114,6 +121,9 @@ VKAPI_ATTR VkResult VKAPI_CALL test_vkQueuePresentKHR(VkQueue q, const VkPresent
 static void reset(void) {
     memset(pending_present, 0, sizeof pending_present);
     acquire_still_pending = VK_NULL_HANDLE;
+    pending_acquire_fence = VK_NULL_HANDLE;
+    memset(pending_present_fences, 0, sizeof pending_present_fences);
+    g_present_wait_count = 0;
     memset(&g_caps, 0, sizeof g_caps);
     g_caps.minImageCount = 3; g_caps.maxImageCount = 4;
     g_caps.currentExtent = (VkExtent2D){640, 480};
@@ -156,9 +166,11 @@ int main(void) {
         CHECK(dm_vk_swapchain_submit(&vk, &sc) == VK_SUCCESS && !sc.acquired && sc.submitted);
         CHECK(dm_vk_swapchain_present(&vk, &sc, &sub) == VK_SUCCESS && !sub && !sc.submitted);
     }
-    // Delayed presentation: image 0 is acquired again while presentation fences remain pending.
+    // Reacquire must retain SUBOPTIMAL even when waiting the previous present fence.
     int sub = 0;
-    CHECK(dm_vk_swapchain_acquire(&vk, &sc, &sub) == VK_SUCCESS && !sub && sc.acquired);
+    g_acquire_result = VK_SUBOPTIMAL_KHR;
+    CHECK(dm_vk_swapchain_acquire(&vk, &sc, &sub) == VK_SUBOPTIMAL_KHR && sub && sc.acquired);
+    g_acquire_result = VK_SUCCESS;
     CHECK(g_present_wait_count >= 1);
     CHECK(dm_vk_swapchain_submit(&vk, &sc) == VK_SUCCESS && sc.submitted);
     CHECK(dm_vk_swapchain_present(&vk, &sc, &sub) == VK_SUCCESS && !sub);
@@ -188,8 +200,24 @@ int main(void) {
     g_present_result = VK_ERROR_OUT_OF_DATE_KHR;
     CHECK(dm_vk_swapchain_present(&vk, &sc, NULL) == VK_ERROR_OUT_OF_DATE_KHR);
     CHECK(sc.needs_recreate && sc.handle == H(VkSwapchainKHR, 0x1000) && g_destroy_swapchains == 0);
-    CHECK(dm_vk_swapchain_destroy(&vk, &sc) == VK_ERROR_OUT_OF_DATE_KHR);
-    CHECK(sc.handle == H(VkSwapchainKHR, 0x1000) && g_destroy_swapchains == 0);
+    CHECK(sc.present_pending[sc.image_index] && !sc.retire_blocked);
+    CHECK(dm_vk_swapchain_recreate(&vk, &sc, &o) == VK_SUCCESS);
+    CHECK(g_present_wait_count == 1 && g_destroy_swapchains == 1);
+    g_present_result = VK_SUCCESS;
+    CHECK(dm_vk_swapchain_acquire(&vk, &sc, NULL) == VK_SUCCESS);
+    CHECK(dm_vk_swapchain_submit(&vk, &sc) == VK_SUCCESS);
+    CHECK(dm_vk_swapchain_present(&vk, &sc, NULL) == VK_SUCCESS);
+    CHECK(dm_vk_swapchain_destroy(&vk, &sc) == VK_SUCCESS);
+    CHECK(g_destroy_swapchains == 2);
+
+    reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0};
+    CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_SUCCESS);
+    CHECK(dm_vk_swapchain_acquire(&vk, &sc, NULL) == VK_SUCCESS);
+    CHECK(dm_vk_swapchain_submit(&vk, &sc) == VK_SUCCESS);
+    g_present_result = VK_ERROR_SURFACE_LOST_KHR;
+    CHECK(dm_vk_swapchain_present(&vk, &sc, NULL) == VK_ERROR_SURFACE_LOST_KHR);
+    CHECK(dm_vk_swapchain_destroy(&vk, &sc) == VK_SUCCESS);
+    CHECK(g_present_wait_count == 1 && g_destroy_swapchains == 1);
 
     reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0};
     CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_SUCCESS);

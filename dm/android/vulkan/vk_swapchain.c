@@ -278,8 +278,8 @@ VkResult dm_vk_swapchain_acquire(dm_vk *vk, dm_vk_swapchain *chain, int *subopti
     chain->acquire_pending = 1;
     if (index >= chain->image_count) return VK_ERROR_INITIALIZATION_FAILED;
     if (chain->present_pending[index]) {
-        result = vkWaitForFences(vk->device, 1, &chain->present_fences[index], VK_TRUE, UINT64_MAX);
-        if (result != VK_SUCCESS) return result;
+        VkResult wait_result = vkWaitForFences(vk->device, 1, &chain->present_fences[index], VK_TRUE, UINT64_MAX);
+        if (wait_result != VK_SUCCESS) return wait_result;
         chain->present_pending[index] = 0;
     }
     chain->image_index = index; chain->acquired = 1;
@@ -324,8 +324,10 @@ VkResult dm_vk_swapchain_present(dm_vk *vk, dm_vk_swapchain *chain, int *subopti
         if (suboptimal) *suboptimal = 1;
         chain->needs_recreate = 1; chain->submitted = 0; chain->present_pending[image] = 1; return result;
     }
-    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-        chain->needs_recreate = 1; chain->submitted = 0; chain->retire_blocked = 1; chain->retire_error = result; return result;
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR) {
+        // These errors still enqueue the present operations, including semaphore waits.
+        // The maintenance fence remains the resource-release proof for retirement.
+        chain->needs_recreate = 1; chain->submitted = 0; chain->present_pending[image] = 1; return result;
     }
     chain->retire_blocked = 1; chain->retire_error = result;
     return result;
