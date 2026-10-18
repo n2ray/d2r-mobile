@@ -14,7 +14,7 @@ requests focus on construction.
 | `int request(int generation)` | 构建 `AUDIOFOCUS_GAIN`、`USAGE_GAME`、`CONTENT_TYPE_MUSIC`、`setWillPauseWhenDucked(false)` 的请求，返回平台真实结果 `GRANTED(1)` / `DELAYED(2)` / `FAILED(0)`；只有 GRANTED/DELAYED 建立所有权并保存 generation。已释放后返回 FAILED 且不调用平台。 |
 | `int request(int generation, boolean acceptsDelayedFocusGain)` | 与 `request(generation)` 相同，但只有 `acceptsDelayedFocusGain=true` 才向真实 `AudioFocusRequest.Builder` 设置 `setAcceptsDelayedFocusGain(true)`；否则平台不会返回 DELAYED。 |
 | `boolean abandon()` | 幂等；只放弃自己实际保存的那个 `AudioFocusRequest` 实例；无活跃请求时不调用平台并返回 false。 |
-| `void release()` | 幂等；放弃活跃请求并永久拒绝后续 request；与进行中的请求竞争时，平台已授予的焦点也会被立即放弃。 |
+| `void release()` | 幂等；放弃活跃请求并永久拒绝后续 request。 |
 | `isActive()` / `generation()` / `droppedCallbackCount()` | 诊断状态；`droppedCallbackCount` 统计因释放/替换/失败请求被丢弃的回调。 |
 
 `request()` 在已有请求时会先放弃旧请求，再申请新请求；旧请求的 token 立即失效。
@@ -27,16 +27,19 @@ requests focus on construction.
 
 ## 线程/调用方契约 | Thread and caller contract
 
-- `request`/`abandon`/`release` 由同一个串行控制线程调用（后续 JNI 负责保证）。重叠的 request 被主动拒绝为
-  FAILED，不与进行中的请求竞争；`release()` 与进行中的请求竞争时优先，平台若已授予会立即放弃，不泄漏焦点。
-- 平台监听器由 Android 通过 `AudioFocusRequest.Builder` 在主 looper 上回调。所有权在短锁内发布；若回调在
-  `requestAudioFocus` 返回前到达，会先暂存，只有平台真实返回 GRANTED/DELAYED 才按原顺序转发，返回 FAILED 则丢弃。
-  锁从不跨平台调用持有，监听器也在锁外执行，因此回调不会与控制线程死锁。
+- **所有控制调用（request/abandon/release）必须在 Android 主 looper 上执行。** 其它线程调用会抛
+  `IllegalStateException`，在触碰平台状态之前被拒绝；不存在跨线程竞争，也没有暂存队列。
+- 平台监听器用主 looper 的 `Handler` 注册（`setOnAudioFocusChangeListener(listener, mainHandler)`），
+  Android 在 `requestAudioFocus` 返回后按队列 FIFO 投递；回调也在主 looper 上执行，与 request 同一线程、不并发。
+- 每个排队回调在投递时重新校验请求 token 与 released；release/替换后旧请求的队列事件被丢弃并计数，不会在新
+  generation 之后送达。listener 内调用 `release()` 会立即使同一队列中更旧的事件失效。
+- 若平台违约在非主线程或同步回调（不经 main Handler），边界 fail closed：不转发、不伪造成功，只计入
+  `droppedCallbackCount()`。
 - 监听器内**不得**同步调用 AAudio 或原生策略；必须把事件入队回串行控制线程，再作为 `DM_AF_EV_FOCUS_*`
   交给 `dm_af_policy`。
 - 本类不阻塞等待焦点回调；`DELAYED` 只表示平台延迟授予，不假装已获得焦点。延迟授予必须由调用方显式 opt-in。
-- 后续 JNI 集成需要：构造 `AudioManager`（来自 `Context`），在上述控制线程调用 `request`/`abandon`/`release`，
-  释放前先 `abandon()`。
+- 后续 JNI 集成必须先把控制调用 marshal 到主 looper（例如向主 looper 的 `Handler` post），构造
+  `AudioManager`（来自 `Context`），并在释放前先 `abandon()`。
 
 ## 打包与验证 | Packaging and evidence
 

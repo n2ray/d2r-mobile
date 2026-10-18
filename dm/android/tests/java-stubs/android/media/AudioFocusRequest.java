@@ -8,6 +8,7 @@ public class AudioFocusRequest {
     private final boolean pauseWhenDucked;
     private final boolean acceptsDelayed;
     private final AudioManager.OnAudioFocusChangeListener listener;
+    private final android.os.Handler handler;
 
     private AudioFocusRequest(Builder b) {
         this.focusGain = b.focusGain;
@@ -15,6 +16,7 @@ public class AudioFocusRequest {
         this.pauseWhenDucked = b.pauseWhenDucked;
         this.acceptsDelayed = b.acceptsDelayed;
         this.listener = b.listener;
+        this.handler = b.handler;
     }
 
     public int getFocusGain() { return focusGain; }
@@ -22,6 +24,7 @@ public class AudioFocusRequest {
     public boolean willPauseWhenDucked() { return pauseWhenDucked; }
     public boolean getAcceptsDelayedFocusGain() { return acceptsDelayed; }
     public AudioManager.OnAudioFocusChangeListener getOnAudioFocusChangeListener() { return listener; }
+    public android.os.Handler getOnAudioFocusChangeHandler() { return handler; }
 
     public static final class Builder {
         private final int focusGain;
@@ -29,6 +32,7 @@ public class AudioFocusRequest {
         private boolean pauseWhenDucked;
         private boolean acceptsDelayed;
         private AudioManager.OnAudioFocusChangeListener listener;
+        private android.os.Handler handler;
 
         public Builder(int focusGain) { this.focusGain = focusGain; }
 
@@ -49,6 +53,13 @@ public class AudioFocusRequest {
 
         public Builder setOnAudioFocusChangeListener(AudioManager.OnAudioFocusChangeListener listener) {
             this.listener = listener;
+            return this;
+        }
+
+        public Builder setOnAudioFocusChangeListener(AudioManager.OnAudioFocusChangeListener listener,
+                                                     android.os.Handler handler) {
+            this.listener = listener;
+            this.handler = handler;
             return this;
         }
 

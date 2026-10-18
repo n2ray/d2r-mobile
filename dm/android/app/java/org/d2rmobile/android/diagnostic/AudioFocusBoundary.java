@@ -1,25 +1,27 @@
-// #170 真实 Android AudioManager 焦点边界：只请求/放弃平台焦点，并把平台回调按调用方 generation 转发。
-// 不创建或操作 AAudio、不修改原生策略；构造时不请求焦点。后续 JNI 在串行控制线程调用 request/abandon/release，
-// 把 listener 事件入队回同一控制线程，再交给 dm_af_policy。
-// #170 real Android AudioManager focus boundary: requests/abandons platform focus only and forwards platform
-// callbacks tagged with the caller's generation. It never creates or touches AAudio and never mutates the native
-// policy, and it never requests focus on construction. A later JNI layer calls request/abandon/release on the
-// serialized control thread and enqueues listener events back onto that same thread before dispatching to policy.
+// #170 真实 Android AudioManager 焦点边界：只请求/放弃平台焦点，并按调用方 generation 转发平台回调。
+// 不创建或操作 AAudio、不修改原生策略；构造时不请求焦点。
+// #170 real AudioManager focus boundary: requests/abandons platform focus only and forwards callbacks tagged with
+// the caller's generation. It never creates or touches AAudio, never mutates native policy, and never requests focus
+// on construction.
 //
-// Thread contract (enforced, not merely documented):
-//   - request/abandon/release must be serialized by the owner. A request that overlaps another request is refused
-//     with AUDIOFOCUS_REQUEST_FAILED instead of racing; release wins over an in-flight request.
-//   - The platform listener is delivered by Android on the main looper. Ownership is published under a short lock
-//     before any callback can be forwarded. A callback that arrives while requestAudioFocus is still executing is
-//     staged and flushed only if the platform then reports GRANTED or DELAYED; it is discarded on FAILED.
-//   - No lock is held across requestAudioFocus/abandonAudioFocusRequest and the listener runs outside the lock, so
-//     a platform callback can never deadlock the control thread.
-//   - The listener must enqueue to the serialized control thread before touching AAudio or native policy.
+// Single-thread contract (enforced): every control call (request/abandon/release) must run on the Android main
+// looper, and the platform listener is registered with a main-looper Handler, so Android queues callbacks on that
+// same looper after the request returns. Calls from any other thread throw IllegalStateException before touching
+// platform state. Because control and callbacks share one thread, no callback can run concurrently with
+// requestAudioFocus and no cross-thread staging is needed; every queued callback re-checks its request token and the
+// released flag at delivery time, so a listener that releases or replaces the boundary inside one callback cannot
+// let older queued events through.
+//
+// A later JNI layer must marshal to the main looper (for example by posting to a Handler created there) before
+// calling request/abandon/release, and must enqueue listener events back onto its serialized control thread before
+// touching AAudio or dm_af_policy.
 package org.d2rmobile.android.diagnostic;
 
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.os.Handler;
+import android.os.Looper;
 
 public final class AudioFocusBoundary {
     /** 与 dm_af_event 的焦点子集一一对应；JNI 侧直接映射。| Mirrors the focus subset of dm_af_event for JNI. */
@@ -28,29 +30,23 @@ public final class AudioFocusBoundary {
     public static final int EVENT_LOSS_TRANSIENT = 2;
     public static final int EVENT_CAN_DUCK = 3;
 
-    private static final int MAX_STAGED = 8;
-
     /** 平台调用结果原样返回 AudioManager.AUDIOFOCUS_REQUEST_GRANTED/DELAYED/FAILED。 */
     public interface Listener {
-        /** 平台回调线程（主 looper）；不得在此调用 AAudio 或原生策略。| Main-looper callback; never call AAudio here. */
+        /** 主 looper 回调；不得在此同步调用 AAudio 或原生策略。| Main-looper callback; never call AAudio here. */
         void onAudioFocusEvent(int generation, int event);
     }
 
     private final AudioManager audioManager;
     private final Listener listener;
-    private final Object lock = new Object();
+    private final Looper mainLooper;
+    private final Handler mainHandler;
 
-    // 以下状态由 lock 保护。| Guarded by lock.
+    // 单线程（主 looper）状态，无并发访问。| Single-threaded (main looper) state, no concurrent access.
     private AudioFocusRequest activeRequest;
     private int activeGeneration;
     private long nextToken = 1;
     private long activeToken;
     private boolean released;
-    private boolean requesting;
-    private long requestingToken;
-    private int requestingGeneration;
-    private final int[] staged = new int[MAX_STAGED];
-    private int stagedCount;
     private int droppedCallbacks;
 
     public AudioFocusBoundary(AudioManager audioManager, Listener listener) {
@@ -58,6 +54,9 @@ public final class AudioFocusBoundary {
         if (listener == null) throw new IllegalArgumentException("listener == null");
         this.audioManager = audioManager;
         this.listener = listener;
+        this.mainLooper = Looper.getMainLooper();
+        if (mainLooper == null) throw new IllegalStateException("no main looper");
+        this.mainHandler = new Handler(mainLooper);
     }
 
     /** 不启用 delayed focus 的请求。| Request without delayed-focus opt-in. */
@@ -66,29 +65,19 @@ public final class AudioFocusBoundary {
     }
 
     /**
-     * 请求 AUDIOFOCUS_GAIN（游戏用途）。只有 acceptsDelayedFocusGain 为 true 才会向平台设置
-     * setAcceptsDelayedFocusGain(true)；否则平台不会返回 DELAYED。返回平台真实结果，只有 GRANTED/DELAYED
-     * 建立所有权。已释放、或与前一次 request 重叠时返回 FAILED 且不调用平台。
-     * Requests AUDIOFOCUS_GAIN for game usage. Delayed focus is opted into on the real request only when
-     * acceptsDelayedFocusGain is true. Returns the real platform result; only GRANTED/DELAYED establish ownership.
-     * Returns FAILED without a platform call when released or when another request is in flight.
+     * 请求 AUDIOFOCUS_GAIN（游戏用途）。只有 acceptsDelayedFocusGain 为 true 才向真实 builder 设置
+     * setAcceptsDelayedFocusGain(true)。返回平台真实结果，只有 GRANTED/DELAYED 建立所有权。非主 looper 调用
+     * 抛 IllegalStateException；已释放返回 FAILED 且不调用平台。
+     * Requests AUDIOFOCUS_GAIN for game usage; delayed focus is opted into on the real request only when asked.
+     * Returns the real platform result and only GRANTED/DELAYED establish ownership. Off-main calls throw
+     * IllegalStateException; a released boundary returns FAILED without touching the platform.
      */
     public int request(int generation, boolean acceptsDelayedFocusGain) {
-        synchronized (lock) {
-            if (released || requesting) return AudioManager.AUDIOFOCUS_REQUEST_FAILED;
-        }
-        abandon();   // 先放弃旧请求；旧 token 立即失效 | abandon the old request first
+        requireMainLooper();
+        if (released) return AudioManager.AUDIOFOCUS_REQUEST_FAILED;
+        abandon();
 
-        final long token;
-        synchronized (lock) {
-            if (released || requesting) return AudioManager.AUDIOFOCUS_REQUEST_FAILED;
-            token = nextToken++;
-            requesting = true;
-            requestingToken = token;
-            requestingGeneration = generation;
-            stagedCount = 0;
-        }
-
+        final long token = nextToken++;
         final AudioManager.OnAudioFocusChangeListener platformListener =
                 new AudioManager.OnAudioFocusChangeListener() {
                     @Override
@@ -104,62 +93,19 @@ public final class AudioFocusBoundary {
                 .setAudioAttributes(attributes)
                 .setWillPauseWhenDucked(false)
                 .setAcceptsDelayedFocusGain(acceptsDelayedFocusGain)
-                .setOnAudioFocusChangeListener(platformListener)
+                .setOnAudioFocusChangeListener(platformListener, mainHandler)
                 .build();
 
-        final int result;
-        try {
-            result = audioManager.requestAudioFocus(request);
-        } catch (RuntimeException failure) {
-            synchronized (lock) {
-                requesting = false;
-                stagedCount = 0;
-            }
-            throw failure;
-        }
-
-        final boolean owned = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-                || result == AudioManager.AUDIOFOCUS_REQUEST_DELAYED;
-        final int[] toFlush;
-        int flushCount = 0;
-        boolean abandonedByRelease = false;
-        synchronized (lock) {
-            requesting = false;
-            if (released) {
-                // release 与 in-flight 请求竞争：平台若已授予，必须立刻放弃，绝不留下无主焦点。
-                // Release raced the in-flight request: abandon any granted focus, never leak it.
-                droppedCallbacks += stagedCount;
-                stagedCount = 0;
-                activeRequest = null;
-                activeToken = 0;
-                activeGeneration = 0;
-                abandonedByRelease = owned;
-                toFlush = null;
-            } else if (owned) {
-                activeRequest = request;
-                activeToken = token;
-                activeGeneration = generation;
-                flushCount = stagedCount;
-                toFlush = new int[flushCount];
-                System.arraycopy(staged, 0, toFlush, 0, flushCount);
-                stagedCount = 0;
-            } else {
-                // 平台明确失败：早到的回调没有被授予的焦点，全部丢弃，绝不伪造成功。
-                // The platform failed: stashed callbacks have no granted focus and are discarded, never replayed.
-                droppedCallbacks += stagedCount;
-                stagedCount = 0;
-                activeRequest = null;
-                activeToken = 0;
-                activeGeneration = 0;
-                toFlush = null;
-            }
-        }
-        if (abandonedByRelease) {
-            audioManager.abandonAudioFocusRequest(request);
-            return AudioManager.AUDIOFOCUS_REQUEST_FAILED;
-        }
-        if (toFlush != null) {
-            for (int i = 0; i < flushCount; i++) listener.onAudioFocusEvent(generation, toFlush[i]);
+        final int result = audioManager.requestAudioFocus(request);
+        if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+                || result == AudioManager.AUDIOFOCUS_REQUEST_DELAYED) {
+            activeRequest = request;
+            activeToken = token;
+            activeGeneration = generation;
+        } else {
+            activeRequest = null;
+            activeToken = 0;
+            activeGeneration = 0;
         }
         return result;
     }
@@ -169,64 +115,54 @@ public final class AudioFocusBoundary {
      * 返回是否真的放弃了平台请求。| Abandons exactly the retained request; no platform call when idle.
      */
     public boolean abandon() {
-        final AudioFocusRequest request;
-        synchronized (lock) {
-            request = activeRequest;
-            if (request == null) return false;
-            activeToken = 0;            // 先失效 token：随后到达的回调不能再影响新状态
-            activeRequest = null;
-            activeGeneration = 0;
-        }
+        requireMainLooper();
+        final AudioFocusRequest request = activeRequest;
+        if (request == null) return false;
+        activeToken = 0;            // 先失效 token：队列中旧请求的回调随后会被丢弃
+        activeRequest = null;
+        activeGeneration = 0;
         audioManager.abandonAudioFocusRequest(request);
         return true;
     }
 
-    /** 释放边界（幂等）：放弃活跃请求并永久拒绝后续 request；迟到回调被丢弃。 */
+    /** 释放边界（幂等）：放弃活跃请求并永久拒绝后续 request；旧回调在投递时被丢弃。 */
     public void release() {
-        synchronized (lock) {
-            if (released) return;
-            released = true;
-        }
+        requireMainLooper();
+        if (released) return;
+        released = true;
         abandon();
     }
 
-    public boolean isActive() {
-        synchronized (lock) { return activeRequest != null; }
-    }
+    public boolean isActive() { return activeRequest != null; }
 
-    public int generation() {
-        synchronized (lock) { return activeGeneration; }
-    }
+    public int generation() { return activeGeneration; }
 
-    /** 因释放/替换/失败请求而被丢弃的平台回调数。| Callbacks dropped for released/replaced/failed requests. */
-    public int droppedCallbackCount() {
-        synchronized (lock) { return droppedCallbacks; }
-    }
+    /** 因释放/替换/失败请求或非主线程投递而被丢弃的回调数。| Callbacks dropped for released/replaced/failed/off-main delivery. */
+    public int droppedCallbackCount() { return droppedCallbacks; }
 
     /** 兼容旧调用方的别名。| Alias kept for older callers. */
-    public int lateCallbackCount() {
-        return droppedCallbackCount();
+    public int lateCallbackCount() { return droppedCallbacks; }
+
+    private void requireMainLooper() {
+        if (Looper.myLooper() != mainLooper) {
+            throw new IllegalStateException("AudioFocusBoundary must be called on the main looper");
+        }
     }
 
     private void dispatch(long token, int focusChange) {
+        if (Looper.myLooper() != mainLooper) {
+            // 平台违约在非主线程投递：fail closed，不转发也不假装成功。
+            // Platform violated the main-looper contract: fail closed, forward nothing.
+            droppedCallbacks++;
+            return;
+        }
         final int event = mapFocusChange(focusChange);
         if (event < 0) return;          // 未知平台码不发明事件 | unknown platform codes yield no invented event
-        final int forwardGeneration;
-        synchronized (lock) {
-            if (requesting && token == requestingToken) {
-                // 平台还在 requestAudioFocus 内：先暂存，由真实结果决定转发或丢弃。
-                // requestAudioFocus is still running: stage until the real result decides.
-                if (stagedCount < MAX_STAGED) staged[stagedCount++] = event;
-                else droppedCallbacks++;
-                return;
-            }
-            if (released || token != activeToken || activeRequest == null) {
-                droppedCallbacks++;
-                return;
-            }
-            forwardGeneration = activeGeneration;
+        if (released || activeRequest == null || token != activeToken) {
+            droppedCallbacks++;
+            return;
         }
-        listener.onAudioFocusEvent(forwardGeneration, event);
+        listener.onAudioFocusEvent(activeGeneration, event);
     }
 
     private static int mapFocusChange(int focusChange) {
