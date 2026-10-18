@@ -14,6 +14,7 @@ static int failures;
 
 typedef struct {
     int load_result, stop_result, pause_result, resume_result, acquire_result;
+    int acquire_fail_at;
     int loads, stops, pauses, resumes, acquires, releases;
     void *acquired[16];
     void *released[16];
@@ -29,7 +30,7 @@ static int fake_acquire(void *ctx, void *surface) {
     fake_host *h = ctx;
     h->acquires++;
     if (h->acquires <= 16) h->acquired[h->acquires - 1] = surface;
-    return h->acquire_result;
+    return h->acquire_result || (h->acquire_fail_at && h->acquires == h->acquire_fail_at);
 }
 static void fake_release(void *ctx, void *surface) {
     fake_host *h = ctx;
@@ -237,6 +238,129 @@ static void error_contracts(void) {
     dm_app_lifecycle_destroy(lc);
 }
 
+static void failure_drains_pending_work(void) {
+    fake_host h; reset_host(&h);
+    dm_app_host_ops ops = ops_for(&h);
+    dm_app_lifecycle *lc = dm_app_lifecycle_create(&ops, observe, &h);
+    int window = 0;
+    CHECK(lc != NULL);
+    CHECK(dm_app_lifecycle_start(lc) == 1);
+    CHECK(dm_app_lifecycle_surface_created(lc, &window) == 1);
+    CHECK(dm_app_lifecycle_work_begin(lc) == 1);
+    h.pause_result = 1;
+    CHECK(dm_app_lifecycle_pause(lc) == 0);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_FAILED);
+    CHECK(dm_app_lifecycle_pending_work(lc) == 1);
+    CHECK(h.releases == 0 && h.stops == 0);       /* drain before cleanup */
+    CHECK(dm_app_lifecycle_surface(lc) == &window);
+    CHECK(dm_app_lifecycle_destroy(lc) == 0);     /* busy destroy must not free */
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_FAILED);
+    CHECK(dm_app_lifecycle_surface(lc) == &window);
+
+    CHECK(dm_app_lifecycle_work_end(lc) == 1);
+    CHECK(dm_app_lifecycle_pending_work(lc) == 0);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_FAILED);
+    CHECK(h.releases == 1 && h.stops == 1);
+    CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_STOPPED);
+    CHECK(h.releases == 1 && h.stops == 1);
+    CHECK(dm_app_lifecycle_start(lc) == 1);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_OWNED_DIAGNOSTIC);
+    CHECK(h.loads == 2);
+    CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(dm_app_lifecycle_destroy(lc) == 1);
+}
+
+static void resume_failure_drains_pending_work(void) {
+    fake_host h; reset_host(&h);
+    dm_app_host_ops ops = ops_for(&h);
+    dm_app_lifecycle *lc = dm_app_lifecycle_create(&ops, observe, &h);
+    CHECK(lc != NULL);
+    CHECK(dm_app_lifecycle_start(lc) == 1);
+    CHECK(dm_app_lifecycle_work_begin(lc) == 1);
+    CHECK(dm_app_lifecycle_pause(lc) == 1);
+    h.resume_result = 1;
+    CHECK(dm_app_lifecycle_resume(lc) == 0);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_FAILED);
+    CHECK(dm_app_lifecycle_pending_work(lc) == 1);
+    CHECK(h.stops == 0);
+    CHECK(dm_app_lifecycle_work_end(lc) == 1);
+    CHECK(dm_app_lifecycle_pending_work(lc) == 0);
+    CHECK(h.stops == 1);
+    CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_STOPPED);
+    CHECK(dm_app_lifecycle_destroy(lc) == 1);
+}
+
+static void acquire_failure_drains_pending_work(void) {
+    fake_host h; reset_host(&h);
+    dm_app_host_ops ops = ops_for(&h);
+    dm_app_lifecycle *lc = dm_app_lifecycle_create(&ops, observe, &h);
+    int one = 0, two = 0;
+    CHECK(lc != NULL);
+    CHECK(dm_app_lifecycle_start(lc) == 1);
+    CHECK(dm_app_lifecycle_surface_created(lc, &one) == 1);
+    CHECK(dm_app_lifecycle_work_begin(lc) == 1);
+    h.acquire_fail_at = 2;
+    CHECK(dm_app_lifecycle_surface_created(lc, &two) == 0);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_FAILED);
+    CHECK(dm_app_lifecycle_pending_work(lc) == 1);
+    CHECK(dm_app_lifecycle_surface(lc) == NULL);
+    CHECK(h.releases == 1 && h.stops == 0);
+    CHECK(dm_app_lifecycle_destroy(lc) == 0);
+    CHECK(dm_app_lifecycle_work_end(lc) == 1);
+    CHECK(dm_app_lifecycle_pending_work(lc) == 0);
+    CHECK(h.releases == 1 && h.stops == 1);
+    CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(dm_app_lifecycle_destroy(lc) == 1);
+}
+
+static void busy_destroy_contract(void) {
+    fake_host h; reset_host(&h);
+    dm_app_host_ops ops = ops_for(&h);
+    dm_app_lifecycle *lc = dm_app_lifecycle_create(&ops, observe, &h);
+    int window = 0;
+    CHECK(lc != NULL);
+    CHECK(dm_app_lifecycle_start(lc) == 1);
+    CHECK(dm_app_lifecycle_surface_created(lc, &window) == 1);
+    CHECK(dm_app_lifecycle_destroy(lc) == 0);     /* active: stop first */
+    CHECK(dm_app_lifecycle_surface(lc) == &window);
+    CHECK(dm_app_lifecycle_work_begin(lc) == 1);
+    CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_STOPPING);
+    CHECK(dm_app_lifecycle_destroy(lc) == 0);     /* pending: defer */
+    CHECK(dm_app_lifecycle_surface(lc) == &window);
+    CHECK(h.releases == 0 && h.stops == 0);
+    CHECK(dm_app_lifecycle_work_end(lc) == 1);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_STOPPED);
+    CHECK(h.releases == 1 && h.stops == 1);
+    CHECK(dm_app_lifecycle_destroy(lc) == 1);
+}
+
+static void failure_acknowledgement_restart(void) {
+    fake_host h; reset_host(&h);
+    dm_app_host_ops ops = ops_for(&h);
+    dm_app_lifecycle *lc = dm_app_lifecycle_create(&ops, observe, &h);
+    CHECK(lc != NULL);
+    CHECK(dm_app_lifecycle_start(lc) == 1);
+    CHECK(dm_app_lifecycle_work_begin(lc) == 1);
+    h.pause_result = 1;
+    CHECK(dm_app_lifecycle_pause(lc) == 0);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_FAILED);
+    CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_FAILED); /* preserve failure */
+    CHECK(dm_app_lifecycle_pending_work(lc) == 1);
+    CHECK(h.stops == 0);
+    CHECK(dm_app_lifecycle_work_end(lc) == 1);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_STOPPED);
+    CHECK(dm_app_lifecycle_pending_work(lc) == 0);
+    CHECK(h.stops == 1);
+    CHECK(dm_app_lifecycle_start(lc) == 1);
+    CHECK(h.loads == 2);
+    CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(dm_app_lifecycle_destroy(lc) == 1);
+}
+
 static void invalid_host_ops(void) {
     fake_host h; reset_host(&h);
     dm_app_host_ops ops = ops_for(&h);
@@ -256,6 +380,11 @@ int main(void) {
     surface_contract();
     load_failure();
     stop_with_pending_work();
+    failure_drains_pending_work();
+    resume_failure_drains_pending_work();
+    acquire_failure_drains_pending_work();
+    busy_destroy_contract();
+    failure_acknowledgement_restart();
     error_contracts();
     invalid_host_ops();
     if (failures) {

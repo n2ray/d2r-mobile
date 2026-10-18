@@ -11,6 +11,8 @@ struct dm_app_lifecycle {
     void *surface;
     uint32_t pending_work;
     int host_stopped;
+    int cleanup_done;
+    int stop_after_drain;
 };
 
 static void notify(dm_app_lifecycle *lifecycle, dm_app_state state) {
@@ -25,14 +27,19 @@ static void release_surface(dm_app_lifecycle *lifecycle) {
     lifecycle->surface = NULL;
 }
 
-static void fail(dm_app_lifecycle *lifecycle) {
+static void finish_failure_cleanup(dm_app_lifecycle *lifecycle) {
+    if (lifecycle->cleanup_done) return;
     release_surface(lifecycle);
     if (!lifecycle->host_stopped) {
         lifecycle->host_stopped = 1;
         (void)lifecycle->host.stop(lifecycle->host.ctx);
     }
-    lifecycle->pending_work = 0;
+    lifecycle->cleanup_done = 1;
+}
+
+static void fail(dm_app_lifecycle *lifecycle) {
     notify(lifecycle, DM_APP_STATE_FAILED);
+    if (lifecycle->pending_work == 0) finish_failure_cleanup(lifecycle);
 }
 
 static void finish_stop(dm_app_lifecycle *lifecycle) {
@@ -40,11 +47,13 @@ static void finish_stop(dm_app_lifecycle *lifecycle) {
     if (!lifecycle->host_stopped) {
         lifecycle->host_stopped = 1;
         if (lifecycle->host.stop(lifecycle->host.ctx)) {
+            lifecycle->cleanup_done = 1;
             lifecycle->pending_work = 0;
             notify(lifecycle, DM_APP_STATE_FAILED);
             return;
         }
     }
+    lifecycle->cleanup_done = 1;
     lifecycle->pending_work = 0;
     notify(lifecycle, DM_APP_STATE_STOPPED);
 }
@@ -64,9 +73,25 @@ dm_app_lifecycle *dm_app_lifecycle_create(const dm_app_host_ops *host_ops,
     return lifecycle;
 }
 
-void dm_app_lifecycle_destroy(dm_app_lifecycle *lifecycle) {
-    if (!lifecycle) return;
-    free(lifecycle);
+int dm_app_lifecycle_destroy(dm_app_lifecycle *lifecycle) {
+    if (!lifecycle) return 0;
+    if (lifecycle->pending_work != 0) return 0;  /* caller keeps the pointer */
+    switch (lifecycle->state) {
+    case DM_APP_STATE_CREATED:
+    case DM_APP_STATE_STOPPED:
+        free(lifecycle);
+        return 1;
+    case DM_APP_STATE_FAILED:
+        finish_failure_cleanup(lifecycle);
+        free(lifecycle);
+        return 1;
+    case DM_APP_STATE_STOPPING:
+        finish_stop(lifecycle);
+        free(lifecycle);
+        return 1;
+    default:
+        return 0;  /* active controller must be stopped first */
+    }
 }
 
 int dm_app_lifecycle_start(dm_app_lifecycle *lifecycle) {
@@ -76,6 +101,8 @@ int dm_app_lifecycle_start(dm_app_lifecycle *lifecycle) {
         return 0;
     }
     lifecycle->host_stopped = 0;
+    lifecycle->cleanup_done = 0;
+    lifecycle->stop_after_drain = 0;
     lifecycle->pending_work = 0;
     lifecycle->resume_state = DM_APP_STATE_OWNED_DIAGNOSTIC;
     notify(lifecycle, DM_APP_STATE_STARTING);
@@ -97,9 +124,13 @@ int dm_app_lifecycle_stop(dm_app_lifecycle *lifecycle) {
     case DM_APP_STATE_STOPPED:
         return 1;
     case DM_APP_STATE_FAILED:
+        lifecycle->stop_after_drain = 1;
+        if (lifecycle->pending_work != 0) return 1;
+        finish_failure_cleanup(lifecycle);
         notify(lifecycle, DM_APP_STATE_STOPPED);
         return 1;
     case DM_APP_STATE_STOPPING:
+        if (lifecycle->pending_work == 0) finish_stop(lifecycle);
         return 1;
     case DM_APP_STATE_STARTING:
     case DM_APP_STATE_LOADING:
@@ -190,9 +221,13 @@ int dm_app_lifecycle_work_begin(dm_app_lifecycle *lifecycle) {
 int dm_app_lifecycle_work_end(dm_app_lifecycle *lifecycle) {
     if (!lifecycle || lifecycle->pending_work == 0) return 0;
     lifecycle->pending_work--;
-    if (lifecycle->state == DM_APP_STATE_STOPPING &&
-        lifecycle->pending_work == 0) {
-        finish_stop(lifecycle);
+    if (lifecycle->pending_work == 0) {
+        if (lifecycle->state == DM_APP_STATE_STOPPING) {
+            finish_stop(lifecycle);
+        } else if (lifecycle->state == DM_APP_STATE_FAILED) {
+            finish_failure_cleanup(lifecycle);
+            if (lifecycle->stop_after_drain) notify(lifecycle, DM_APP_STATE_STOPPED);
+        }
     }
     return 1;
 }

@@ -24,6 +24,21 @@ idempotent, and a stop requested while asynchronous work is pending remains in
 `stopping` until `work_end` completes it. The controller is single-threaded on
 the Android activity/control thread.
 
+Failure is also drain-aware. If pause, resume or a Surface acquire fails while
+work is outstanding, the controller remains `failed`, preserves the pending
+count and owns the Surface until the last `work_end`; cleanup then runs exactly
+once. `stop` acknowledges a drained failure and allows restart, but does not
+erase the outstanding count early. `dm_app_lifecycle_destroy()` returns 0 and
+keeps the pointer valid while work is pending or an active controller has not
+been stopped; the caller must retain it and retry after `work_end`/`stop`.
+
+The current diagnostic draw and gate load are synchronous, so the NativeActivity
+caller normally stops and destroys immediately. A future asynchronous game/engine
+owner must keep the controller pointer, call `work_end` from the owning thread,
+and retry `stop`/destroy only when `dm_app_lifecycle_pending_work()` reaches zero.
+It must not free the controller or release a Surface on the Activity callback's
+behalf while work remains.
+
 ## Input delivery gap (issue #32)
 
 The current input looper handles only the Android Back key. It does not deliver

@@ -17,6 +17,17 @@ English: [README.md](README.md)
 的借用指针；窗口替换先释放旧引用，停止可重复调用，异步工作未完成时停止保持
 `stopping`，直到工作结束后再清理。控制器只在 Android Activity/控制线程上使用。
 
+失败路径同样会等待排空：暂停、恢复或 Surface acquire 失败时，如果仍有工作，
+控制器保持 `failed`，保留 pending 计数并继续持有 Surface，直到最后一次
+`work_end` 后只清理一次。`stop` 只确认已经排空的失败并允许重启，不会提前清除
+pending。`dm_app_lifecycle_destroy()` 在有未完成工作或活动控制器尚未停止时返回
+0 并保持指针有效；调用者必须保留它，在 `work_end`/`stop` 后重试。
+
+当前诊断绘制和门加载是同步的，所以 NativeActivity 调用者通常可以立即 stop 并
+destroy。未来异步游戏／引擎所有者必须保留控制器指针，在所属线程调用
+`work_end`，并仅在 `dm_app_lifecycle_pending_work()` 归零后重试 stop/destroy；
+不得在工作完成前释放控制器或代替 Activity 回调释放 Surface。
+
 ## 输入交付缺口（#32）
 
 当前输入 looper 只处理 Android Back 键，没有把 `MotionEvent` 触点交给 r2d

@@ -123,8 +123,15 @@ static void window_destroyed(ANativeActivity*a,ANativeWindow*window){
 }
 static void destroy(ANativeActivity*a){app_state*s=a->instance;if(s){
     if(s->input)AInputQueue_detachLooper(s->input);
-    if(s->lifecycle){dm_app_lifecycle_stop(s->lifecycle);dm_app_lifecycle_destroy(s->lifecycle);}
-    else if(s->vk.device)dm_vk_destroy(&s->vk);
+    if(s->lifecycle){
+        dm_app_lifecycle_stop(s->lifecycle);
+        if(!dm_app_lifecycle_destroy(s->lifecycle)){
+            LOG("lifecycle destroy deferred: state=%s pending=%u",
+                dm_app_lifecycle_state_name(dm_app_lifecycle_state(s->lifecycle)),
+                dm_app_lifecycle_pending_work(s->lifecycle));
+            return; /* keep controller and app state alive; no borrowed Surface release */
+        }
+    } else if(s->vk.device)dm_vk_destroy(&s->vk);
     free(s);a->instance=NULL;
 }}
 static void low_memory(ANativeActivity*a){app_state*s=a->instance;if(s&&s->vk.device){dm_vk_destroy(&s->vk);LOG("low memory: GPU context released; redraw recreates diagnostic");}}
