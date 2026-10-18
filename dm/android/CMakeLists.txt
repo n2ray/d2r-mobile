@@ -567,11 +567,13 @@ target_include_directories(dm_android_app_audio_output PUBLIC app)
 target_link_libraries(dm_android_app_audio_output PUBLIC dm_android_audio dm_android_app_audio_focus m)
 target_compile_options(dm_android_app_audio_output PRIVATE -Wall -Wextra -Werror)
 
-add_executable(dm_audio_output_test tests/audio_output.c)
-target_link_libraries(dm_audio_output_test PRIVATE dm_android_app_audio_output dm_android_audio dm_android_app_audio_focus m)
-target_compile_options(dm_audio_output_test PRIVATE -Wall -Wextra -Werror)
-add_test(NAME audio_output COMMAND dm_audio_output_test)
-set_tests_properties(audio_output PROPERTIES TIMEOUT 60)
+if(NOT ANDROID)
+    add_executable(dm_audio_output_test tests/audio_output.c)
+    target_link_libraries(dm_audio_output_test PRIVATE dm_android_app_audio_output dm_android_audio dm_android_app_audio_focus m)
+    target_compile_options(dm_audio_output_test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME audio_output COMMAND dm_audio_output_test)
+    set_tests_properties(audio_output PROPERTIES TIMEOUT 60)
+endif()
 
 if(NOT ANDROID AND Python3_Interpreter_FOUND)
     # #163 私有变异：真实 PCM 回调忽略音量必须让组合测试失败。
