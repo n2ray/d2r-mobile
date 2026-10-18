@@ -17,7 +17,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-FUNCTIONS = ["window_ready", "window_resized", "window_destroyed",
+FUNCTIONS = ["wsi_report_now", "wsi_report_progress", "wsi_report_snapshot",
+             "window_ready", "window_resized", "window_destroyed",
              "pause_app", "resume_app", "draw_diagnostic", "frame_timer", "input_timer"]
 
 
@@ -70,6 +71,7 @@ PRELUDE = r'''
 #include "lifecycle.h"
 #include "wsi_diagnostic.h"
 #include "wsi_bridge.h"
+#include "wsi_report.h"
 #include "view_policy.h"
 #include "present_policy.h"
 #include "diagnostic_scene.h"
@@ -110,6 +112,7 @@ typedef struct {
     dm_app_lifecycle *lifecycle;
     dm_wsi wsi;
     dm_wsi_bridge wsi_bridge;
+    dm_wsi_report report;
     ANativeWindow *window;
     int resumed;
     int frame_fd;
@@ -387,6 +390,7 @@ def compile_and_run(cc: str, app: Path, source: str, work: Path, label: str,
     compile_command = [cc, "-std=gnu11", "-g", "-fsanitize=address,undefined",
                        f"-I{app}", str(c_file),
                        str(app / "wsi_bridge.c"), str(app / "wsi_diagnostic.c"),
+                       str(app / "wsi_report.c"),
                        str(app / "lifecycle.c"), "-o", str(exe)]
     built = subprocess.run(compile_command, text=True, capture_output=True)
     if built.returncode != 0:

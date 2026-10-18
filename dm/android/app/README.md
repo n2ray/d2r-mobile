@@ -50,6 +50,8 @@ Tests added with the integration:
 
 Android acceptance is not claimed: host tests and the ARM64 build do not establish Adreno behaviour, pixels on a device, frame rate or full touch acceptance.
 
+Bounded evidence lines (#147) are emitted only in this explicit mode: one configuration line when a swapchain is created (mode, requested versus actual extent, format, present mode, image count, maintenance capability, with unknown values printed as `unknown`), at most one progress line per second while real progress exists (queued presents, suboptimal, rebuild requests, surface loss, errors, pause/resume/stop counts), and a final snapshot on pause, window loss, stop or a terminal error. The reported rate is queued-present throughput and is explicitly not display FPS, frame pacing, latency or vsync. Reporting rides on the existing frame/lifecycle callbacks, so it adds no timer and no wakeup while paused, windowless or failed.
+
 ## Lifecycle ownership
 
 `app/lifecycle.c` is the production NativeActivity lifecycle controller. Its
