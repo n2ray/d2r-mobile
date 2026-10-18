@@ -10,6 +10,7 @@ a temporary copy and must fail; the repository is never modified.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -17,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 FUNCTIONS = ["window_ready", "window_resized", "window_destroyed",
-             "pause_app", "resume_app", "draw_diagnostic"]
+             "pause_app", "resume_app", "draw_diagnostic", "frame_timer", "input_timer"]
 
 
 def extract_function(text: str, name: str) -> str:
@@ -72,16 +73,22 @@ PRELUDE = r'''
 #include "view_policy.h"
 #include "present_policy.h"
 #include "diagnostic_scene.h"
+#include "input_policy.h"
+#include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef int VkResult;
 #define VK_SUCCESS 0
 #define DM_DIAG_TARGET_EXTENT 256u
 #define DM_VK_INDEXED_TEXTURED_VERTEX_STRIDE 16u
 #define WINDOW_FORMAT_RGBA_8888 1
+#define ALOOPER_EVENT_ERROR 1
+#define ALOOPER_EVENT_HANGUP 2
 typedef struct { int width, height, refs; } ANativeWindow;
 typedef struct { void *instance; } ANativeActivity;
 typedef struct { void *bits; int width, height, stride, format; } ANativeWindow_Buffer;
@@ -107,7 +114,10 @@ typedef struct {
     int resumed;
     int frame_fd;
     int wsi_last_logged;
+    int touch_allowed;
+    void *touch;
     float density;
+    dm_input_policy gate;
     dm_touch_hud_frame hud_frame;
     int hud_obs_valid;
     dm_view_policy view;
@@ -142,6 +152,13 @@ static void dm_touch_hud_frame_suppress(dm_touch_hud_frame *f) { (void)f; }
 static int dm_touch_hud_frame_begin(dm_touch_hud_frame *f, int a, int b, int c, int d) {
     (void)f; (void)a; (void)b; (void)c; (void)d; return 1;
 }
+static int dm_touch_hud_frame_timer_ready(const dm_touch_hud_frame *f, int ready) {
+    (void)f; return ready;
+}
+static int dm_touch_bridge_tick(void *touch, int64_t now) { (void)touch; (void)now; return 0; }
+static void touch_consume(app_state *s, const char *why) { (void)s; (void)why; }
+void dm_input_policy_set_timer(dm_input_policy *gate, int enabled) { (void)gate; (void)enabled; }
+static void stop_input_timer(app_state *s) { (void)s; }
 static void dm_touch_hud_frame_composed(dm_touch_hud_frame *f, int ok) { (void)f; (void)ok; }
 static int dm_touch_hud_frame_complete(dm_touch_hud_frame *f, int ok) { (void)f; (void)ok; return 1; }
 static int draw_hud_overlay(app_state *s, ANativeWindow_Buffer *b) { (void)s; (void)b; return 0; }
@@ -213,7 +230,7 @@ int main(void) {
                                  .surface_destroyed = destroyed, .trace = NULL};
     dm_wsi_bridge_init(&s.wsi_bridge, &s.wsi, &lops);
     s.resumed = 1;
-    ANativeWindow A = {640, 480, 0}, B = {800, 600, 0}, C = {720, 540, 0}, D = {700, 500, 0};
+    ANativeWindow A = {640, 480, 0}, B = {800, 600, 0}, D = {700, 500, 0};
 
     window_ready(&activity, &A);
     CHECK(A.refs == 1);
@@ -229,53 +246,89 @@ int main(void) {
     CHECK(last_touch == &B);
     fail_open = 0;
 
-    /* Stale A destroy/resize must not stop B's timer or touch geometry. */
+    /* Successfully reopen active B with an armed frame timer. Stale A
+       callbacks must leave B's timer, size and touch geometry untouched. */
+    window_ready(&activity, &B);
+    CHECK(B.refs == 1);
+    CHECK(s.window == &B);
+    CHECK(s.frame_fd == 1);
+    int devnull = open("/dev/null", O_RDONLY);
+    CHECK(devnull >= 0);
+
+    /* Actual frame_timer: successful frame keeps timer armed; sticky error stops it. */
+    int frames_before = s.wsi.frames;
+    frame_status = DM_WSI_OK;
+    CHECK(frame_timer(devnull, 0, &s) == 1);
+    CHECK(s.wsi.frames == frames_before + 1);
+    CHECK(s.frame_fd == 1);
+    int frame_calls_before = frame_calls;
+    s.wsi.error = DM_WSI_ERROR;
+    frame_timer(devnull, 0, &s);
+    CHECK(frame_calls == frame_calls_before);
+    CHECK(s.frame_fd == -1);
+    s.wsi.error = 0;
+    s.frame_fd = 1;
+
     int stops = stop_calls, touches = touch_resize_calls;
     uint32_t b_width = s.wsi.width;
     int frame_fd_before = s.frame_fd;
     window_destroyed(&activity, &A);
     window_resized(&activity, &A);
+    CHECK(s.frame_fd == frame_fd_before);
     CHECK(stop_calls == stops);
     CHECK(touch_resize_calls == touches);
     CHECK(s.wsi.width == b_width);
-    CHECK(s.frame_fd == frame_fd_before);
+    CHECK(s.frame_fd == 1);
     CHECK(s.window == &B);
 
-    /* Close failure keeps the lifecycle reference and cached live window.
-       Use a successfully opened C; B never opened, so it cannot exercise close. */
-    window_ready(&activity, &C);
-    CHECK(C.refs == 1);
-    CHECK(s.window == &C);
+    /* Actual touch/HUD timer path: WSI skips CPU lock; default CPU locks. */
+    s.touch_allowed = 1;
+    lock_calls = 0;
+    s.wsi.enabled = 1;
+    CHECK(input_timer(devnull, 0, &s) == 1);
+    CHECK(lock_calls == 0);
+    s.wsi.enabled = 0;
+    s.vertex[0] = 'v'; s.fragment[0] = 'f';
+    CHECK(input_timer(devnull, 0, &s) == 1);
+    CHECK(lock_calls == 1);
+
+    /* Close failure keeps the lifecycle reference and cached live window. */
+    s.wsi.enabled = 1;
     fail_close = 1;
-    window_destroyed(&activity, &C);
-    CHECK(C.refs == 1);
-    CHECK(s.window == &C);
+    window_destroyed(&activity, &B);
+    CHECK(B.refs == 1);
+    CHECK(s.window == &B);
     fail_close = 0;
 
     /* Pause/pre-resume/windowless/sticky/surface-loss/error paths do not arm. */
     stop_calls = start_calls = frame_calls = 0;
     s.resumed = 0;
-    window_ready(&activity, &C);
+    window_ready(&activity, &B);
     CHECK(start_calls == 0);
     CHECK(s.frame_fd == -1);
     pause_app(&activity);
     CHECK(s.frame_fd == -1);
     CHECK(start_calls == 0);
     s.resumed = 1;
-    dm_wsi_resume(&s.wsi);
     s.wsi.error = DM_WSI_ERROR;
-    window_resized(&activity, &C);
+    resume_app(&activity);
+    CHECK(s.frame_fd == -1);
     CHECK(start_calls == 0);
     s.wsi.error = 0;
+    pause_app(&activity);
     frame_status = DM_WSI_SURFACE_LOST;
-    window_resized(&activity, &C);
+    resume_app(&activity);
+    CHECK(start_calls == 0);
+    frame_status = DM_WSI_OK;
+    s.wsi.error = 0;
+    window_resized(&activity, &B);
     CHECK(start_calls == 0);
     frame_status = DM_WSI_ERROR;
-    window_ready(&activity, &C);
+    window_ready(&activity, &B);
     CHECK(start_calls == 0);
     frame_status = DM_WSI_OK;
     fail_start = 1;
-    window_ready(&activity, &C);
+    window_ready(&activity, &B);
     CHECK(s.frame_fd == -1);
     CHECK(start_calls > 0);
     fail_start = 0;
@@ -289,20 +342,28 @@ int main(void) {
     window_resized(&activity, &D);
     CHECK(start_calls == d_starts);
 
+    /* Actual default CPU redraw/resize callback still reaches the lock path. */
+    ANativeWindow E = {700, 500, 0};
+    s.wsi.enabled = 0;
+    int locks_before = lock_calls;
+    window_resized(&activity, &E);
+    CHECK(lock_calls == locks_before + 1);
+    s.wsi.enabled = 1;
+
     /* WSI render entry never reaches CPU lock; default CPU path does. */
     lock_calls = 0;
     s.wsi.enabled = 1;
-    draw_diagnostic(&activity, &C, 1);
+    draw_diagnostic(&activity, &B, 1);
     CHECK(lock_calls == 0);
     s.wsi.enabled = 0;
     s.hud_obs_valid = 0;
     s.vertex[0] = 'v'; s.fragment[0] = 'f';
     memset(&s.view, 0, sizeof s.view);
-    draw_diagnostic(&activity, &C, 1);
+    draw_diagnostic(&activity, &B, 1);
     CHECK(lock_calls == 1);
 
     fail_close = 0;
-    window_destroyed(&activity, &C);
+    window_destroyed(&activity, &B);
     dm_wsi_stop(&s.wsi);
     dm_app_lifecycle_stop(s.lifecycle);
     dm_app_lifecycle_destroy(s.lifecycle);
@@ -318,7 +379,8 @@ def build_source(native: Path) -> str:
     return PRELUDE + "\n".join(extract_function(text, name) for name in FUNCTIONS) + MAIN
 
 
-def compile_and_run(cc: str, app: Path, source: str, work: Path, label: str) -> int:
+def compile_and_run(cc: str, app: Path, source: str, work: Path, label: str,
+                    quiet: bool = False) -> tuple[str, int, str]:
     c_file = work / f"{label}.c"
     exe = work / label
     c_file.write_text(source, encoding="utf-8")
@@ -328,14 +390,39 @@ def compile_and_run(cc: str, app: Path, source: str, work: Path, label: str) -> 
                        str(app / "lifecycle.c"), "-o", str(exe)]
     built = subprocess.run(compile_command, text=True, capture_output=True)
     if built.returncode != 0:
-        print(f"{label}: compile failed\n{built.stderr}", file=sys.stderr)
+        if not quiet:
+            print(f"{label}: compile failed\n{built.stderr}", file=sys.stderr)
+        return "build_failed", built.returncode, built.stderr
+    environment = os.environ.copy()
+    environment["ASAN_OPTIONS"] = "detect_leaks=0"
+    environment["UBSAN_OPTIONS"] = "halt_on_error=1:print_stacktrace=1"
+    run = subprocess.run([str(exe)], text=True, capture_output=True, env=environment)
+    if not quiet:
+        print(f"{label}: exit={run.returncode}")
+        if run.stdout: print(run.stdout, end="")
+        if run.stderr: print(run.stderr, end="", file=sys.stderr)
+    text = run.stdout + run.stderr
+    sanitizer = ("runtime error:" in text or "ERROR: AddressSanitizer" in text or
+                 "SUMMARY: UndefinedBehaviorSanitizer" in text or
+                 "SUMMARY: AddressSanitizer" in text)
+    if sanitizer:
+        return "sanitizer", run.returncode, text
+    if run.returncode != 0:
+        return "assertion", run.returncode, text
+    return "ok", 0, text
+
+
+def run_mutant(cc: str, app: Path, text: str, work: Path, label: str, expected: str) -> int:
+    status, returncode, output = compile_and_run(cc, app, build_source_from_text(text), work, label)
+    if status != "assertion" or returncode == 0:
+        print(f"FAIL: mutant {label} did not produce an intended assertion failure (status={status})",
+              file=sys.stderr)
         return 1
-    run = subprocess.run([str(exe)], text=True, capture_output=True,
-                         env={"ASAN_OPTIONS": "detect_leaks=0"})
-    print(f"{label}: exit={run.returncode}")
-    if run.stdout: print(run.stdout, end="")
-    if run.stderr: print(run.stderr, end="", file=sys.stderr)
-    return run.returncode
+    if expected not in output:
+        print(f"FAIL: mutant {label} failed outside expected assertion {expected!r}", file=sys.stderr)
+        return 1
+    print(f"private native mutant {label} failed as required")
+    return 0
 
 
 def main() -> int:
@@ -347,24 +434,41 @@ def main() -> int:
     native = Path(args.native)
     app = Path(args.app)
     normal = build_source(native)
-    mutant_text = native.read_text(encoding="utf-8")
-    old = "s->window=dm_app_lifecycle_surface(s->lifecycle);"
-    new = "/* mutant: omit cached-window synchronization */"
-    if old not in mutant_text:
-        print("fail closed: mutant anchor missing", file=sys.stderr)
-        return 1
-    mutated = mutant_text.replace(old, new, 1)
+    source_text = native.read_text(encoding="utf-8")
+    mutants = [
+        ("cached-window", "s->window=dm_app_lifecycle_surface(s->lifecycle);",
+         "/* mutant: omit cached-window synchronization */", "s.window"),
+        ("stale-timer",
+         'if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}\n        stop_frame_timer(s);',
+         'stop_frame_timer(s);\n        if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}',
+         "s.frame_fd"),
+    ]
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
-        normal_rc = compile_and_run(args.cc, app, normal, work, "native-callbacks")
-        if normal_rc != 0:
+        status, rc, output = compile_and_run(args.cc, app, normal, work, "native-callbacks")
+        if status != "ok" or rc != 0:
+            print("FAIL: production callback fixture did not compile/run cleanly", file=sys.stderr)
             return 1
-        mutant_rc = compile_and_run(args.cc, app, build_source_from_text(mutated), work,
-                                    "native-callbacks-mutant")
-        if mutant_rc == 0:
-            print("FAIL: private native mutant did not fail", file=sys.stderr)
+        # Harness self-controls: compile failure and sanitizer/UB are not accepted
+        # as intended mutant assertion failures.
+        status, _, _ = compile_and_run(args.cc, app, "int main(void){ this is invalid", work,
+                                       "control-compile-error", quiet=True)
+        if status != "build_failed":
+            print("FAIL: compile-error control was not classified as build_failed", file=sys.stderr)
             return 1
-        print("private native mutant failed as required")
+        status, _, _ = compile_and_run(args.cc, app,
+                                       "int main(void){ volatile int *p=0; return *p; }",
+                                       work, "control-ub", quiet=True)
+        if status != "sanitizer":
+            print("FAIL: UB control was not rejected as sanitizer", file=sys.stderr)
+            return 1
+        for name, old, new, expected in mutants:
+            if old not in source_text:
+                print(f"fail closed: mutant anchor missing for {name}", file=sys.stderr)
+                return 1
+            if run_mutant(args.cc, app, source_text.replace(old, new, 1), work,
+                          f"native-callbacks-mutant-{name}", expected) != 0:
+                return 1
     return 0
 
 
