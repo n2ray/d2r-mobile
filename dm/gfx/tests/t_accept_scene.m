@@ -122,6 +122,8 @@ int main(void) {
     memset(out, 0, 8 * 4 * 4);
     NVNtexture tex2; h_nvnTextureBuilderSetStorage(&tb, &pool, 0x1000);
     EXPECT("同址重建 TextureInitialize", 1, h_nvnTextureInitialize(&tex2, &tb));
+    NVNtexture tex3;   // 场景 3 的第二张源贴图（声明在外，便于末尾统一销毁） | second source texture of Scene 3 (declared here so cleanup can see it)
+    NVNsync fence4;    // 场景 3 第二帧的清色围栏 | clear fence of the second Scene 3 frame
     h_nvnCommandBufferBeginRecording(&cb);
     h_nvnCommandBufferSetCopyRowStride(&cb, 0);                       // 0 = 紧排 | 0 = tight packing
     // 浮点清色：0 / 1 / 0.5 / 0.25 落进 RGBA8 的字节是 0 / 255 / 128 / 64（0.5×255 = 127.5 取 128，0.25×255 = 63.75 取 64）
@@ -140,22 +142,52 @@ int main(void) {
     }
     EXPECT("同址新贴图 32 纹素全等于清色值", 0, clear_bad);
 
-    // 场景 3：呈现——把已清色的贴图按整帧裁切呈现到 8×4 目标，逐像素期望（含第二次呈现不得复用上一张图）
-    // Scene 3: presentation - present the cleared texture as a whole-frame crop into an 8x4 target, per-pixel; the second present must not reuse the previous image
+    // 场景 3：呈现——两次整帧呈现到同一 8×4 目标：第二帧换一张源贴图、换一组清色值，
+    // 32 个像素必须全部变成第二帧的期望；只复用首帧的呈现器会在这里被抓到。
+    // Scene 3: presentation - two whole-frame presents into the same 8x4 target: the second frame uses a different
+    // source texture and a different clear value, so all 32 pixels must change to the second expectation; a presenter
+    // that keeps returning its first frame fails here.
     {
         MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                                                     width:8 height:4 mipmapped:NO];
         d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModeShared;
         id<MTLTexture> dst = [g_dev newTextureWithDescriptor:d];
-        id<MTLCommandBuffer> mcb = [g_q commandBuffer];
-        EXPECT("呈现编码成功（整帧）", 1, present_encode(mcb, tex_mtl(&tex2), dst, NULL));
-        [mcb commit]; [mcb waitUntilCompleted];
-        EXPECT("呈现 GPU 完成", MTLCommandBufferStatusCompleted, mcb.status);
         uint8_t *px = malloc(8 * 4 * 4);
+        static const uint8_t want1[4] = {0, 255, 128, 64};      // 清色值 A：0 / 1 / 0.5 / 0.25 | clear value A
+        static const uint8_t want2[4] = {255, 64, 0, 128};      // 清色值 B：1 / 0.25 / 0 / 0.5 | clear value B
+
+        // 第一帧：已清成 A 的 tex2 | First frame: tex2, already cleared to A
+        id<MTLCommandBuffer> mcb1 = [g_q commandBuffer];
+        EXPECT("第一帧呈现编码成功（整帧）", 1, present_encode(mcb1, tex_mtl(&tex2), dst, NULL));
+        [mcb1 commit]; [mcb1 waitUntilCompleted];
+        EXPECT("第一帧呈现 GPU 完成", MTLCommandBufferStatusCompleted, mcb1.status);
         [dst getBytes:px bytesPerRow:32 fromRegion:MTLRegionMake2D(0, 0, 8, 4) mipmapLevel:0];
-        static const uint8_t want[4] = {0, 255, 128, 64};
-        int bad = 0; for (int i = 0; i < 32; i++) bad += memcmp(px + i * 4, want, 4) != 0;
-        EXPECT("呈现 32 像素全等于清色值", 0, bad);
+        int bad1 = 0; for (int i = 0; i < 32; i++) bad1 += memcmp(px + i * 4, want1, 4) != 0;
+        EXPECT("第一帧 32 像素全等于清色值 A", 0, bad1);
+
+        // 第二帧的源：同一池另一偏移，清成 B | Source of the second frame: another offset in the same pool, cleared to B
+        h_nvnTextureBuilderSetStorage(&tb, &pool, 0x2000);
+        EXPECT("第二帧源贴图初始化", 1, h_nvnTextureInitialize(&tex3, &tb));
+        h_nvnCommandBufferBeginRecording(&cb);
+        h_nvnCommandBufferClearTexture(&cb, &tex3, NULL, &r, (const float[]){1.0f, 0.25f, 0.0f, 0.5f}, 0xF);
+        NVNcommandHandle h4 = h_nvnCommandBufferEndRecording(&cb);
+        h_nvnSyncInitialize(&fence4, &dev);
+        h_nvnQueueSubmitCommands(&q, 1, &h4);
+        h_nvnQueueFenceSync(&q, &fence4, NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE, 0);
+        EXPECT("第二帧源清色围栏等待满足", 1, h_nvnSyncWait(&fence4, 5000000000ull));
+
+        id<MTLCommandBuffer> mcb2 = [g_q commandBuffer];
+        EXPECT("第二帧呈现编码成功（整帧，同一目标）", 1, present_encode(mcb2, tex_mtl(&tex3), dst, NULL));
+        [mcb2 commit]; [mcb2 waitUntilCompleted];
+        EXPECT("第二帧呈现 GPU 完成", MTLCommandBufferStatusCompleted, mcb2.status);
+        [dst getBytes:px bytesPerRow:32 fromRegion:MTLRegionMake2D(0, 0, 8, 4) mipmapLevel:0];
+        int bad2 = 0, stale = 0;
+        for (int i = 0; i < 32; i++) {
+            bad2 += memcmp(px + i * 4, want2, 4) != 0;            // 必须是 B | must be B
+            stale += memcmp(px + i * 4, want1, 4) == 0;           // 不能还是 A | must not still be A
+        }
+        EXPECT("第二帧 32 像素全等于清色值 B", 0, bad2);
+        EXPECT("第二帧没有任何像素仍是首帧的值（未复用首帧）", 0, stale);
         free(px);
     }
 
@@ -163,7 +195,22 @@ int main(void) {
     int reds = 0; for (int i = 0; i < 64; i++) reds += g_red_once[i] != 0;
     EXPECT("全程无【红】", 0, reds);
 
+    // 资源生命周期：本夹具创建的对象按「贴图 → 事件 / 同步 → 命令缓冲 / 队列 → 池 → 设备」顺序销毁。
+    // 池必须最后于引用其内存的对象（贴图的 MTLTexture 引用池缓冲）；没有刻意留到进程退出的对象。
+    // Resource lifetime: objects created by this fixture are destroyed in the order textures -> event/syncs ->
+    // command buffer/queue -> pool -> device. The pool must come after everything that references its memory (a
+    // texture's MTLTexture references the pool buffer). Nothing is intentionally left to process exit.
+    h_nvnTextureFinalize(&tex2);
+    h_nvnTextureFinalize(&tex3);
+    h_nvnEventFinalize(&ev);
+    h_nvnSyncFinalize(&fence);
+    h_nvnSyncFinalize(&fence2);
+    h_nvnSyncFinalize(&fence3);
+    h_nvnSyncFinalize(&fence4);
+    h_nvnCommandBufferFinalize(&cb);
+    h_nvnQueueFinalize(&q);
     h_nvnMemoryPoolFinalize(&pool);
+    h_nvnDeviceFinalize(&dev);
     printf("== %d 项，失败 %d ==\n", cases, failed);
     return failed != 0;
 }

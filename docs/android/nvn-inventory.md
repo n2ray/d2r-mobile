@@ -148,10 +148,12 @@ they generate themselves, and compute every expectation from a formula. They are
 | Resources / state | Texture→buffer writeback at row stride 48 | 32 texels equal `PX(x,y)`, 16 trailing bytes per row untouched |
 | Submission | Event signalled in the command buffer | 0 before submit, 42 after the fence wait returns 1 |
 | Lifetime | Finalize, recreate at the same pool offset, clear | 32 texels equal the clear value (no stale contents) |
-| Presentation | Whole-frame present of the cleared texture into 8×4 | 32 pixels equal `{0,255,128,64}` (clear 0/1/0.5/0.25 in RGBA8) |
+| Presentation | Two whole-frame presents into the same 8×4 target; the second uses a different source texture cleared to a different value | frame 1: 32 pixels equal `{0,255,128,64}` (clear 0/1/0.5/0.25 in RGBA8); frame 2: all 32 equal `{255,64,0,128}` (clear 1/0.25/0/0.5) and none still holds frame 1's value |
 | Shader interface | Self-written route-B reflection json, 10 binding kinds | kind/reg/arg_id/dummy-type values as asserted; c1 bytes `0x0A 0x0B`; 5 negative inputs rejected |
 
-Current results (this branch, macOS 27.0.1, Apple M4): `t_accept_scene` 20/20, `t_accept_shader` 28/28, both exit 0.
+Current results (this branch, macOS 27.0.1, Apple M4): `t_accept_scene` 26/26, `t_accept_shader` 28/28, both exit 0.
+The scene finalizes the textures, event, syncs, command buffer and queue it created before the backing pool and the
+device, so nothing is intentionally left to process exit.
 
 These scenes are **host Metal fixtures, not a Vulkan or Android acceptance result**. They run against the macOS Metal
 backend (`dm/gfx/nvn/nvn_mtl.m`); this base commit has no `dm/android` tree at all, so nothing here says anything about
