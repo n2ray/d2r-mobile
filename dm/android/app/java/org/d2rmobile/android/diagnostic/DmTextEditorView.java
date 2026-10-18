@@ -240,15 +240,15 @@ public final class DmTextEditorView extends View {
         @Override
         public void onSubmit(CharSequence text) {
             if (!current()) return;
-            session.callerSink.onSubmit(text);
             retire(session, false);
+            session.callerSink.onSubmit(text);
         }
 
         @Override
         public void onCancel() {
             if (!current()) return;
-            session.callerSink.onCancel();
             retire(session, false);
+            session.callerSink.onCancel();
         }
     }
 }
