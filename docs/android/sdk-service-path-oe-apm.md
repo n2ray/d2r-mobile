@@ -15,14 +15,23 @@ Base: accepted `main` `8a18a23` (includes #76 and the corrected #73 note).
 
 - Read-only static input: the user-owned dumped SDK module (same image identity as the corrected #73 note). No bytes,
   addresses, symbol dumps, private paths, logs, saves or credentials are published here.
-- For each thunk reached by a `BL`: validate the full `adrp x16` / `ldr x17,[x16,#imm]` / `add x16,x16,#imm` / `br x17`
-  chain, take the GOT slot, resolve it through `RELA`/`RELA-JMPREL` (`DT_HASH` nchain used for the symbol table), and map
-  the symbol by name. `R_AARCH64_JUMP_SLOT` (1026) with a defined symbol record gives a local body; 1027 is a relative
-  target; a 1026 slot with symbol index 0 is an unresolvable lazy slot.
+- For each thunk reached by a `BL`: decode any `adrp Rd` / `ldr Rt,[Rn,#imm]` / `add Rd2,Rn2,#imm12` / `br Rt2` chain,
+  require `Rn == Rd`, `Rd2 == Rn2 == Rd`, `Rt2 == Rt`, and take the GOT slot from the `ldr` displacement. `add` may
+  differ from the `ldr` displacement (lazy-resolver shape); it is recorded separately.
+- Relocations: `1026` JUMP_SLOT with a defined symbol record gives a local body; `1026` with symbol index 0 is
+  **unresolved under this method** (not assumed ifunc/weak/lazy); `1027` is a relative addend; every other type is
+  `UNSUPPORTED_TYPE_n`. No fallback inference.
 - Per-function scan: CFG over direct `B`, `B.cond`, `CBZ/CBNZ`, `TBZ/TBNZ` within the symbol's extent, capped at 1200
-  instructions, stopping at `RET` / `SVC` / extent end. Strings are only taken from `adrp`+`add` pointers whose bytes are
-  printable ASCII. This is not whole-program analysis: absence inside scanned bodies is not global absence, and an
-  unresolved call is a stop, not a proof of no edge.
+  instructions. `BLR`/`BR` are classified as unresolved indirect calls/tails with their register and stop that path;
+  they are never treated as ordinary instructions or as evidence of absence. `CAP_HIT` is reported explicitly.
+- Address dataflow uses correct operand fields (`Rd = w & 31`, `Rn = (w >> 5) & 31` for ADD/LDR), matches ADRP on the
+  source register used, and clears tracked registers after a call. Printable `adrp`+`add` targets are recorded as
+  string/REF candidates; unsupported chains stay unknown.
+- Owned synthetic microchecks (`selftest_analyzer.py`, 10 vectors, all pass) cover: ADRP x17 / LDR x0 / BR x0 decoding,
+  lazy add!=disp shape, LDR base-register mismatch, BR-register mismatch, ADD-register mismatch, BLR/BR word
+  recognition, and 1026-sym0 / 1027 / 1025 relocation classification. These vectors would fail the previous tracer.
+- Limits: per-function extent only; 1200-instruction cap; indirect calls stop the path. Absence inside scanned bodies is
+  not global absence, and an unresolved edge is a stop, not a proof of no edge.
 - No other SDK family was enumerated.
 
 ## 2. Selected path and what is proven
@@ -30,41 +39,41 @@ Base: accepted `main` `8a18a23` (includes #76 and the corrected #73 note).
 | Step | Body facts (bounded) |
 |---|---|
 | `nninitInitializeSdkModule` | 9 `BL` + one final `B`; no `RET`; resolves to the nine initializers recorded in the corrected #73 note (oe, aoc, err, fs×3, pctl, os VAM, diag startup) |
-| `nn::oe::Initialize` | calls `os::SdkMutexType::Lock`, `apm::Initialize`, `oe::InitializeApplet`, `am::GetApplicationFunctions`; no `SVC`/service string |
+| `nn::oe::Initialize` | direct calls `os::SdkMutexType::Lock`, `apm::Initialize`, `oe::InitializeApplet`; body ends in a tail branch (no `RET`); no `SVC`, no indirect call in the scanned body |
 | `nn::apm::Initialize` (selected candidate) | 35-instruction CFG over the 236-byte body: only `os::LockMutex` / `os::UnlockMutex`; no `SVC`, no string, no session/CMIF call; returns. It is **not** a service path. |
-| `nn::oe::InitializeApplet` | calls `am::InitializeApplicationInterfaces`, `am::GetCommonStateGetter`, `am::GetSelfController`, `os::AttachReadableHandleToSystemEvent`, `oe::SetupGpuErrorHandler`, `os::WaitSystemEvent`, os mutex; no `SVC`/service string |
-| `nn::am::InitializeApplicationInterfaces` | mutex lock/unlock, `am::InitializeCommonInterfaces(proxy)`, diag `AbortImpl`, `os::GetCurrentProcessHandle`, `os::CloseNativeHandle`, `os::SleepThread`, and one `BL` through a **JUMP_SLOT (1026) with symbol index 0**; no `SVC`/GetServiceHandle/CMIF/name string |
-| `nn::am::InitializeCommonInterfaces(IStackableAppletProxy*)` | 359-instruction CFG (full 1436-byte symbol scanned): mutex operations and diag `AbortImpl` only; it consumes a proxy argument; no session call or command in the body |
+| `nn::oe::InitializeApplet` | direct calls to `am::InitializeApplicationInterfaces`, `am::GetCommonStateGetter`, `am::GetSelfController`, `os::AttachReadableHandleToSystemEvent`, `oe::SetupGpuErrorHandler`, `os::WaitSystemEvent`, os mutex; no indirect call inside this body |
+| `nn::am::InitializeApplicationInterfaces` | reachable service-name literal **`appletOE`** via `adrp`+`add`; `am::InitializeCommonInterfaces(proxy)`; diag `AbortImpl`; process-handle helpers; one `BL` through a JUMP_SLOT (1026) with symbol index 0 (**unresolved**); **four `BLR x8` indirect calls** |
+| `nn::am::InitializeCommonInterfaces(IStackableAppletProxy*)` | full 1436-byte symbol scanned (359 instructions): mutex operations and diag `AbortImpl`, plus **seven `BLR x8` indirect calls**; no direct `SVC`, `GetServiceHandle`, `ConnectToNamedPort` or CMIF request/reply call |
 
 ## 3. First unsupported indirection — stop point
 
-The traced bodies contain no `sm:` `GetServiceHandle`, no `ConnectToNamedPort`, no CMIF request builder/consumer, and no
-service-name string. The first unsupported indirection is one of:
+The corrected trace reaches a service-name literal (`appletOE`) in `am::InitializeApplicationInterfaces`, but the
+actual service acquisition is not a direct call in the scanned bodies. The first frontier is the `BLR x8` virtual
+dispatch on the `IStackableAppletProxy` interface (seven sites in `InitializeCommonInterfaces`, four in
+`InitializeApplicationInterfaces`) together with the unresolved symbol-index-0 JUMP_SLOT. The receiver/vtable provenance
+of `x8` is not established by the scanned bodies, and the symbol-0 slot has no name or defined target under this method.
 
-1. `nn::am::InitializeCommonInterfaces` operates on an `IStackableAppletProxy*` whose construction/session is not in the
-   traced bodies: it is passed in, and the traced callers do not create it; its provenance is outside this bounded
-   subtree; or
-2. the `BL` in `nn::am::InitializeApplicationInterfaces` through a `JUMP_SLOT` (1026) with symbol index 0, whose target
-   cannot be resolved from static metadata (unsupported lazy slot).
-
-Either way no port name, session acquisition, command number, request/reply layout or reply consumer is proven. Phase 1
-stops here; nothing is guessed.
+No port-to-command mapping, command number, request layout, reply layout or reply consumer is proven. The earlier claim
+that these bodies contain no virtual calls or service strings was an artifact of the previous tracer (dropped
+`BLR`/`BR`, wrong operand fields, incomplete thunk validation) and is retracted.
 
 ## 4. Concrete blocker / next bounded step
 
-**Blocker (recorded once):** resolve the symbol-index-0 JUMP_SLOT through loader/rtld relocation metadata, or locate the
-constructor that creates the `IStackableAppletProxy` passed to `InitializeCommonInterfaces`. Without one of those, the
-session and command cannot be attached to this path.
+**Blocker (recorded once):** resolve the `x8` receiver/vtable provenance for the `BLR x8` sites (which object, which
+vtable slot, whether it reaches `sm:` `GetServiceHandle` with `appletOE`) or resolve the symbol-index-0 JUMP_SLOT through
+loader/relocation metadata. Without that, no port, session or command can be attached.
 
-Unblock options, static first: (a) an rtld/relocation artifact that names that slot; (b) a bounded caller/argument
-dataflow report for the proxy (who writes the global/argument and which session backs it). Only after that can a port and
-command be traced. A controlled run is not requested here and would need separate authorization.
+Static-first unblock: a bounded register/dataflow trace of `x8` from function entry (including the proxy argument passed
+into `InitializeCommonInterfaces`) and a relocation-name mapping for the symbol-0 slot. A controlled run is not requested
+and would need separate authorization; no service or call order is guessed in the meantime.
 
 ## 5. Explicit unknowns
 
 - Port/service name, session acquisition, domain conversion, command IDs, request layout, reply layout, reply consumer.
+- Whether the symbol-index-0 slot is an ifunc/lazy resolver or an undefined/weak import; under this method it remains
+  unresolved, and no such identity is assumed.
+- The provenance of the `x8` receiver/vtable used by the `BLR x8` sites (proxy object, vtable slot and backing session).
 - Whether `apm::Initialize`, `oe::InitializeApplet` or the `am` interface calls execute at startup at all.
-- Whether the symbol-0 slot is an ifunc/lazy resolver or an undefined weak import.
 - Behaviour of the other eight initializers and of all other SDK families (not enumerated).
 
 ## 6. Ownership/failure acceptance plan (contingent, unchanged)
