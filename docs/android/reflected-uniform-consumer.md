@@ -11,7 +11,9 @@
   - 成员必须是 `uvec4`（`OpTypeVector`，4 个 uint32 分量），`Offset` 装饰为 0，类型大小严格 16。
 - 至多一个既有 push-constant 块；本夹具不使用。
 - 不支持：多成员/数组/运行时数组、其他成员类型或布局、多个 uniform 块、uniform+采样/图像混用、dynamic offset、未知 stage、畸形模块。
+- `OpTypeInt` 必须恰好带宽度与 Signedness（Signedness 仅 0/1）；缺失或非法 Signedness 直接拒绝，绝不默认成 unsigned；`OpTypeFloat` 独立要求恰好宽度。
 - `res.json` 只交叉核对，不单独决定绑定。`cbufs` 必须显式声明 `binding`、`count=1`、`offset=0`、`size=16`，并与模块推导值逐项一致；缺少 `offset`/`size` 或数值不符即拒绝。`images` 必须为空。
+- 所有绑定类别的 `count` 若出现，必须是 JSON 整数且精确为 1（在收窄前比较）；`UINT32_MAX`、`2^32+1`、字符串/布尔均拒绝；沿用既有“缺省视为 1”的约定。
 
 ## 生命周期与失败语义
 
@@ -24,6 +26,7 @@
 
 - 自有 `uniform.comp` 用四个非平凡、互不相同的 uint 输入做 32 位无符号变换；宿主 CPU 用独立同式 oracle 逐字比较，错误绑定或忽略 uniform 都不能通过。
 - 负例覆盖：短输入、空输入、sidecar 的 `size`/`offset` 不符/缺失、有效但非 `uvec4` 的模块、设备 uniform-range 上限、保留的既有 storage/sampling 拒绝。
+- 纯 CPU 载入负例：删除 `OpTypeInt` Signedness 操作数的模块必须拒绝；sidecar `count` 为 `2^32+1`、`UINT32_MAX`、字符串或布尔值必须拒绝；缺失 `count` 仍按既有约定视为 1。
 - 后创建失败注入覆盖 descriptor-pool 创建、command 结束、读回失效；检查全部自有对象计数归零、画布哨兵不变、调用者输入不变。
 - 只在授权宿主 Vulkan/MoltenVK 上执行；宿主通过不等于 Android Adreno/设备验收，也不声称 GPU 完成或镜像回滚。
 

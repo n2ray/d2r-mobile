@@ -307,10 +307,13 @@ static int scan_module(const uint8_t *data, size_t size, module_t *m, char *why,
             type_t *t = &m->types[m->type_count++];
             memset(t, 0, sizeof *t);
             t->id = o[0]; t->kind = op;
-            if (op == OP_TYPE_INT || op == OP_TYPE_FLOAT) {
-                if (n < 2) { set_why(why, cap, "OpTypeInt/Float 操作数不足（需宽度，实际 %u）", n); return 0; }
+            if (op == OP_TYPE_INT) {
+                if (n != 3) { set_why(why, cap, "OpTypeInt 操作数个数为 %u，本解析器要求恰好 3（宽度与 Signedness）", n); return 0; }
+                if (o[2] > 1) { set_why(why, cap, "OpTypeInt Signedness=%u 非法（只接受 0 或 1）", o[2]); return 0; }
+                t->a = o[1]; t->signedness = o[2];
+            } else if (op == OP_TYPE_FLOAT) {
+                if (n != 2) { set_why(why, cap, "OpTypeFloat 操作数不足（需恰好 2 个：宽度，实际 %u）", n); return 0; }
                 t->a = o[1];
-                if (op == OP_TYPE_INT) t->signedness = n >= 3 ? o[2] : 0;   // 0 = unsigned, 1 = signed
             } else if (op == OP_TYPE_VECTOR) {
                 if (n < 3) { set_why(why, cap, "OpTypeVector 操作数不足（需分量类型与数量，实际 %u）", n); return 0; }
                 t->a = o[1]; t->b = o[2];
@@ -526,11 +529,13 @@ static int cross_check(const jnode *root, const dm_vk_shader_plan *plan, const c
         if (arr->type != J_ARR) { set_why(why, cap, "反射 %s 不是数组", cats[c]); return 0; }
         for (const jnode *it = arr->first; it; it = it->next) {
             if (it->type != J_OBJ) { set_why(why, cap, "反射 %s 元素不是对象", cats[c]); return 0; }
-            uint32_t b, cnt = 1;
+            uint32_t b;
             if (!sidecar_uint(it, "binding", &b, why, cap)) return 0;
             jnode *cn = jget(it, "count");
-            if (cn && cn->type == J_NUM) cnt = (uint32_t)cn->num;
-            if (cnt != 1) { set_why(why, cap, "反射绑定 %u 的 count=%u，本子集只支持 1", b, cnt); return 0; }
+            if (cn) {
+                if (cn->type != J_NUM) { set_why(why, cap, "反射绑定 %u 的 count 不是 JSON 整数", b); return 0; }
+                if (cn->num != 1) { set_why(why, cap, "反射绑定 %u 的 count=%llu，本子集只支持整数 1（不接受截断）", b, (unsigned long long)cn->num); return 0; }
+            }
             if (kind_of[c] == DM_VK_REFLECT_CBUF) {
                 uint32_t off, size;
                 if (!sidecar_uint(it, "offset", &off, why, cap)) return 0;
