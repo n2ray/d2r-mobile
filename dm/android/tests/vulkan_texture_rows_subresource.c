@@ -17,7 +17,7 @@ static int write_path;              // 1 = update buffer->image, 0 = read image-
 static uint8_t staging[64];
 static const VkImage image = HANDLE(VkImage, 1);
 static dm_vk_texture texture = {.image = image, .format = VK_FORMAT_R8G8B8A8_UNORM,
-    .width = 8, .height = 4, .levels = 2, .layers = 2};
+    .width = 8, .height = 8, .levels = 2, .layers = 2};
 
 static void reset(void) {
     call = fail_at = buffers = memories = commands = fences = mapped = pending = barriers = copies = 0;
@@ -129,7 +129,7 @@ VKAPI_ATTR void VKAPI_CALL vkCmdCopyBufferToImage(VkCommandBuffer command, VkBuf
     VkImageLayout layout, uint32_t count, const VkBufferImageCopy *regions) {
     (void)command; CHECK(buffer == HANDLE(VkBuffer, 2) && dst_image == image &&
         layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && count == 1 && barriers == 1);
-    CHECK(copy_matches(&regions[0], 1, 1, 2, 0, 2, 2));
+    CHECK(copy_matches(&regions[0], 1, 1, 2, 1, 2, 2));
     // 源行距 12、区域宽 8：紧排暂存仅前 8 字节/行，填充 0xEE 不得进入。 | Only tight 8-byte rows enter staging.
     CHECK(staging[0] == 0x11 && staging[7] == 0x11 && staging[8] == 0x22 && staging[15] == 0x22);
     CHECK(staging[16] == 0x7f);
@@ -139,7 +139,7 @@ VKAPI_ATTR void VKAPI_CALL vkCmdCopyImageToBuffer(VkCommandBuffer command, VkIma
     VkBuffer buffer, uint32_t count, const VkBufferImageCopy *regions) {
     (void)command; CHECK(src_image == image && buffer == HANDLE(VkBuffer, 2) &&
         layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL && count == 1 && barriers == 1);
-    CHECK(copy_matches(&regions[0], 1, 1, 2, 0, 2, 2));
+    CHECK(copy_matches(&regions[0], 1, 1, 2, 1, 2, 2));
     seen_copy = regions[0]; copies++; write_path = 0;
     for (unsigned y = 0; y < 2; y++)
         for (unsigned x = 0; x < 8; x++) staging[y * 8 + x] = (uint8_t)(0x40 + y * 8 + x);
@@ -188,7 +188,7 @@ int main(void) {
     vk.memory.memoryTypeCount = 2;
     vk.memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     vk.memory.memoryTypes[1].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-    dm_vk_region region = {.x = 2, .y = 0, .width = 2, .height = 2};
+    dm_vk_region region = {.x = 2, .y = 1, .width = 2, .height = 2};
     uint8_t source[24], before[24];
     fill_source(source); memcpy(before, source, sizeof before);
     dm_vk_texture snapshot = texture;
@@ -197,7 +197,7 @@ int main(void) {
     reset(); write_path = 1;
     CHECK(dm_vk_texture_update_rows(&vk, &texture, 1, 1, &region, source, sizeof source, 12) == VK_SUCCESS);
     CHECK(copies == 1 && barriers == 2 && seen_range.baseMipLevel == 1 && seen_range.baseArrayLayer == 1);
-    CHECK(copy_matches(&seen_copy, 1, 1, 2, 0, 2, 2));
+    CHECK(copy_matches(&seen_copy, 1, 1, 2, 1, 2, 2));
     CHECK(!memcmp(source, before, sizeof source));
     CHECK(!memcmp(&texture, &snapshot, sizeof texture));
     balanced();
@@ -206,7 +206,7 @@ int main(void) {
     reset(); write_path = 0;
     uint8_t dest[24]; memset(dest, 0x5C, sizeof dest);
     CHECK(dm_vk_texture_read_rows(&vk, &texture, 1, 1, &region, 12, dest, sizeof dest) == VK_SUCCESS);
-    CHECK(copies == 1 && barriers == 2 && copy_matches(&seen_copy, 1, 1, 2, 0, 2, 2));
+    CHECK(copies == 1 && barriers == 2 && copy_matches(&seen_copy, 1, 1, 2, 1, 2, 2));
     for (unsigned y = 0; y < 2; y++) {
         for (unsigned x = 0; x < 8; x++) CHECK(dest[y * 12 + x] == (uint8_t)(0x40 + y * 8 + x));
         for (unsigned x = 8; x < 12; x++) CHECK(dest[y * 12 + x] == 0x5C);
@@ -214,19 +214,24 @@ int main(void) {
 
     // 3. 非法 level/layer/region/短缓冲在分配前拒绝；descriptor 不变。
     reset();
+    uint8_t dest_before[24]; memcpy(dest_before, dest, sizeof dest);
     dm_vk_region bad = region;
-    CHECK(dm_vk_texture_update_rows(&vk, (dm_vk_texture *)&texture, 2, 1, &bad, source, sizeof source, 12) != VK_SUCCESS);
-    CHECK(dm_vk_texture_update_rows(&vk, (dm_vk_texture *)&texture, 1, 2, &bad, source, sizeof source, 12) != VK_SUCCESS);
+    CHECK(dm_vk_texture_update_rows(&vk, &texture, 2, 1, &bad, source, sizeof source, 12) != VK_SUCCESS);
+    CHECK(dm_vk_texture_update_rows(&vk, &texture, 1, 2, &bad, source, sizeof source, 12) != VK_SUCCESS);
     bad.x = 3; CHECK(dm_vk_texture_update_rows(&vk, &texture, 1, 1, &bad, source, sizeof source, 12) != VK_SUCCESS);
+    bad = region; bad.y = 3;
+    CHECK(dm_vk_texture_update_rows(&vk, &texture, 1, 1, &bad, source, sizeof source, 12) != VK_SUCCESS);
     bad = region; bad.width = 0;
-    CHECK(dm_vk_texture_update_rows(&vk, (dm_vk_texture *)&texture, 1, 1, &bad, source, sizeof source, 12) != VK_SUCCESS);
-    CHECK(dm_vk_texture_update_rows(&vk, (dm_vk_texture *)&texture, 1, 1, &region, source, 15, 12) != VK_SUCCESS);
-    CHECK(dm_vk_texture_update_rows(&vk, (dm_vk_texture *)&texture, 1, 1, &region, source, sizeof source, 7) != VK_SUCCESS);
+    CHECK(dm_vk_texture_update_rows(&vk, &texture, 1, 1, &bad, source, sizeof source, 12) != VK_SUCCESS);
+    CHECK(dm_vk_texture_update_rows(&vk, &texture, 1, 1, &region, source, 15, 12) != VK_SUCCESS);
+    CHECK(dm_vk_texture_update_rows(&vk, &texture, 1, 1, &region, source, sizeof source, 7) != VK_SUCCESS);
     CHECK(dm_vk_texture_read_rows(&vk, &texture, 1, 1, &bad, 12, dest, sizeof dest) != VK_SUCCESS);
     CHECK(dm_vk_texture_read_rows(&vk, &texture, 1, 1, &region, 12, dest, 15) != VK_SUCCESS);
     CHECK(dm_vk_texture_read_rows(&vk, &texture, 2, 1, &region, 12, dest, sizeof dest) != VK_SUCCESS);
     CHECK(dm_vk_texture_read_rows(&vk, &texture, 1, 2, &region, 12, dest, sizeof dest) != VK_SUCCESS);
+    CHECK(call == 0 && copies == 0 && barriers == 0);   // 未分配/未发命令 | no allocation or command emitted
     CHECK(!buffers && !memories && !commands && !fences);
+    CHECK(!memcmp(dest, dest_before, sizeof dest));
     CHECK(!memcmp(&texture, &snapshot, sizeof texture));
 
     // 4. 每个可达失败点：错误、资源平衡、descriptor/source/dest 不变。
@@ -255,13 +260,15 @@ int main(void) {
         balanced();
     }
 
-    // 5. 负控：错误 level 或 layer 必须被 oracle 拒绝，证明不是恒真。
+    // 5. 负控：错误 level/layer/y 必须被 oracle 拒绝，证明不是恒真。
     VkBufferImageCopy wrong = seen_copy;
-    CHECK(copy_matches(&wrong, 1, 1, 2, 0, 2, 2));
+    CHECK(copy_matches(&wrong, 1, 1, 2, 1, 2, 2));
     wrong.imageSubresource.mipLevel = 0;
-    CHECK(!copy_matches(&wrong, 1, 1, 2, 0, 2, 2));
+    CHECK(!copy_matches(&wrong, 1, 1, 2, 1, 2, 2));
     wrong = seen_copy; wrong.imageSubresource.baseArrayLayer = 0;
-    CHECK(!copy_matches(&wrong, 1, 1, 2, 0, 2, 2));
+    CHECK(!copy_matches(&wrong, 1, 1, 2, 1, 2, 2));
+    wrong = seen_copy; wrong.imageOffset.y = 0;
+    CHECK(!copy_matches(&wrong, 1, 1, 2, 1, 2, 2));
 
     printf("vulkan_texture_rows_subresource: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
