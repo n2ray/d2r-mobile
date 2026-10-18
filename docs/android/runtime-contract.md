@@ -1,8 +1,8 @@
 # Android runtime contract: async events, TLR preemption state and SVC 0x36
 
 Issue: [#3](https://github.com/n2ray/d2r-mobile/issues/3) (A1). Status: **design and
-falsifiable acceptance plan only.** Nothing in this document is implemented or verified
-on Android. No game, SDK, original rtld or phone was executed to write it. The
+falsifiable acceptance plan only.** The [repo] rows describe existing code. The [design]
+proposals added by this PR are not implemented, and nothing here is verified on Android. No game, SDK, original rtld or phone was executed to write it. The
 production scanner, diagnostic quarantine and SDK admission block stay unchanged.
 
 Evidence base: repository commit `9bb2fa7de18d61c22bb4a25c161ea97eb547bbd3`
@@ -46,7 +46,7 @@ admission (Issue #5) would require.
 | Host preemption of a guest thread | **[repo]** Guest threads are plain pthreads (`sync.c:240-245`). Virtual priority and affinity are not mapped (`sync.c:209-210`). | yes / yes | Preemption remains possible at any instruction. §2 defines what the guest may observe about it. |
 | SVC 0x36 SynchronizePreemptionState | **[repo]** `dm_host_svc` `default` writes `0x4201` to x0 and returns (`svc.c:16,49-52`). | yes, with x0 clobbered / yes | **[design]** §3. |
 | GetInfo(26 IsSvcPermitted) via SVC 0x29 | **[repo]** `svc.c:19` routes to `get_info` (`memory.c:130-160`). A call with handle 0 and sub-ID 0x36 returns `DM_SVC_INVALID_COMBINATION` at `memory.c:138`, because `r[3] != 0` for every ID other than 11. ID 26 is also absent from the switch, whose `default` returns `DM_SVC_NOT_IMPLEMENTED`. | yes (an error Result) / yes | **[design]** §3, rule 3. |
-| Other unknown SVC numbers | **[repo]** `0x4201` in x0, and the guest resumes (`svc.c:16,49-52`). | yes / yes | **[design]** Allowed only for SVCs whose ABI returns a Result in x0. Otherwise, fail-stop. |
+| Other unknown SVC numbers | **[repo]** `0x4201` in x0, and the guest resumes (`svc.c:16,49-52`). | yes / yes | **[design]** Returning a Result is allowed only for SVCs whose ABI returns a Result in x0. Any other unsupported SVC (non-Result, no admitted service-specific ABI) must fail-stop. Supported non-Result SVCs follow their verified ABI: GetSystemTick 0x1e returns a u64 in x0 (`svc.c:32-34`), ExitThread 0x0a does not return to the caller, and SVC 0x36 after admission is void (§3). |
 
 The macOS owned tests run the same `dm/android/runtime` source, keyed by `tpidrro_el0`.
 They are the only execution evidence (`dm/android/BASELINE.md:16-21`), and they do
@@ -177,7 +177,9 @@ prove.
     guest;
   - unregistered gates and entry returns;
   - SVC 0x36 before admission;
-  - every SVC without a Result in x0;
+  - any unsupported SVC whose ABI has no Result in x0 and that has no admitted
+    service-specific ABI. Explicitly supported non-Result SVCs (0x1e, 0x0a, and 0x36
+    after admission) follow their verified ABI instead of a fabricated Result;
   - unknown SVCs, unless the Result-only rule in §1 is proved per SVC number.
 
 ## 5. Counterexamples (plans only, none implemented)
@@ -195,7 +197,7 @@ with the review material that `dm/android/BASELINE.md` requires.
 | C5 | synthetic | O2 and T4' | The guest writes `flag = 1` with emulated `P == 0`, then calls SVC 0x36 twice. | `flag` changes. The reference keeps it at 1 for an unpinned thread, and this test does not assume an unconditional clear. |
 | C6 | synthetic | §4 signal rule | A non-listed, non-`SA_ONSTACK` signal arrives on a guest thread with a 4 KiB stack. | The guest resumes, with or without corruption, instead of stopping. |
 | C7 | synthetic | The §2 thread-exit choice | ExitThread with `count = 2` and emulated `P == 1`. | No diagnostic event, or ExitThread fails, or `P` is still set afterwards. |
-| C8 | synthetic | The unknown-SVC rule | A non-Result SVC goes through the default path. | The guest continues with a fabricated x0. |
+| C8 | synthetic | The unknown-SVC rule | An unsupported non-Result SVC with no admitted ABI goes through the default path. Control cases are 0x1e and an admitted 0x36. | The unsupported SVC continues with a fabricated x0, or a control case receives a Result instead of its verified ABI behavior (a u64 tick for 0x1e, a preserved x0 for 0x36). |
 | C9 | reference equivalence | Candidate A for this SDK (A2) | Two guest threads contend on an SDK section protected by the counter, under host preemption. | Any outcome the SDK's single-core pinned execution forbids, such as a torn update. This requires the traced SDK sequence (#5). |
 
 ## 6. Assumption register
@@ -213,7 +215,7 @@ Nothing here unblocks production admission by itself.
 
 ## 中文摘要
 
-本文件是 #3 的设计与可证伪验收方案，**未实现、未在 Android 上验证**，没有执行游戏、SDK、原始 rtld 或手机。
+本文件是 #3 的设计与可证伪验收方案。[repo] 部分描述的是现有代码；本 PR 新增的 [design] 提案尚未实现，所有内容都未在 Android 上验证。没有执行游戏、SDK、原始 rtld 或手机。
 §1 把“现有行为”和“拟定准入义务”分列，现有代码并不保证会检测或停止未列事件。
 ExitThread 由宿主回收线程，客体不再继续；信号目前没有任何拦截。
 §2 用状态机描述 TLR+0x100（disable_count，客体所有）和 +0x102（interrupt_flag）。
