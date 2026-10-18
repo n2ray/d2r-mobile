@@ -158,6 +158,17 @@ target_link_libraries(dm_input_policy_test PRIVATE dm_android_input_policy dm_an
 target_compile_options(dm_input_policy_test PRIVATE -Wall -Wextra -Werror)
 add_test(NAME input_policy COMMAND dm_input_policy_test)
 set_tests_properties(input_policy PROPERTIES TIMEOUT 30)
+# #154 Physical gamepad AInputEvent getters -> accepted dm_npad_state. Host
+# tests replace only the narrow Android getter boundary; no App wiring.
+add_library(dm_android_gamepad_events STATIC app/gamepad_events.c)
+target_include_directories(dm_android_gamepad_events PUBLIC app runtime ${CMAKE_CURRENT_SOURCE_DIR}/../host)
+target_link_libraries(dm_android_gamepad_events PUBLIC m)
+target_compile_options(dm_android_gamepad_events PRIVATE -Wall -Wextra -Werror)
+add_executable(dm_gamepad_events_test tests/gamepad_events.c)
+target_link_libraries(dm_gamepad_events_test PRIVATE dm_android_gamepad_events)
+target_compile_options(dm_gamepad_events_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME gamepad_events COMMAND dm_gamepad_events_test)
+set_tests_properties(gamepad_events PROPERTIES TIMEOUT 30)
 # #117 自有诊断场景与窗口呈现策略：纯 C，无 Vulkan/Android 头文件，故在 CI 的 Vulkan=OFF 配置下也构建并运行。
 # #117 owned diagnostic scene and window presentation policy: plain C without Vulkan/Android headers, so it builds
 # and runs in the Vulkan=OFF CI configurations too.
@@ -422,6 +433,10 @@ if(NOT ANDROID)
                 --app ${CMAKE_CURRENT_SOURCE_DIR}/app
                 --cc ${CMAKE_C_COMPILER})
         set_tests_properties(native_callbacks PROPERTIES TIMEOUT 120)
+        add_test(NAME gamepad_events_mutants
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/gamepad_events_mutants.py
+                --cc ${CMAKE_C_COMPILER})
+        set_tests_properties(gamepad_events_mutants PROPERTIES TIMEOUT 120)
     endif()
 endif()
 
