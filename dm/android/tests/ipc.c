@@ -447,6 +447,172 @@ static void log_tests(uint8_t *base, uint8_t *ro) {
     base[0] = original[0];
 }
 
+static void build_register(uint32_t command, uint32_t token, int special, uint32_t words);
+static void expect_empty_reply(uint32_t token);
+static void build_get_service(const char *name, uint32_t token);
+// Actual product discovery path: connect sm:, RegisterClient, GetServiceHandle
+// for "lm", domain conversion and OpenLogger. The test uses the real runtime
+// handlers; it does not register a substitute lm/sm service.
+static uint32_t log_session_from_sm(uint32_t token, uint32_t *root, uint32_t *child) {
+    uint32_t sm = connect_name("sm:");
+    build_register(0, token, 1, 10);
+    CHECK(send_request(sm) == 0);
+    expect_empty_reply(token);
+    build_get_service("lm", token + 1u);
+    CHECK(send_request(sm) == 0);
+    CHECK(get32(tls) == 0);
+    CHECK((get32(tls + 4) & 0x3ffu) == 4u);
+    CHECK((get32(tls + 4) >> 31) == 1u);
+    CHECK(get32(tls + 8) == (1u << 5));
+    uint32_t lm = get32(tls + 12);
+    CHECK(lm != 0);
+    CHECK(get32(tls + 16) == 0x4F434653u);
+    CHECK(get32(tls + 24) == 0);
+    CHECK(get32(tls + 28) == token + 1u);
+    CHECK(close_handle(sm) == 0);                 // sm registration retires; lm session survives.
+    build_control(0, token + 2u);
+    CHECK(send_request(lm) == 0);
+    *root = get32(tls + 32);
+    CHECK(*root != 0);
+    build_openlogger(*root, token + 3u, 0);
+    CHECK(send_request(lm) == 0);
+    CHECK(get32(tls + 16) == 1u);
+    CHECK(get32(tls + 32) == 0x4F434653u);
+    CHECK(get32(tls + 40) == 0u);
+    CHECK(get32(tls + 44) == token + 3u);
+    *child = get32(tls + 48);
+    CHECK(*child != 0);
+    CHECK(tls[52] == 1);                          // exact 52-byte OpenLogger reply.
+    return lm;
+}
+
+static void sm_lm_discovery_tests(uint8_t *base) {
+    CHECK(base != NULL);
+    size_t baseline_sessions = dm_host_ipc_open_sessions(host);
+    size_t baseline_clients = dm_sm_registered_clients(host);
+    uint8_t before[DM_IPC_BUFFER_SIZE];
+    dm_lm_packet packet;
+
+    // 1. GetServiceHandle before RegisterClient: explicit failure, no reply,
+    // no service session and no leaked sm registration.
+    uint32_t sm = connect_name("sm:");
+    build_get_service("lm", 0x501u);
+    memcpy(before, tls, sizeof before);
+    CHECK(send_request(sm) == 0x4201);
+    CHECK(!memcmp(before, tls, sizeof before));
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions);
+    CHECK(dm_sm_registered_clients(host) == baseline_clients);
+    CHECK(close_handle(sm) == 0xe401);
+
+    // 2. RegisterClient without the special header must fail; no registration,
+    // no reply, no service session and no leaked handle.
+    sm = connect_name("sm:");
+    build_register(0, 0x504u, 0, 10);
+    memcpy(before, tls, sizeof before);
+    CHECK(send_request(sm) != 0);
+    CHECK(!memcmp(before, tls, sizeof before));
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions);
+    CHECK(dm_sm_registered_clients(host) == baseline_clients);
+    CHECK(close_handle(sm) == 0xe401);
+
+    // 3. Register the sm client, then an unknown service must fail without
+    // creating a service session or a partial reply.
+    sm = connect_name("sm:");
+    build_register(0, 0x502u, 1, 10);
+    CHECK(send_request(sm) == 0);
+    expect_empty_reply(0x502u);
+    CHECK(dm_sm_registered_clients(host) == baseline_clients + 1);
+    build_get_service("nope:", 0x503u);
+    memcpy(before, tls, sizeof before);
+    CHECK(send_request(sm) == 0x4201);
+    CHECK(!memcmp(before, tls, sizeof before));
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions);
+    CHECK(dm_sm_registered_clients(host) == baseline_clients);
+    CHECK(close_handle(sm) == 0xe401);
+
+    // 4. Real service discovery: sm: RegisterClient -> GetServiceHandle("lm")
+    // move handle -> domain conversion -> OpenLogger.
+    uint32_t root1 = 0, child1 = 0;
+    uint32_t lm1 = log_session_from_sm(0x510u, &root1, &child1);
+    CHECK(root1 == 1u && child1 == 2u);
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions + 1);
+    uint32_t root2 = 0, child2 = 0;
+    uint32_t lm2 = log_session_from_sm(0x520u, &root2, &child2);
+    CHECK(root2 == root1 && child2 == child1); // equal numeric ids, session scoped
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions + 2);
+
+    // 5. Log through each discovered session; equal child ids remain isolated.
+    base[0] = 0x31u;
+    build_log(child1, 0x521u, (uintptr_t)base, 1);
+    CHECK(send_request(lm1) == 0);
+    expect_log_reply(0x521u);
+    CHECK(dm_lm_packet_count(host) == 1);
+    base[0] = 0x42u;
+    build_log(child2, 0x522u, (uintptr_t)base, 1);
+    CHECK(send_request(lm2) == 0);
+    expect_log_reply(0x522u);
+    CHECK(dm_lm_packet_count(host) == 2);
+    CHECK(dm_lm_take_packet(host, &packet) == 0);
+    CHECK(packet.client == lm1 && packet.object_id == child1 && packet.data[0] == 0x31u);
+    CHECK(dm_lm_take_packet(host, &packet) == 0);
+    CHECK(packet.client == lm2 && packet.object_id == child2 && packet.data[0] == 0x42u);
+    CHECK(dm_lm_packet_count(host) == 0);
+
+    // 6. Domain close on the discovered child retires only that child. The
+    // service session remains usable for the remaining failure-path checks.
+    build_domain_close(child1, 0x526u);
+    CHECK(send_request(lm1) == 0);
+
+    // 7. Wrong-session numeric id: allocate an extra child in lm2, then send
+    // that id through lm1. Failure closes lm1 and publishes no reply; lm2's
+    // child remains independently valid. Equal root/child values above are
+    // intentionally ambiguous by number and are resolved by the session handle.
+    build_openlogger(root2, 0x525u, 0);
+    CHECK(send_request(lm2) == 0);
+    uint32_t foreign = get32(tls + 48);
+    CHECK(foreign != 0 && foreign != child2);
+    build_log(foreign, 0x523u, (uintptr_t)base, 1);
+    memcpy(before, tls, sizeof before);
+    CHECK(send_request(lm1) != 0);
+    CHECK(!memcmp(before, tls, sizeof before));
+    CHECK(dm_lm_packet_count(host) == 0);
+    CHECK(close_handle(lm1) == 0xe401);
+    base[0] = 0x43u;
+    build_log(child2, 0x524u, (uintptr_t)base, 1);
+    CHECK(send_request(lm2) == 0);
+    CHECK(dm_lm_take_packet(host, &packet) == 0 && packet.client == lm2 && packet.data[0] == 0x43u);
+
+    // 8. OpenLogger before conversion/with a wrong root fails explicitly and
+    // leaves no logger child. Discover a raw lm handle first.
+    uint32_t raw_lm = 0;
+    sm = connect_name("sm:");
+    build_register(0, 0x530u, 1, 10);
+    CHECK(send_request(sm) == 0);
+    build_get_service("lm", 0x531u);
+    CHECK(send_request(sm) == 0);
+    raw_lm = get32(tls + 12);
+    CHECK(raw_lm != 0);
+    CHECK(close_handle(sm) == 0);
+    build_openlogger(1u, 0x532u, 0);
+    memcpy(before, tls, sizeof before);
+    CHECK(send_request(raw_lm) == 0x4201);
+    CHECK(!memcmp(before, tls, sizeof before));
+    CHECK(dm_lm_packet_count(host) == 0);
+    CHECK(close_handle(raw_lm) == 0xe401);
+
+    // 9. Invalid Log child fails with no partial reply and no retained packet;
+    // then the real child is closed and the session is reclaimed cleanly.
+    build_log(child2 + 100u, 0x533u, (uintptr_t)base, 1);
+    memcpy(before, tls, sizeof before);
+    CHECK(send_request(lm2) != 0);
+    CHECK(!memcmp(before, tls, sizeof before));
+    CHECK(dm_lm_packet_count(host) == 0);
+    CHECK(close_handle(lm2) == 0xe401);
+    CHECK(dm_host_ipc_open_sessions(host) == baseline_sessions);
+    CHECK(dm_sm_registered_clients(host) == baseline_clients);
+    CHECK(dm_lm_packet_count(host) == 0);
+}
+
 typedef struct {
     dm_host *host;
     pthread_mutex_t lock;
@@ -975,6 +1141,7 @@ int main(void) {
         tls = (uint8_t *)context->slots[DM_SLOT_TLS];
         CHECK(tls && (uintptr_t)tls % 16 == 0);
         log_tests(log_base, readonly_base);
+        sm_lm_discovery_tests(log_base);
         CHECK(dm_lm_packet_count(host) == 0);
         dm_host *primary = host;
         CHECK(dm_guest_detach() == 0);
@@ -995,6 +1162,8 @@ int main(void) {
         CHECK(send_request(other) == 0);
         CHECK(dm_lm_packet_count(host) == 1);
         CHECK(close_handle(other) == 0);
+        CHECK(dm_lm_packet_count(host) == 0);
+        sm_lm_discovery_tests(other_base);
         CHECK(dm_lm_packet_count(host) == 0);
         CHECK(dm_guest_detach() == 0);
         CHECK(dm_host_destroy(host) == 0);
