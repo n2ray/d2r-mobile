@@ -37,9 +37,6 @@ static int from_vk_address(VkSamplerAddressMode m, dm_vk_address *out) {
         default: return 0;
     }
 }
-static VkFilter map_min_mag(int nvn_min) {
-    return (nvn_min == 1 || nvn_min == 3 || nvn_min == 5) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
-}
 static int finite_float(float v) { return isfinite(v) && fabsf(v) <= 1.0e6f; }
 
 VkResult dm_vk_sampler_create(dm_vk *vk, const dm_vk_sampler_desc *desc, dm_vk_sampler *out) {
@@ -94,23 +91,27 @@ VkResult dm_vk_sampler_from_nvn(dm_vk *vk, const dm_vk_nvn_sampler *nvn, dm_vk_s
     if (nvn->minf < 0 || nvn->minf > 5) return VK_ERROR_INITIALIZATION_FAILED;   // 未知枚举不默认 | unknown enum never defaults
     if (nvn->magf < 0 || nvn->magf > 1) return VK_ERROR_INITIALIZATION_FAILED;
     if (nvn->cmp_mode != 0) return VK_ERROR_FEATURE_NOT_PRESENT;                 // 比较采样未实现 | unimplemented
+    // 原始 NVN LOD 必须是有限值且 min≤max：必须在校验前拒绝，不能因为非 mipmap 归一化而被绕过。
+    // The original NVN LOD must be finite with min<=max: reject before normalization so non-mipmapped normalization
+    // cannot bypass the check promised in the header.
+    if (!finite_float(nvn->lod_min) || !finite_float(nvn->lod_max) || nvn->lod_min > nvn->lod_max)
+        return VK_ERROR_INITIALIZATION_FAILED;
     dm_vk_sampler_desc d;
     memset(&d, 0, sizeof d);
-    d.min_filter = map_min_mag(nvn->minf) == VK_FILTER_LINEAR ? DM_VK_FILTER_LINEAR : DM_VK_FILTER_NEAREST;
-    d.mag_filter = nvn->magf == 1 ? DM_VK_FILTER_LINEAR : DM_VK_FILTER_NEAREST;
-    if (nvn->minf <= 1) {
-        // Metal 的 NotMipmapped 只采样 level 0（nvn_mtl.m:2553），且 lodMinClamp 在 2555 行被抬到 ≥0；非 mipmap 采样的
-        // 有效 LOD 恒为 0。因此 NVN 的正 lod_min 在这里被精确定义为 0，而不是让 max<min 意外失败。
-        // Metal's NotMipmapped samples level 0 only (nvn_mtl.m:2553) and lodMinClamp is raised to >=0 (line 2555); the
-        // effective LOD is therefore always 0 for non-mipmapped sampling, so a positive NVN lod_min becomes 0 here
-        // instead of failing accidentally on max<min.
-        d.mipmap = DM_VK_MIP_NEAREST;
-        d.lod_min = 0.0f;
-        d.lod_max = 0.0f;
-    } else {
-        d.lod_min = nvn->lod_min;
-        d.lod_max = nvn->lod_max;
+    // 显式穷举 minf -> minFilter/mipmapMode/LOD：0/1 非 mipmap（Metal NotMipmapped，LOD 恒 0），2/3 mip nearest，
+    // 4/5 mip linear；4/5 的 min filter 仍是 nearest（与 nvn_mtl.m:2552-2553 一致）。
+    // Explicit minf -> minFilter/mipmapMode/LOD mapping: 0/1 non-mipmapped (Metal NotMipmapped, LOD always 0), 2/3 mip
+    // nearest, 4/5 mip linear; 4/5 keep a nearest min filter, matching nvn_mtl.m:2552-2553.
+    switch (nvn->minf) {
+        case 0: d.min_filter = DM_VK_FILTER_NEAREST; d.mipmap = DM_VK_MIP_NEAREST; d.lod_min = 0.0f; d.lod_max = 0.0f; break;
+        case 1: d.min_filter = DM_VK_FILTER_LINEAR;  d.mipmap = DM_VK_MIP_NEAREST; d.lod_min = 0.0f; d.lod_max = 0.0f; break;
+        case 2: d.min_filter = DM_VK_FILTER_NEAREST; d.mipmap = DM_VK_MIP_NEAREST; d.lod_min = nvn->lod_min; d.lod_max = nvn->lod_max; break;
+        case 3: d.min_filter = DM_VK_FILTER_LINEAR;  d.mipmap = DM_VK_MIP_NEAREST; d.lod_min = nvn->lod_min; d.lod_max = nvn->lod_max; break;
+        case 4: d.min_filter = DM_VK_FILTER_NEAREST; d.mipmap = DM_VK_MIP_LINEAR;  d.lod_min = nvn->lod_min; d.lod_max = nvn->lod_max; break;
+        case 5: d.min_filter = DM_VK_FILTER_LINEAR;  d.mipmap = DM_VK_MIP_LINEAR;  d.lod_min = nvn->lod_min; d.lod_max = nvn->lod_max; break;
+        default: return VK_ERROR_INITIALIZATION_FAILED;   // 未知不默认 | unknown never defaults
     }
+    d.mag_filter = nvn->magf == 1 ? DM_VK_FILTER_LINEAR : DM_VK_FILTER_NEAREST;
     d.lod_bias = nvn->lod_bias;
     d.max_aniso = nvn->aniso;
     d.compare_enable = nvn->cmp_mode;
