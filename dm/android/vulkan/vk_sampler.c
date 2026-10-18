@@ -98,10 +98,10 @@ VkResult dm_vk_sampler_from_nvn(dm_vk *vk, const dm_vk_nvn_sampler *nvn, dm_vk_s
         return VK_ERROR_INITIALIZATION_FAILED;
     dm_vk_sampler_desc d;
     memset(&d, 0, sizeof d);
-    // 显式穷举 minf -> minFilter/mipmapMode/LOD：0/1 非 mipmap（Metal NotMipmapped，LOD 恒 0），2/3 mip nearest，
-    // 4/5 mip linear；4/5 的 min filter 仍是 nearest（与 nvn_mtl.m:2552-2553 一致）。
-    // Explicit minf -> minFilter/mipmapMode/LOD mapping: 0/1 non-mipmapped (Metal NotMipmapped, LOD always 0), 2/3 mip
-    // nearest, 4/5 mip linear; 4/5 keep a nearest min filter, matching nvn_mtl.m:2552-2553.
+    // 显式穷举 minf -> minFilter/mipmapMode/LOD：0/1 非 mipmap（Metal NotMipmapped，LOD 恒 0）；2/3 mip nearest；
+    // 4/5 mip linear，其中 4 的 minFilter 是 nearest、5 是 linear（与 nvn_mtl.m:2552-2553 一致）。
+    // Explicit minf -> minFilter/mipmapMode/LOD: 0/1 non-mipmapped (Metal NotMipmapped, LOD always 0); 2/3 mip nearest;
+    // 4/5 mip linear, where 4 keeps a nearest minFilter and 5 a linear one (matching nvn_mtl.m:2552-2553).
     switch (nvn->minf) {
         case 0: d.min_filter = DM_VK_FILTER_NEAREST; d.mipmap = DM_VK_MIP_NEAREST; d.lod_min = 0.0f; d.lod_max = 0.0f; break;
         case 1: d.min_filter = DM_VK_FILTER_LINEAR;  d.mipmap = DM_VK_MIP_NEAREST; d.lod_min = 0.0f; d.lod_max = 0.0f; break;
