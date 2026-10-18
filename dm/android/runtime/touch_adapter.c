@@ -88,8 +88,12 @@ static void publish(dm_android_touch *touch) {
         (void)dm_tc_pulse_end(s, epoch);
     }
     if (touch->pulse_count > 0) {
-        publish_entry(touch, touch->pulses[touch->pulse_head].buttons,
-                      touch->pulses[touch->pulse_head].rx, touch->pulses[touch->pulse_head].ry);
+        if (touch->release_waiting) {
+            publish_core(touch);   /* consumer boundary: ticks/moves cannot overwrite the release read */
+        } else {
+            publish_entry(touch, touch->pulses[touch->pulse_head].buttons,
+                          touch->pulses[touch->pulse_head].rx, touch->pulses[touch->pulse_head].ry);
+        }
     } else {
         publish_core(touch);
     }

@@ -48,7 +48,10 @@ void dm_android_touch_destroy(dm_android_touch *touch);
 // Read one coherent pad snapshot. Pending release-to-cast pulses are returned
 // one per read in acceptance order, each with its own button/aim/modifier. A
 // repeated same-button pulse is separated by one neutral read so the consumer
-// sees distinct edges. After the last pulse, the next read is neutral/held.
+// sees distinct edges; ticks/moves between the two reads cannot overwrite that
+// release. After the last pulse, the next read is neutral/held. When the bounded
+// pulse ring is full, callers must drain it and retry the rejected mutating
+// event; rejection does not mutate pointer/core/timer state.
 // Direct dm_android_pad_read calls bypass this consumption and must not be used.
 
 // Each function returns 1 when the event was accepted and 0 when it was

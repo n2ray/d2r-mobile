@@ -208,6 +208,38 @@ static void repeated_same_button(fixture *f) {
     CHECK(d.buttons == 0);
 }
 
+/* The release is a read-boundary invariant: a tick before every read must not
+   republish the pending same-button pulse over the required release. */
+static void same_button_release_across_ticks(fixture *f) {
+    dm_npad_state a, b, c, d;
+    tap(f, 1, f->layout.target[DM_TC_SKILL1].x, f->layout.target[DM_TC_SKILL1].y, 9100000000);
+    tap(f, 2, f->layout.target[DM_TC_SKILL1].x, f->layout.target[DM_TC_SKILL1].y, 9120000000);
+    CHECK(dm_android_touch_tick(f->touch, 9130000000));
+    a = read_pad(f); CHECK(a.buttons == DM_BTN_B);
+    CHECK(dm_android_touch_tick(f->touch, 9140000000));
+    b = read_pad(f); CHECK(b.buttons == 0);
+    CHECK(dm_android_touch_tick(f->touch, 9150000000));
+    c = read_pad(f); CHECK(c.buttons == DM_BTN_B);
+    CHECK(dm_android_touch_tick(f->touch, 9160000000));
+    d = read_pad(f); CHECK(d.buttons == 0);
+}
+
+/* An unrelated active joystick must remain held through the neutral release and
+   the following same-button pulse. */
+static void same_button_release_with_unrelated_move(fixture *f) {
+    dm_npad_state a, b, c;
+    tap(f, 1, f->layout.target[DM_TC_SKILL1].x, f->layout.target[DM_TC_SKILL1].y, 9200000000);
+    tap(f, 2, f->layout.target[DM_TC_SKILL1].x, f->layout.target[DM_TC_SKILL1].y, 9220000000);
+    a = read_pad(f); CHECK(a.buttons == DM_BTN_B);
+    CHECK(dm_android_touch_down(f->touch, 9, 90, 275, 9230000000));
+    CHECK(dm_android_touch_move(f->touch, 9, 150, 275, 9231000000));
+    CHECK(dm_android_touch_tick(f->touch, 9232000000));
+    b = read_pad(f); CHECK(b.buttons == 0 && b.lx == DM_STICK_MAX);
+    CHECK(dm_android_touch_tick(f->touch, 9233000000));
+    c = read_pad(f); CHECK(c.buttons == DM_BTN_B && c.lx == DM_STICK_MAX);
+    CHECK(dm_android_touch_up(f->touch, 9, 9234000000));
+}
+
 /* Distinct pulses keep their own aim directions, not an OR/collapsed sample. */
 static void distinct_aims(fixture *f) {
     dm_npad_state a, b, c;
@@ -330,6 +362,8 @@ int main(void) {
     CASE(cancel_isolates_unread_pulse);
     CASE(two_distinct_pulses);
     CASE(repeated_same_button);
+    CASE(same_button_release_across_ticks);
+    CASE(same_button_release_with_unrelated_move);
     CASE(distinct_aims);
     CASE(bounded_pulses_and_overflow);
     CASE(global_cancel_clears_pulses);
