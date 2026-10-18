@@ -141,6 +141,32 @@ static int mutate_duplicate_definition(const char *src, const char *dst) {
     int ok = void_word && function_id && (w[void_word + 1] = function_id) != 0 && write_all(dst, b, size);
     free(b); return ok;
 }
+// 在 OpTypeFunction 中插入 N 个参数类型，构造 8/9/大量参数的 CPU 反例。 | Insert N parameter types.
+static int mutate_function_parameters(const char *src, const char *dst, uint32_t params) {
+    uint8_t *b; size_t size;
+    if (!read_all(src, &b, &size) || size < 24 || size % 4 || params > 4096) { free(b); return 0; }
+    uint32_t *w = (uint32_t *)(void *)b, n = (uint32_t)(size / 4), i = 0;
+    for (i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffffu, wc = w[i] >> 16;
+        if (!wc || i + wc > n) break;
+        if (op == 33u && wc == 3) break;
+        i += wc;
+    }
+    if (i >= n) { free(b); return 0; }
+    uint32_t old_wc = w[i] >> 16;
+    uint64_t total = (uint64_t)n + params;
+    if (total > (DM_VK_GRAPHICS_MAX_CODE / 4)) { free(b); return 0; }
+    uint32_t *out = calloc((size_t)total, sizeof *out);
+    if (!out) { free(b); return 0; }
+    for (uint32_t k = 0; k < i; k++) out[k] = w[k];
+    out[i] = (((old_wc + params) & 0xffffu) << 16) | 33u;
+    out[i + 1] = w[i + 1];
+    out[i + 2] = w[i + 2];
+    for (uint32_t k = 0; k < params; k++) out[i + 3 + k] = w[i + 2];
+    for (uint32_t k = i + old_wc; k < n; k++) out[k + params] = w[k];
+    int ok = write_all(dst, out, (size_t)total * 4);
+    free(out); free(b); return ok;
+}
 
 static void expect_reject(const char *vs, const char *ps, const char *meta, const char *label) {
     dm_vk_graphics_plan p; char why[DM_VK_GRAPHICS_WHY] = {0};
@@ -219,6 +245,15 @@ int main(int argc, char **argv) {
     CHECK(mutate_duplicate_definition(argv[1], "graphics-duplicate-def.spv"));
     expect_reject("graphics-duplicate-def.spv", argv[2], NULL, "duplicate-definition");
     remove("graphics-duplicate-def.spv");
+    CHECK(mutate_function_parameters(argv[1], "graphics-params-8.spv", 8));
+    expect_reject("graphics-params-8.spv", argv[2], NULL, "function-params-8");
+    remove("graphics-params-8.spv");
+    CHECK(mutate_function_parameters(argv[1], "graphics-params-9.spv", 9));
+    expect_reject("graphics-params-9.spv", argv[2], NULL, "function-params-9");
+    remove("graphics-params-9.spv");
+    CHECK(mutate_function_parameters(argv[1], "graphics-params-large.spv", 4096));
+    expect_reject("graphics-params-large.spv", argv[2], NULL, "function-params-large");
+    remove("graphics-params-large.spv");
     CHECK(truncate_module(argv[1], "graphics-truncated.spv"));
     expect_reject("graphics-truncated.spv", argv[2], NULL, "truncated");
     remove("graphics-truncated.spv");

@@ -156,6 +156,7 @@ static int scan_module(const uint8_t *data, size_t size, gmodule *m, char *why, 
                 for (int b = 0; b < 4; b++) {
                     char c = (char)((word >> (8 * b)) & 0xff);
                     if (!c) { p = n; break; }
+                    if (k >= sizeof m->entry_name - 1) { set_why(why, cap, "OpEntryPoint 名称过长"); return 0; }
                     m->entry_name[k++] = c;
                 }
                 if (p == n) break;
@@ -241,18 +242,16 @@ static int scan_module(const uint8_t *data, size_t size, gmodule *m, char *why, 
             break;
         }
         case OP_TYPE_FUNCTION:
-            if (n < 2) { set_why(why, cap, "OpTypeFunction 操作数不足"); return 0; }
+            // 入口子集只接受无参数函数类型；参数个数在写入任何数组前拒绝。
+            // The entry subset accepts only parameterless function types; reject the count before any array write.
+            if (n != 2) { set_why(why, cap, "OpTypeFunction 参数个数 %u 不支持（仅无参数入口）", n > 2 ? n - 2 : 0); return 0; }
             if (!add_definition(m, o[0], "function type", why, cap)) return 0;
             if (!check_id(m, o[1], "function return type", why, cap)) return 0;
             if (m->type_count >= MAX_TYPES) { set_why(why, cap, "类型过多"); return 0; }
             {
                 gtype *t = &m->types[m->type_count++];
                 memset(t, 0, sizeof *t);
-                t->id = o[0]; t->kind = OP_TYPE_FUNCTION; t->a = o[1]; t->member_count = n - 2;
-                for (uint32_t k = 0; k < t->member_count; k++) {
-                    if (!check_id(m, o[k + 2], "function parameter type", why, cap)) return 0;
-                    t->members[k] = o[k + 2];
-                }
+                t->id = o[0]; t->kind = OP_TYPE_FUNCTION; t->a = o[1]; t->member_count = 0;
             }
             break;
         case OP_FUNCTION:
