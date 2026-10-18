@@ -108,7 +108,7 @@ static uint32_t build(uint32_t command, const void *payload, size_t size, uint32
     put32(tls + 20, 0);
     put32(tls + 24, command);
     put32(tls + 28, token);
-    memcpy(tls + 32, payload, size);
+    if (size) memcpy(tls + 32, payload, size);
     return words;
 }
 static void expect_reply(uint32_t token, const void *payload, size_t size) {

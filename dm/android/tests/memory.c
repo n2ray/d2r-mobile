@@ -15,7 +15,9 @@
 #define CHECK(c)do{if(!(c)){fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#c);abort();}}while(0)
 #define UNIT (2u*1024u*1024u)
 #define STACK 65536u
+#if defined(__aarch64__)
 static const dm_gate_table gates={0};
+#endif
 typedef struct{uint64_t base,size;uint32_t state,attr,perm,ipc,device,pad;}info;
 static uint64_t heap_size(dm_host*h,size_t size){uint64_t r[31]={[1]=size};return dm_host_svc(h,1,r);}
 static uint64_t alias(dm_host*h,unsigned n,void*dst,void*src,size_t size){
