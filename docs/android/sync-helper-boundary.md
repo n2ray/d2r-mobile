@@ -22,9 +22,11 @@ scanner, quarantine and helper implementations are unchanged.
 
 ## 1. 参与者与地址 | Participants and addresses
 
-- **[repo] 公开 main 中不存在 `g_RoBusyMutex` 或名为 ticket/rwlock 的辅助实现。** 静态检索
-  `git grep -n "g_RoBusyMutex\|RoBusy\|ticket\|rwlock"` 在公开树无命中；只有本文件新增的说明会提到这些词。该方法
-  只能覆盖公开文本，不能证明 SDK 二进制、计算跳转或外部调用者里没有同名/等价辅助。
+- **[repo] 公开 main（`44dc09d`）的 `dm/` 源码树中没有 `g_RoBusyMutex`/`RoBusy` 命中**：
+  `git grep -nE "g_RoBusyMutex|RoBusy" 44dc09d -- dm` → 无命中。`ticket` 只出现在文档与出图队列注释中，例如
+  `dm/android/README.md:273`、`dm/android/README.zh-CN.md:275`（只读调用方调查说明）与 `hle_nvn.c:838-845`
+  （出图票号注释）；它们都不是该辅助函数的实现。该检索只覆盖公开文本，缺少具名实现 ≠ 缺少静态证据：
+  SDK 二进制、计算跳转与外部调用者仍不可见。
 - **[repo] 现有同步相关实现**：`dm/android/runtime/mutex.c`（Horizon 互斥/条件服务）、`runtime/arbiter.c`
   （WaitForAddress/SignalToAddress）、`runtime/sync.c`（事件）、`rewrite/exclusive.c`（独占窗口检查）。
 - **[repo] SDK 侧只读调查记录**（非本仓库源码）：`dm/android/README.md:273` 说明存在一个 “native ticket-lock
@@ -34,17 +36,18 @@ scanner, quarantine and helper implementations are unchanged.
 
 ## 2. 保留状态与返回边界 | Reservation state and the return boundary
 
-- **[ref]** AArch64 的独占监视器只在明确清除事件（`CLREX`、成功的 `STXR`、异常/上下文切换等）后失效；普通函数调用与
-  `RET` 不是清除事件。Arm A64 同步指南 §3.2.4（`dm/android/README.md:255` 引用同一来源）。
+- **[ref]** AArch64 的独占监视器在明确清除事件后失效（`CLREX`、成功的 `STXR`、异常/上下文切换等）；普通函数调用与
+  `RET` 本身不是清除事件。Arm A64 同步指南 §3.2.4（`dm/android/README.md:255` 引用同一来源）。
 - **[repo]** 系统 SVC 桩在返回前显式执行 `CLREX`（`README.md:255`），并有合成反例：宿主门里重新 `ldxr` 预留，SVC
   桩返回后 `STXR` 必须失败且内存不变（`tests/system_patch.c:43-64`，`README.md:261`）。
 - **[repo]** 独占窗口检查器拒绝带活预留的 `RET`/调用/间接跳转，只接受 `STXR`、`CLREX`、下一个独占加载或
   monitor-clearing SVC 边界（`rewrite/exclusive.h:7`；`rewrite/exclusive.c:28` 接受直接 SVC，
   `:35` 拒绝 `CALL/RET`，`:47` 限定 ±4 KiB 与 256 条指令）。
 - **[ours]** 新反例 `dm/android/tests/exclusive_return.c`：`ldxr` 后直接 `RET` 的辅助函数返回后，调用方 `STXR`
-  **成功**（64 次中 63 次；1 次被中断清除，如实保留）；对照组同形状但多一条 `CLREX`，`STXR` 64/64 失败且内存不变。
-  结论：**调用者不能因为辅助函数“正常返回”或符合 AAPCS 就认为预留已清除**；支持边界必须显式要求 `STXR`/`CLREX`/SVC
-  边界，或由检查器拒绝该路径。
+  **成功**（64 次中 63 次；另有 1 次未观察到保留，原因未知——中断/调度/上下文切换等都可能清除，未建立因果）；对照组
+  同形状但多一条 `CLREX`，`STXR` 64/64 失败且内存不变。结论：**调用者不能因为辅助函数“正常返回”或符合 AAPCS
+  就认为预留已清除**；支持边界必须显式要求 `STXR`/`CLREX`/SVC 边界，或由检查器拒绝该路径。这是指令级反例，
+  不是调度或通用保证。
 - **[unknown]** SDK ticket helper 是否在执行 `STXR`/`CLREX` 后返回；其三条已知调用者之外的间接入口。
 
 ## 3. 低 16 位、票号回绕与满状态 | Low 16 bits, ticket wrap and full state
@@ -99,5 +102,6 @@ cmake --build build/issue-4-host --target dm_exclusive_return_test
 build/issue-4-host/dm_exclusive_return_test
 ```
 
-结果（Apple M4，合成 ARM64）：`ret_preserved=63/64 (spurious-fail=1)`，`clrex_blocked=64/64 unchanged=64/64`，exit 0。
-中断导致的一次偶发清除被如实保留，不断言每次成功。
+结果（Apple M4，合成 ARM64）：`ret_preserved=63/64 (cause-unknown non-survivals=1)`，
+`clrex_blocked=64/64 unchanged=64/64`，exit 0。未能观察到保留的那一次原因未知，不断言每次成功。
+非 AArch64 构建返回 77，CTest 以 `SKIP_RETURN_CODE 77` 记为 SKIP，不把“未执行指令”当成通过。
