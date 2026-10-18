@@ -1,5 +1,7 @@
 # D2R Mobile
 
+Android fork：面向**小米 15 Ultra / 骁龙 8 Elite** 的原生工具见 [dm/android](dm/android/README.zh-CN.md)。**游戏移植尚不可玩。** 合成诊断 APK 已在小米手机通过 ARM64 原生执行、Vulkan 像素校验及窗口提交。另行受限的 macOS 诊断现已执行 `_init_libc0` 和一个真实 SDK `nnosInitialize` 阶段，正常返回并完成清理。生产严格准备仍拒绝原始 SDK 输入；后续初始化、完整启动及 Android 游戏执行仍未验证。下方 Apple 平台说明描述的是上游功能。
+
 **开源的《暗黑破坏神 II：狱火重生》术士君临 iOS / macOS 兼容层。** 把你自己购买的 Nintendo Switch 版游戏（含「术士君临」资料片）完整带到 iPhone、iPad 和 Mac 上：原版内核原生执行，整套操作为触屏重做，稳定 60 帧，一秒进局。现在也有原生的 macOS 版（第一版）：Apple 芯片的 Mac 上双击启动，键盘、鼠标、手柄都能用。Apple TV 4K（第三代 A15）有社区移植（开发者预览），只在作者的实机上到过职业选择画面，详见下面的设备表。
 
 这不是一个「勉强能跑」的技术演示，而是一个打磨到可以天天玩、从开荒一路玩到终局的移动版。
