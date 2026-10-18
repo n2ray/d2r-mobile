@@ -356,8 +356,8 @@ static uint32_t log_session(uint32_t token, uint32_t *root, uint32_t *child) {
     return h;
 }
 static void log_tests(uint8_t *base, uint8_t *ro) {
-    // 低 VA 的真实映射由调用方在 attach 前登记；pin/复制必须走真实宿主路径。
-    // Caller registers the low-VA mapping before attach; pin/copy uses real host paths.
+    // 真实映射由调用方在 attach 前登记；pin/复制必须走真实宿主路径。
+    // Caller registers the real mapping before attach; pin/copy uses real host paths.
     CHECK(base != NULL && ro != NULL);
     uint8_t original[DM_LM_PACKET_MAX];
     for (unsigned i = 0; i < sizeof original; i++) base[i] = original[i] = (uint8_t)(i * 7u + 3u);
@@ -1210,17 +1210,19 @@ int main(void) {
         CHECK(dm_guest_detach() == 0);
         CHECK(dm_host_destroy(host) == 0);
     }
-    // J. 独立的低 VA 宿主：真实 SVC Log、pin/复制、队列与关闭清理。
-    // J. Independent low-VA host: real SVC Log, pin/copy, queue and close cleanup.
+    // J. 独立的宿主：真实 SVC Log、pin/复制、队列与关闭清理。
+    // J. Independent host: real SVC Log, pin/copy, queue and close cleanup.
+    // ASAN 在 x86_64 保留 shadow gap；使用真实匿名映射而不是固定 VA。
+    // ASAN reserves an x86_64 shadow gap; use real anonymous mappings, not fixed VAs.
     {
         host = dm_host_create_process_layout(64 * UNIT, 16 * UNIT, 32 * UNIT);
         CHECK(host);
-        uint8_t *log_base = mmap((void *)0x400000000ull, 4096, PROT_READ | PROT_WRITE,
-                                 MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+        uint8_t *log_base = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANON, -1, 0);
         CHECK(log_base != MAP_FAILED);
         CHECK(dm_host_register_writable(host, log_base, 4096) == 0);
-        uint8_t *readonly_base = mmap((void *)0x600000000ull, 4096, PROT_READ | PROT_WRITE,
-                                      MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+        uint8_t *readonly_base = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                                      MAP_PRIVATE | MAP_ANON, -1, 0);
         CHECK(readonly_base != MAP_FAILED);
         memset(readonly_base, 0x99, 4096);
         CHECK(mprotect(readonly_base, 4096, PROT_READ) == 0);
@@ -1242,8 +1244,8 @@ int main(void) {
         // Second host has an independent queue; same numeric ids do not leak into primary.
         host = dm_host_create_process_layout(64 * UNIT, 16 * UNIT, 32 * UNIT);
         CHECK(host);
-        uint8_t *other_base = mmap((void *)0x500000000ull, 4096, PROT_READ | PROT_WRITE,
-                                   MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+        uint8_t *other_base = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                                   MAP_PRIVATE | MAP_ANON, -1, 0);
         CHECK(other_base != MAP_FAILED);
         CHECK(dm_host_register_writable(host, other_base, 4096) == 0);
         CHECK(dm_guest_attach(host, &gates) == 0);
