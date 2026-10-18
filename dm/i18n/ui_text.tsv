@@ -370,3 +370,4 @@ dmTcNavBack	返回	Back	同上
 dmTcNavAction	操作	Action	同上
 dmTcNavBind	绑定	Bind	同上
 dmTcNavNext	下一页	Next Page	同上
+dmAndroidDiagnosticName	D2R 诊断	D2R Diagnostics	Android 原生运行时与 Vulkan 工程诊断 App 名称（app/AndroidManifest.xml）

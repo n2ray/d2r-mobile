@@ -372,4 +372,5 @@ static const struct { const char *k, *zh, *en; } k_dm_i18n[] = {
     { "dmTcNavAction", "操作", "Action" },
     { "dmTcNavBind", "绑定", "Bind" },
     { "dmTcNavNext", "下一页", "Next Page" },
+    { "dmAndroidDiagnosticName", "D2R 诊断", "D2R Diagnostics" },
 };

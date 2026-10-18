@@ -1,5 +1,7 @@
 # D2R Mobile
 
+Android fork: native tooling for **Xiaomi 15 Ultra / Snapdragon 8 Elite** is in [dm/android](dm/android/README.md). **The game port is not playable yet.** The synthetic diagnostic APK passed native ARM64 execution and Vulkan pixel/window checks on the Xiaomi phone. A separately restricted macOS diagnostic has now executed `_init_libc0` and one real SDK `nnosInitialize` stage, returned and cleaned up. Production strict SDK preparation still rejects the original input; later initialization, full startup and Android game execution remain unverified. The Apple platform descriptions below refer to upstream functionality.
+
 **An open-source iOS / macOS compatibility layer for Diablo II: Resurrected with the Reign of the Warlock expansion.** It brings the Nintendo Switch release you bought, expansion included, to iPhone, iPad and Mac in full: the original game code runs natively, every control is rebuilt for touch, the frame rate holds at 60 fps, and you are in a game one second after the main menu. There is now a native macOS version as well (first version): on an Apple silicon Mac it starts on double-click and works with keyboard, mouse and gamepad. Apple TV 4K (3rd generation, A15) has a community port (developer preview) that has reached the character-selection screen only on its author's device; see the device table below.
 
 This is not a tech demo that "sort of runs". It is a mobile version polished for daily play, from your first character all the way through the endgame.
