@@ -502,14 +502,21 @@ static void log_tests(uint8_t *base, uint8_t *ro) {
     base[0] = original[0];
 }
 
-static unsigned sink_calls, sink_fail_at, sink_seen_n, sink_reentrant_rc;
+static unsigned sink_calls, sink_fail_at, sink_seen_n, sink_reentrant_rc, sink_take_rc;
 static uint8_t sink_seen[16];
+static pthread_mutex_t block_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t block_cond = PTHREAD_COND_INITIALIZER;
+static int block_entered, block_release, block_take_rc, block_set_rc, consume_result;
 
 static int consumer_sink(void *user, const dm_lm_packet *packet) {
     sink_calls++;
     // 锁外回调可安全查询宿主状态；不得在此销毁宿主。 | Out-of-lock callback may query host state; must not destroy it.
     (void)dm_lm_packet_count((dm_host *)user);
-    if (sink_fail_at && sink_calls == sink_fail_at) return -1;
+    if (sink_fail_at && sink_calls == sink_fail_at) {
+        dm_lm_packet stolen;
+        sink_take_rc = (unsigned)dm_lm_take_packet((dm_host *)user, &stolen);
+        return -1;
+    }
     if (sink_seen_n < sizeof sink_seen) sink_seen[sink_seen_n++] = packet->data[0];
     return 0;
 }
@@ -521,13 +528,33 @@ static int reentrant_sink(void *user, const dm_lm_packet *packet) {
     return -1;   // 保留该包，证明重入不吞包 | retain the packet; proves reentry cannot consume it
 }
 
-static void sink_reset(void) { sink_calls = sink_seen_n = sink_reentrant_rc = 0; sink_fail_at = 0; memset(sink_seen, 0, sizeof sink_seen); }
+static int blocking_sink(void *user, const dm_lm_packet *packet) {
+    (void)packet;
+    dm_lm_packet stolen;
+    pthread_mutex_lock(&block_mutex);
+    block_entered = 1;
+    pthread_cond_broadcast(&block_cond);
+    while (!block_release) pthread_cond_wait(&block_cond, &block_mutex);
+    pthread_mutex_unlock(&block_mutex);
+    block_take_rc = dm_lm_take_packet((dm_host *)user, &stolen);
+    block_set_rc = dm_lm_set_sink((dm_host *)user, NULL, NULL);
+    return 0;
+}
+
+static void *consume_thread(void *arg) {
+    consume_result = dm_lm_consume((dm_host *)arg, 4);
+    return NULL;
+}
+
+static void sink_reset(void) { sink_calls = sink_seen_n = sink_reentrant_rc = sink_take_rc = 0; sink_fail_at = 0; memset(sink_seen, 0, sizeof sink_seen); }
 
 static void consumer_tests(uint8_t *base) {
     uint32_t root = 0, child = 0;
     uint32_t h = log_session(0x401u, &root, &child);
     dm_lm_packet packet;
     sink_reset();
+    CHECK(dm_lm_consume(NULL, 1) == -EINVAL);
+    CHECK(dm_lm_consume(host, 0) == -EINVAL);
 
     // 未配置 sink：显式背压，不丢包。 | No sink: explicit backpressure, no loss.
     CHECK(dm_lm_set_sink(host, NULL, NULL) == 0);
@@ -555,6 +582,7 @@ static void consumer_tests(uint8_t *base) {
     base[0] = 8; build_log(child, 0x417u, (uintptr_t)base, 1); CHECK(send_request(h) == 0);
     CHECK(dm_lm_consume(host, 10) == -EIO);
     CHECK(dm_lm_packet_count(host) == 2 && sink_seen_n == 0);
+    CHECK(sink_take_rc == EBUSY);                    // 失败包未被下一包绕过 | failed first packet not bypassed
     CHECK(dm_lm_consume(host, 10) == 2);
     CHECK(sink_seen_n == 2 && sink_seen[0] == 7 && sink_seen[1] == 8);
     CHECK(dm_lm_packet_count(host) == 0);
@@ -1412,7 +1440,28 @@ int main(void) {
         CHECK(dm_lm_packet_count(host) == 0);
         sm_lm_discovery_tests(other_base);
         CHECK(dm_lm_packet_count(host) == 0);
+        // 并发：阻塞回调期间关闭会话并尝试 close/destroy，必须确定性 EBUSY；回调结束后再销毁。
+        // Concurrency: close the session while a callback blocks; close/destroy must return EBUSY until consume ends.
+        uint32_t cr = 0, cc = 0;
+        uint32_t ch = log_session(0x302u, &cr, &cc);
+        other_base[0] = 0x81; build_log(cc, 0x430u, (uintptr_t)other_base, 1); CHECK(send_request(ch) == 0);
+        other_base[0] = 0x82; build_log(cc, 0x431u, (uintptr_t)other_base, 1); CHECK(send_request(ch) == 0);
+        CHECK(dm_lm_packet_count(host) == 2);
+        pthread_mutex_lock(&block_mutex); block_entered = block_release = 0; pthread_mutex_unlock(&block_mutex);
+        CHECK(dm_lm_set_sink(host, blocking_sink, host) == 0);
+        pthread_t consumer;
+        CHECK(pthread_create(&consumer, NULL, consume_thread, host) == 0);
+        pthread_mutex_lock(&block_mutex);
+        while (!block_entered) pthread_cond_wait(&block_cond, &block_mutex);
+        pthread_mutex_unlock(&block_mutex);
+        CHECK(dm_lm_close(host) == EBUSY);              // 活动 consume 阻止直接 close
+        CHECK(close_handle(ch) == 0);                   // 会话清理可进行，回调仍持有副本
         CHECK(dm_guest_detach() == 0);
+        CHECK(dm_host_destroy(host) == EBUSY);          // 唯一 busy 来源是活动 consume
+        pthread_mutex_lock(&block_mutex); block_release = 1; pthread_cond_broadcast(&block_cond); pthread_mutex_unlock(&block_mutex);
+        CHECK(pthread_join(consumer, NULL) == 0);
+        CHECK(consume_result == 1);
+        CHECK(block_take_rc == EBUSY && block_set_rc == EBUSY);
         CHECK(dm_host_destroy(host) == 0);
         host = primary;
         CHECK(dm_lm_packet_count(host) == 0);
