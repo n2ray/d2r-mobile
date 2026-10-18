@@ -23,6 +23,7 @@ jobs:
           bash ci/tests/test-ndk-stub.sh
           bash ci/tests/test-ci-failures.sh
           bash ci/tests/test-elf-pages.sh
+          bash ci/tests/test-java-ci-sdk-branch.sh
 
   java-boundary:
     runs-on: ubuntu-24.04
@@ -30,20 +31,14 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Require JDK and Android API 35 platform jar
+        env:
+          DM_CI_WORK: ${{ runner.temp }}/dm-ci
         run: |
           set -euo pipefail
           command -v javac >/dev/null 2>&1 || { echo "javac missing on the runner" >&2; exit 1; }
-          sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
-          jar="$sdk/platforms/android-35/android.jar"
-          if [[ ! -f "$jar" ]]; then
-            sdkmanager=$(command -v sdkmanager 2>/dev/null || true)
-            if [[ -z "$sdkmanager" ]]; then
-              sdkmanager=$(find "$sdk" -path '*/cmdline-tools/*/bin/sdkmanager' -type f | head -1)
-            fi
-            [[ -n "$sdkmanager" ]] || { echo "sdkmanager not found; cannot install platforms;android-35" >&2; exit 1; }
-            yes | "$sdkmanager" --sdk_root="$sdk" "platforms;android-35" >/dev/null
-          fi
-          test -f "$jar"
+          bash ci/scripts/android-platform.sh
+          sdk="${DM_ANDROID_SDK_ROOT:-${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}}"
+          test -f "$sdk/platforms/android-35/android.jar"
           echo "ANDROID_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
       - name: Required Java compile against real android.jar and focus host controls
         env:
