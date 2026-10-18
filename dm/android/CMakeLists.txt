@@ -131,6 +131,17 @@ target_link_libraries(dm_app_lifecycle_test PRIVATE dm_android_app_lifecycle)
 target_compile_options(dm_app_lifecycle_test PRIVATE -Wall -Wextra -Werror)
 add_test(NAME app_lifecycle COMMAND dm_app_lifecycle_test)
 set_tests_properties(app_lifecycle PROPERTIES TIMEOUT 30)
+# #157 Android「自定義」偏好事務模組：凍結上游鍵/缺省值/Apply-Discard-Defaults，有界解析 + 注入持久化回調。
+# #157 Android Custom-preferences transaction module: frozen upstream keys/defaults/Apply-Discard-Defaults, bounded
+# parser and an injected persistence callback.
+add_library(dm_android_app_custom_preferences STATIC app/custom_preferences.c)
+target_include_directories(dm_android_app_custom_preferences PUBLIC app)
+target_compile_options(dm_android_app_custom_preferences PRIVATE -Wall -Wextra -Werror)
+add_executable(dm_custom_preferences_test tests/custom_preferences.c)
+target_link_libraries(dm_custom_preferences_test PRIVATE dm_android_app_custom_preferences)
+target_compile_options(dm_custom_preferences_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME custom_preferences COMMAND dm_custom_preferences_test)
+set_tests_properties(custom_preferences PROPERTIES TIMEOUT 30)
 add_library(dm_android_touch_bridge STATIC app/touch_bridge.c)
 target_include_directories(dm_android_touch_bridge PUBLIC app runtime)
 target_link_libraries(dm_android_touch_bridge PUBLIC dm_android_touch dm_android_touch_game)
@@ -183,6 +194,16 @@ target_link_libraries(dm_input_source_test PRIVATE dm_android_input_source)
 target_compile_options(dm_input_source_test PRIVATE -Wall -Wextra -Werror)
 add_test(NAME input_source COMMAND dm_input_source_test)
 set_tests_properties(input_source PROPERTIES TIMEOUT 30)
+if(NOT ANDROID)
+    # #159 actual arbiter invalidation -> real bridge request retirement.
+    add_executable(dm_input_source_requests_test tests/input_source_requests.c app/input_source.c)
+    target_include_directories(dm_input_source_requests_test PRIVATE app runtime)
+    target_compile_definitions(dm_input_source_requests_test PRIVATE DM_INPUT_TEST)
+    target_link_libraries(dm_input_source_requests_test PRIVATE dm_android_touch_bridge dm_android_runtime m)
+    target_compile_options(dm_input_source_requests_test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME input_source_requests COMMAND dm_input_source_requests_test)
+    set_tests_properties(input_source_requests PROPERTIES TIMEOUT 30)
+endif()
 # #117 自有诊断场景与窗口呈现策略：纯 C，无 Vulkan/Android 头文件，故在 CI 的 Vulkan=OFF 配置下也构建并运行。
 # #117 owned diagnostic scene and window presentation policy: plain C without Vulkan/Android headers, so it builds
 # and runs in the Vulkan=OFF CI configurations too.
@@ -199,6 +220,17 @@ target_link_libraries(dm_app_present_policy_test PRIVATE dm_android_app_scene)
 target_compile_options(dm_app_present_policy_test PRIVATE -Wall -Wextra -Werror)
 add_test(NAME app_present_policy COMMAND dm_app_present_policy_test)
 set_tests_properties(app_diagnostic_scene app_present_policy PROPERTIES TIMEOUT 30)
+# #153 音频焦点/播放意图策略：纯 C，无 Android/AAudio 头文件，后端完全注入；不发起真实焦点请求或播放。
+# #153 audio-focus / desired-play policy: plain C without Android/AAudio headers, backend fully injected; it performs
+# no real focus request and no playback.
+add_library(dm_android_app_audio_focus STATIC app/audio_focus.c)
+target_include_directories(dm_android_app_audio_focus PUBLIC app)
+target_compile_options(dm_android_app_audio_focus PRIVATE -Wall -Wextra -Werror)
+add_executable(dm_audio_focus_test tests/audio_focus.c)
+target_link_libraries(dm_audio_focus_test PRIVATE dm_android_app_audio_focus m)
+target_compile_options(dm_audio_focus_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME audio_focus COMMAND dm_audio_focus_test)
+set_tests_properties(audio_focus PROPERTIES TIMEOUT 30)
 # #143 显式 WSI 诊断控制器：纯 C 状态机，宿主可注入失败/陈旧窗口/重建。
 # #143 explicit WSI diagnostic controller: pure-C state machine, host-testable with injected failures, stale windows and rebuilds.
 add_library(dm_android_app_wsi STATIC app/wsi_diagnostic.c app/wsi_bridge.c app/wsi_report.c)
@@ -444,9 +476,25 @@ endif()
 if(NOT ANDROID)
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        # #157 私有變異：忽略保存結果或忽略語言顯式狀態，必須讓真實測試失敗。
+        # #157 private mutations: ignoring the store result, or the language explicit state, must fail the real tests.
+        add_test(NAME custom_preferences_mutation
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/custom_preferences_mutation.py
+                --app ${CMAKE_CURRENT_SOURCE_DIR}/app
+                --tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/custom_preferences.c
+                --cc ${CMAKE_C_COMPILER})
+        set_tests_properties(custom_preferences_mutation PROPERTIES TIMEOUT 120)
         add_test(NAME diagnostic_provenance
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_provenance.py)
         set_tests_properties(diagnostic_provenance PROPERTIES TIMEOUT 60)
+        # #153 私有变异：忽略代次或用户意图必须让真实控制器测试失败。
+        # #153 private mutations: ignoring the generation or the user intent must make the real tests fail.
+        add_test(NAME audio_focus_mutation
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_focus_mutation.py
+                --app ${CMAKE_CURRENT_SOURCE_DIR}/app
+                --tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_focus.c
+                --cc ${CMAKE_C_COMPILER})
+        set_tests_properties(audio_focus_mutation PROPERTIES TIMEOUT 120)
         add_test(NAME native_callbacks
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/native_callbacks_host.py
                 --native ${CMAKE_CURRENT_SOURCE_DIR}/app/native.c
