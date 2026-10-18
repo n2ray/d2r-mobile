@@ -13,6 +13,8 @@ static int checks, failures;
 #define HANDLE(type, v) ((type)(uintptr_t)(v))
 
 static int fail_stage;   // 1 descriptor pool, 2 pipeline, 3 draw command end, 4 readback invalidate, 5 plan shader create
+static unsigned shader_calls, buffer_calls, memory_calls, submit_calls;
+static unsigned fail_shader_call, fail_buffer_call, fail_memory_call, fail_submit_call;
 static unsigned format_queries;
 static unsigned buffers, memories, images, views, renderpasses, framebuffers, shaders, dsls, layouts, pipelines, pools, sets, samplers, commands, fences, mapped, command_serial;
 static unsigned fail_hit, hit_buffers, hit_memories, hit_images, hit_views, hit_renderpasses, hit_framebuffers;
@@ -21,6 +23,8 @@ static uint8_t staging[4096];
 
 static void reset(void) {
     format_queries = 0;
+    shader_calls = buffer_calls = memory_calls = submit_calls = 0;
+    fail_shader_call = fail_buffer_call = fail_memory_call = fail_submit_call = 0;
     buffers = memories = images = views = renderpasses = framebuffers = shaders = dsls = layouts = pipelines = pools = sets = samplers = commands = fences = mapped = 0;
     command_serial = 0;
     fail_hit = hit_buffers = hit_memories = hit_images = hit_views = hit_renderpasses = hit_framebuffers = 0;
@@ -53,6 +57,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties(VkPhysic
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateBuffer(VkDevice d, const VkBufferCreateInfo *i, const VkAllocationCallbacks *a, VkBuffer *o) {
     (void)d; (void)a; CHECK(i->size > 0 && i->sharingMode == VK_SHARING_MODE_EXCLUSIVE);
+    buffer_calls++;
+    if (fail_buffer_call == buffer_calls) { fail_hit = 11; record_hit(); fail_buffer_call = 0; return VK_ERROR_OUT_OF_HOST_MEMORY; }
     buffers++; *o = HANDLE(VkBuffer, 2 + buffers); return VK_SUCCESS;
 }
 VKAPI_ATTR void VKAPI_CALL vkGetBufferMemoryRequirements(VkDevice d, VkBuffer b, VkMemoryRequirements *o) {
@@ -60,6 +66,8 @@ VKAPI_ATTR void VKAPI_CALL vkGetBufferMemoryRequirements(VkDevice d, VkBuffer b,
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(VkDevice d, const VkMemoryAllocateInfo *i, const VkAllocationCallbacks *a, VkDeviceMemory *o) {
     (void)d; (void)a; CHECK((i->memoryTypeIndex == 0 || i->memoryTypeIndex == 1) && i->allocationSize);
+    memory_calls++;
+    if (fail_memory_call == memory_calls) { fail_hit = 12; record_hit(); fail_memory_call = 0; return VK_ERROR_OUT_OF_HOST_MEMORY; }
     memories++; *o = HANDLE(VkDeviceMemory, 20 + memories); return VK_SUCCESS;
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory(VkDevice d, VkBuffer b, VkDeviceMemory m, VkDeviceSize off) { (void)d; (void)b; (void)m; CHECK(!off); return VK_SUCCESS; }
@@ -99,7 +107,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateFramebuffer(VkDevice d, const VkFramebuff
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice d, const VkShaderModuleCreateInfo *i, const VkAllocationCallbacks *a, VkShaderModule *o) {
     (void)d; (void)a; CHECK(i && i->codeSize >= 4 && i->pCode);
-    if (fail_stage == 5) { fail_hit = 5; record_hit(); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+    shader_calls++;
+    if ((fail_stage == 5 && shader_calls == 1) || fail_shader_call == shader_calls) {
+        fail_hit = 5; record_hit(); fail_shader_call = 0; return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
     shaders++; *o = HANDLE(VkShaderModule, 60 + shaders); return VK_SUCCESS;
 }
 VKAPI_ATTR void VKAPI_CALL vkDestroyShaderModule(VkDevice d, VkShaderModule m, const VkAllocationCallbacks *a) { (void)d; (void)m; (void)a; CHECK(shaders >= 1); shaders--; }
@@ -140,7 +151,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkEndCommandBuffer(VkCommandBuffer c) {
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateFence(VkDevice d, const VkFenceCreateInfo *i, const VkAllocationCallbacks *a, VkFence *o) {
     (void)d; (void)i; (void)a; fences++; *o = HANDLE(VkFence, 80); return VK_SUCCESS;
 }
-VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue q, uint32_t n, const VkSubmitInfo *i, VkFence f) { (void)q; (void)i; (void)f; CHECK(n == 1); return VK_SUCCESS; }
+VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue q, uint32_t n, const VkSubmitInfo *i, VkFence f) {
+    (void)q; (void)i; (void)f; CHECK(n == 1);
+    submit_calls++;
+    if (fail_submit_call == submit_calls) { fail_hit = 13; record_hit(); fail_submit_call = 0; return VK_ERROR_OUT_OF_HOST_MEMORY; }
+    return VK_SUCCESS;
+}
 VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(VkDevice d, uint32_t n, const VkFence *f, VkBool32 a, uint64_t t) { (void)d; (void)f; CHECK(n == 1 && a && t == UINT64_MAX); return VK_SUCCESS; }
 VKAPI_ATTR VkResult VKAPI_CALL vkDeviceWaitIdle(VkDevice d) { (void)d; return VK_SUCCESS; }
 VKAPI_ATTR void VKAPI_CALL vkDestroyFence(VkDevice d, VkFence f, const VkAllocationCallbacks *a) { (void)d; (void)f; (void)a; CHECK(fences == 1); fences--; }
@@ -258,6 +274,33 @@ int main(int argc, char **argv) {
         CHECK(!memcmp(indices, indices_before, sizeof indices));
         CHECK(!memcmp(tex, tex_before, sizeof tex));
         balanced();
+    }
+    // 第二个 shader 在第一个 owned shader 已存在后失败。
+    reset(); fail_shader_call = 2; memset(output, 0x5a, sizeof output);
+    CHECK(dm_vk_draw_indexed_textured_plan_offscreen(&vk, &draw, &plan, &pixels) != VK_SUCCESS);
+    CHECK(fail_hit == 5 && hit_shaders == 1);
+    for (size_t i = 0; i < sizeof output; i++) CHECK(output[i] == 0x5a);
+    balanced();
+    reset(); CHECK(dm_vk_draw_indexed_textured_plan_offscreen(&vk, &draw, &plan, &pixels) == VK_SUCCESS); balanced();
+    for (unsigned call = 1; call <= 3; call++) {
+        reset(); fail_buffer_call = call; memset(output, 0x5a, sizeof output);
+        CHECK(dm_vk_draw_indexed_textured_plan_offscreen(&vk, &draw, &plan, &pixels) != VK_SUCCESS);
+        CHECK(fail_hit == 11); for (size_t i = 0; i < sizeof output; i++) CHECK(output[i] == 0x5a); balanced();
+        reset(); CHECK(dm_vk_draw_indexed_textured_plan_offscreen(&vk, &draw, &plan, &pixels) == VK_SUCCESS); balanced();
+    }
+    for (unsigned call = 1; call <= 3; call++) {
+        reset(); fail_memory_call = call; memset(output, 0x5a, sizeof output);
+        CHECK(dm_vk_draw_indexed_textured_plan_offscreen(&vk, &draw, &plan, &pixels) != VK_SUCCESS);
+        CHECK(fail_hit == 12); for (size_t i = 0; i < sizeof output; i++) CHECK(output[i] == 0x5a); balanced();
+        reset(); CHECK(dm_vk_draw_indexed_textured_plan_offscreen(&vk, &draw, &plan, &pixels) == VK_SUCCESS); balanced();
+    }
+    // 纹理 upload 与 draw 的 submission 分别注入失败。
+    for (unsigned call = 1; call <= 2; call++) {
+        reset(); fail_submit_call = call; memset(output, 0x5a, sizeof output);
+        CHECK(dm_vk_draw_indexed_textured_plan_offscreen(&vk, &draw, &plan, &pixels) != VK_SUCCESS);
+        CHECK(fail_hit == 13 && submit_calls == call);
+        for (size_t i = 0; i < sizeof output; i++) CHECK(output[i] == 0x5a); balanced();
+        reset(); CHECK(dm_vk_draw_indexed_textured_plan_offscreen(&vk, &draw, &plan, &pixels) == VK_SUCCESS); balanced();
     }
     // 错误 kind 在任何 Vulkan format query 前拒绝；之后仍可成功重试。
     reset();
