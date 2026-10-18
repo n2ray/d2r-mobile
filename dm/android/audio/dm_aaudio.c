@@ -216,13 +216,13 @@ int dm_audio_destroy(dm_audio *a) {
     // AAudio docs: no new data callback starts after requestStop; retire the active callback before close.
     while (atomic_load_explicit(&a->callback_active, memory_order_acquire) != 0) sched_yield();
     dm_audio_result close = a->api->close(a->stream);
+    if (close == DM_AUDIO_OK) a->stream = NULL;
     while (atomic_load_explicit(&a->callback_active, memory_order_acquire) != 0) sched_yield();
     if (stop != DM_AUDIO_OK || wait != DM_AUDIO_OK || next != DM_AUDIO_STATE_STOPPED ||
         close != DM_AUDIO_OK) {
         // 证明失败时不释放队列/控制块；保留对象供调用者诊断，绝不假装安全关闭。
         return -EIO;
     }
-    a->stream = NULL;
     pthread_mutex_destroy(&a->lifecycle);
     free(a->ring);
     free(a);
