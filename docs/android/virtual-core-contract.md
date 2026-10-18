@@ -17,28 +17,41 @@ Evidence levels:
 - **R — repository**: current code at `73c2c2f`.
 - **U — unknown**: no protocol, reachability or value proof.
 
-## 1. Public ABI
+## 1. Public ABI layers
 
-The SVC boundary is fixed by the public wrapper and reference implementation.
+The C wrapper, the raw 64-bit SVC, and the SDK C++ wrapper are separate
+layers. Do not use the libnx C declaration as the kernel mask width.
 
-| Operation | Input registers | Output | Width / rule |
-|---|---|---|---|
-| GetInfo SVC `0x29` | `x0` = out pointer, `w1` = info id, `w2` = handle, `x3` = sub-id | `w0` = Result, `x1` = value | `x1` is stored as a 64-bit value by the wrapper; the caller's `x0` pointer is preserved separately |
-| ID 0 / `InfoType_CoreMask` | `w1 = 0`, `w2 = CUR_PROCESS_HANDLE`, `x3 = 0` | `x1` = allowed core mask | Bitmask of allowed virtual core IDs; the kernel reads the process core mask |
-| SetThreadCoreMask SVC `0x0f` | `x0` = thread handle, `w1` = preferred core (`s32`), `w2` = affinity mask (`u32`) | `w0` = Result | No output pointer; handle validation and mask validation precede state change |
-| CreateThread SVC `0x08` | `x0` = out handle pointer, `x1` = entry, `x2` = argument, `x3` = stack top, `w4` = priority, `w5` = core id (`s32`) | `w0` = Result, `w1` = handle | Takes one ideal core id, not a mask |
+| Layer | Operation | Inputs | Outputs | Limit |
+|---|---|---|---|---|
+| libnx C wrapper | GetInfo | `x0` out pointer, `w1` id, `w2` handle, `x3` sub-id | `w0` Result; `x1` stored into the caller's `u64` | The wrapper saves/restores `x0` and performs an unconditional `str x1` after the SVC, including on failure |
+| raw 64-bit SVC | GetInfo `0x29` | `x0` out pointer, `w1` id, `w2` handle, `x3` sub-id | `w0` Result, `x1` value | The kernel writes a 64-bit value on the success path; the failure value of `x1` is **U** here |
+| libnx C wrapper | SetThreadCoreMask | `x0` handle, `w1` s32 core, `x2` u32 mask | `w0` Result | C API cannot express a mask above 32 bits; this is not a kernel-width proof |
+| raw 64-bit SVC | SetThreadCoreMask `0x0f` | `x0` handle, `w1` s32 core, `x2` `uint64_t` mask | `w0` Result | No output pointer; the raw 64 ABI uses a 64-bit affinity mask |
+| libnx C wrapper | CreateThread | `x0` out pointer, entry/arg/stack, `w4` priority, `w5` s32 core | `w0` Result; `w1` handle | The wrapper stores `w1` unconditionally after the SVC |
+| raw 64-bit SVC | CreateThread `0x08` | `x0` out pointer, entry/arg/stack, `w4` priority, `w5` s32 core | `w0` Result, `w1` handle | One ideal core id, not a mask; failure out-pointer behavior is **U** unless separately proved |
 
 `CUR_PROCESS_HANDLE` is `0xFFFF8001`
-([libnx `svc.h:10`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/include/switch/kernel/svc.h#L10)).
-The GetInfo wrapper stores the 64-bit `x1` result
-([libnx `svc.s:248-255`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/source/kernel/svc.s#L248-L255)).
-`InfoType_CoreMask = 0` is described as a bitmask of allowed core IDs
-([libnx `svc.h:186`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/include/switch/kernel/svc.h#L186)).
-The SetThreadCoreMask signature is
-`(Handle handle, s32 preferred_core, u32 affinity_mask)`
-([libnx `svc.h:588-592`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/include/switch/kernel/svc.h#L588-L592));
-its SVC has no output pointer
+([libnx `svc.h:10-11`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/include/switch/kernel/svc.h#L10-L11)).
+The GetInfo C wrapper saves the out pointer and unconditionally stores `x1`
+after the SVC
+([libnx `svc.s:248-254`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/source/kernel/svc.s#L248-L254)).
+The SetThreadCoreMask C declaration takes a `u32` mask
+([libnx `svc.h:587-592`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/include/switch/kernel/svc.h#L587-L592)),
+but the raw 64 ABI takes `uint64_t` and forwards the full value
+([Atmosphère `kern_svc_thread.cpp:302-304`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/source/svc/kern_svc_thread.cpp#L302-L304)).
+The `svc.s` thunk itself only executes `svc 0x0F`; it does not define a
+32-bit kernel mask contract
 ([libnx `svc.s:100-102`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/source/kernel/svc.s#L100-L102)).
+The SDK C++ symbol `_ZN2nn2os17SetThreadCoreMaskEPNS0_10ThreadTypeEim`
+uses `unsigned long`, which is 64-bit on the LP64 SDK ABI; its exact
+callsite arguments and upper-bit policy remain **U**.
+
+GetInfo ID 0's selector is `InfoType_CoreMask = 0`, documented as a bitmask
+of allowed core IDs
+([libnx `svc.h:186`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/include/switch/kernel/svc.h#L186)).
+The current-process handle is a pseudo handle, not a normal owned process
+handle; the static SDK path uses `0xffff8001` as recorded below.
 
 ### 1.1 GetInfo ID 0 rules
 
@@ -63,16 +76,24 @@ For this contract the supported handle is the current-process pseudo handle.
 Using an arbitrary process handle, a non-zero sub-id, or an unowned process
 handle is **U** for this runtime and must fail rather than be guessed.
 
+**Failure output is not an unchanged-output guarantee.** The libnx C wrapper
+performs `str x1` after every SVC return, so a failed call can overwrite the
+caller's `u64` with an unspecified `x1`. The current owned gate happens to
+assign `r[1]` only on success, but that is a local runtime policy, not a
+wrapper or Horizon ABI guarantee. A raw-gate test may assert that local policy
+only if it labels it as owned behavior; a wrapper-level test must not assume
+the output storage is unchanged.
+
 ### 1.2 SetThreadCoreMask rules
 
-The public reference implementation takes a thread handle owned by the
-current process and validates the preferred core and affinity mask before
-setting state
+The raw 64 ABI implementation takes a thread handle owned by the current
+process and validates the preferred core and **full 64-bit affinity mask**
+before setting state
 ([Atmosphère `kern_svc_thread.cpp:161-190`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/source/svc/kern_svc_thread.cpp#L161-L190)):
 
 - invalid/foreign handle: `ResultInvalidHandle`;
-- `affinity_mask` must be non-zero and a subset of the process core mask;
-  a mask outside it is `ResultInvalidCoreId`, zero is
+- `affinity_mask` must be non-zero and a subset of the 64-bit process core
+  mask; a mask outside it is `ResultInvalidCoreId`, zero is
   `ResultInvalidCombination`;
 - when `core_id` is a valid virtual core (`0 <= core_id <
   cpu::NumVirtualCores`), its bit must be present in `affinity_mask`;
@@ -93,9 +114,10 @@ The exact kernel-side selection behavior of `DontCare` and `NoUpdate` after
 acceptance remains **U** for this contract; only the validation and state
 ownership rules are claimed.
 
-The SVC-level mask is `u32`. `GetInfo ID 0` returns a `u64` process mask. Do
-not silently widen the SetThreadCoreMask input or assume that high bits above
-31 exist on the target.
+The libnx C wrapper exposes `u32`, while the raw 64 ABI and the SDK C++
+wrapper use a 64-bit mask. Do not discard bits 32..63 silently. A raw mask
+with those bits set is subject to the full process-mask subset rule; whether
+the SDK ever passes them is **U**. The C wrapper simply cannot express them.
 
 ### 1.3 CreateThread relation
 
@@ -104,7 +126,10 @@ core mask; `IdealCoreUseProcessValue` selects the process default. A core
 outside the valid range or outside the process mask is `ResultInvalidCoreId`
 ([Atmosphère `kern_svc_thread.cpp:28-37`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libmesosphere/source/svc/kern_svc_thread.cpp#L28-L37)).
 It has no affinity-mask argument
-([libnx `svc.h:544`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/include/switch/kernel/svc.h#L544)).
+([libnx `svc.h:539-544`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/include/switch/kernel/svc.h#L539-L544)).
+The C wrapper stores `w1` unconditionally after the SVC
+([libnx `svc.s:55-60`](https://github.com/switchbrew/libnx/blob/20cbcfd90567f7bf84df7725f27e345e2164fa6b/nx/source/kernel/svc.s#L55-L60));
+a failed call's caller-visible handle must not be assumed unchanged or valid.
 
 Therefore the coherent model is:
 
@@ -185,23 +210,32 @@ virtual mask `M` selected by the reviewed policy:
 
 1. **GetInfo 0 positive:** call with `id=0`, current-process handle and
    `subid=0`; expect `w0=0`, 64-bit `x1=M`, and no host affinity call.
-2. **GetInfo 0 negatives:** wrong process handle → explicit invalid-handle
-   result; non-zero subid → invalid-combination; both leave the output storage
-   unchanged.
+2. **GetInfo 0 negatives at the raw gate:** wrong process handle → explicit
+   invalid-handle result; non-zero subid → invalid-combination. Assert the
+   Result and owned transaction state. Do not assert the caller's output
+   storage is unchanged: the libnx C wrapper performs an unconditional
+   `str x1`, so a wrapper-level failure can overwrite it. If the owned gate
+   preserves `x1` on failure, label that as a local policy test, not an ABI
+   guarantee.
 3. **SetThreadCoreMask positive:** valid thread handle, valid core in `M`,
    non-zero subset mask; expect Result 0 and visible per-thread state only.
 4. **SetThreadCoreMask negatives:** zero mask → invalid-combination; mask
    outside `M` → invalid-core; valid core absent from mask → invalid-combination;
    invalid core values → invalid-core; wrong handle → invalid-handle.
-5. **Special values:** `-1` and `-3` accepted only with a valid non-zero
+5. **Raw high-bit mask:** at the raw 64-bit SVC, set a bit above 31 that is
+   outside `M` and expect invalid-core with no state change. Do not route this
+   through the libnx `u32` C wrapper, and do not silently truncate the mask.
+6. **Special values:** `-1` and `-3` accepted only with a valid non-zero
    subset mask; `-2` selects the process default; no unsupported special value
    silently succeeds.
-6. **CreateThread relation:** core outside `M` fails; a valid core in `M`
+7. **CreateThread relation:** core outside `M` fails; a valid core in `M`
    succeeds; `-2` uses the process default; no physical affinity is observed.
-7. **Failure atomicity:** every negative case leaves the previous virtual
+   A failed wrapper call must not be asserted to leave the caller's handle
+   storage unchanged; only the Result and owned state are contractual.
+8. **Failure atomicity:** every negative case leaves the previous virtual
    state and host scheduling unchanged; a failed call allocates/retains no
    handle or mask record.
-8. **Sanitizer/build:** ASAN/UBSAN test through the real gate; Android
+9. **Sanitizer/build:** ASAN/UBSAN test through the real gate; Android
    cross-build for changed runtime units; no device/game claim.
 
 This plan is ready for review but is **not implemented** in this phase.
@@ -220,9 +254,20 @@ Repository:
 Public reference (pinned):
 
 - libnx `20cbcfd90567f7bf84df7725f27e345e2164fa6b`:
-  `nx/include/switch/kernel/svc.h:10,186,544,588-592,855`;
-  `nx/source/kernel/svc.s:55-60,100-102,248-255`.
+  `nx/include/switch/kernel/svc.h:10-11` (`CUR_PROCESS_HANDLE`),
+  `:186` (`InfoType_CoreMask`), `:539-544` (`svcCreateThread`),
+  `:580-592` (`GetThreadCoreMask`/`SetThreadCoreMask` C declarations),
+  `:845-855` (`svcGetInfo`);
+  `nx/source/kernel/svc.s:55-60` (`svcCreateThread` thunk),
+  `:100-102` (`svcSetThreadCoreMask` thunk),
+  `:248-254` (`svcGetInfo` thunk).
 - Atmosphère `6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8`:
-  `libraries/libmesosphere/source/svc/kern_svc_info.cpp:43-44,127-185`;
+  `libraries/libmesosphere/source/svc/kern_svc_info.cpp:41-44,127-185`;
   `libraries/libmesosphere/source/svc/kern_svc_thread.cpp:24-37,150-190`;
+  `libraries/libmesosphere/source/svc/kern_svc_thread.cpp:302-304`
+  (`SetThreadCoreMask64`, `uint64_t`);
   `libraries/libvapours/include/vapours/svc/svc_types_common.hpp:379-381`.
+
+These line ranges were re-read from the raw pinned files, not inferred from
+HTTP success. The ranges start at the named function/declaration and stop at
+its closing statement; adjacent functions are not included as evidence.
