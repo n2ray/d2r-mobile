@@ -71,6 +71,10 @@ explains that they were kept as red stubs so a real call cannot pass silently.
 
 - `VkDrawIndirectCommand`: https://docs.vulkan.org/refpages/latest/refpages/source/VkDrawIndirectCommand.html
 - `VkDrawIndexedIndirectCommand`: https://docs.vulkan.org/refpages/latest/refpages/source/VkDrawIndexedIndirectCommand.html
+- `vkCmdDrawIndirectCount` (valid usage quoted in Entry 2): https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdDrawIndirectCount.html
+- `vkCmdDrawIndexedIndirectCount` (valid usage quoted in Entry 3): https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdDrawIndexedIndirectCount.html
+- `vkCmdBindIndexBuffer`: https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBindIndexBuffer.html
+- `VkPhysicalDeviceVulkan12Features`: https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceVulkan12Features.html
 - GL counterparts: [glMultiDrawArraysIndirectCount](https://registry.khronos.org/OpenGL-Refpages/gl4/html/glMultiDrawArraysIndirectCount.xhtml),
   [glMultiDrawElementsIndirectCount](https://registry.khronos.org/OpenGL-Refpages/gl4/html/glMultiDrawElementsIndirectCount.xhtml),
   [glPatchParameter](https://registry.khronos.org/OpenGL-Refpages/gl4/html/glPatchParameter.xhtml)
@@ -116,11 +120,33 @@ explains that they were kept as red stubs so a real call cannot pass silently.
   casting a raw address to `VkBuffer` is invalid. Resolution must be overflow-safe (`base + off` in 64-bit, reject
   wrap), reject addresses outside every registered range, and keep the buffer alive until the submission that consumes
   the recorded command has completed (a retainer, not a borrowed pointer).
-- **Bounds `[OURS]`** (safe-consumer requirements, not NVN validation claims): `indirectOffset` aligned to
-  `NVN_DEVICE_INFO_INDIRECT_DRAW_ALIGNMENT` (`nvn.h:245`); `stride % 4 == 0`; when `stride != 0`, `stride >= 16`; the
-  last record read is `indirectOffset + stride * (min(count, maxDrawCount) - 1)`, and that record plus 16 bytes must lie
-  inside the buffer; `drawCountOffset + 4` must lie inside its buffer; `maxDrawCount >= 0`; every such computation is
-  checked before use.
+- **Bounds `[OURS]`** — two distinct layers, kept separate:
+  - **Vulkan valid usage (must hold regardless of the count value at run time)**:
+    `stride` is a multiple of 4 **and** `>= sizeof(VkDrawIndirectCommand)` = 16
+    (`VUID-vkCmdDrawIndirectCount-stride-03110`); `offset` is a multiple of 4 (`-offset-02710`);
+    `countBufferOffset` is a multiple of 4 (`-countBufferOffset-02716`); both `buffer` and `countBuffer` were created
+    with `VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT` (`-buffer-02709`, `-countBuffer-02715`);
+    `countBufferOffset + 4 <= size(countBuffer)` (`-countBufferOffset-04129`); the count read from the buffer must be
+    `<= VkPhysicalDeviceLimits::maxDrawIndirectCount` (`-countBuffer-02717`). When `maxDrawCount >= 1`,
+    `offset + stride * (maxDrawCount - 1) + 16 <= size(buffer)` (`-maxDrawCount-03111`).
+    The capacity bound uses **`maxDrawCount`, not** `min(count, maxDrawCount)`: the GPU count is only known during
+    execution and may be larger than any value observed today, while valid usage is fixed when the command is recorded.
+    `maxDrawCount == 0` is valid and performs no draws — there is no `-1` arithmetic in that case, so an implementation
+    must branch instead of subtracting.
+  - **NVN constraint (additional, not a substitute)**: `indirectOffset` must satisfy
+    `NVN_DEVICE_INFO_INDIRECT_DRAW_ALIGNMENT` (`nvn.h:245`). Whether NVN's `stride == 0` means "tightly packed" is a
+    **hypothesis**; it may only be normalized to 16 after evidence, otherwise the call is rejected as unsupported, not
+    guessed.
+  - **Narrowing**: `stride` is `ptrdiff_t` and `maxDrawCount` is `int` in the NVN prototype, while Vulkan takes
+    `uint32_t` for both. Negative values and values above `UINT32_MAX` are rejected; they are never truncated. All
+    `offset + stride * (maxDrawCount - 1) + 16` arithmetic is performed in 64 bits and checked before use.
+- **Unsupported behaviour**: red diagnostic with entry, required feature, stride and maxDrawCount; zero draws recorded.
+- **Owned tests** (plan, not claimed tests): count=2 draws both triangles, count=1 draws only the first, count above
+  `maxDrawCount` truncates, stride 16 vs 32 agree, `maxDrawCount == 0` records zero draws without underflow,
+  stride/misaligned/out-of-range record negatives, buffer-lifetime negative (free or rebind the pool before submit),
+  feature-off negative, and a discrimination case where the count buffer reports 0 or 1 but `maxDrawCount` is large and
+  the indirect buffer only has room for one record — the Vulkan capacity requirement still fails, so the consumer must
+  reject even though "today's count" would fit. A discrimination case where treating the count as a CPU constant fails.
 - **Feature / limit queries**: `VkPhysicalDeviceVulkan12Features::drawIndirectCount`
   (https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceVulkan12Features.html) or
   `VK_KHR_draw_indirect_count`; `VkPhysicalDeviceLimits::maxDrawIndirectCount`; `multiDrawIndirect`. The consumer ABI is
@@ -131,9 +157,12 @@ explains that they were kept as red stubs so a real call cannot pass silently.
   require both explicit synchronization against the producing submission **and** observed evidence that NVN's count
   behaves the same; host-visible memory alone is not sufficient.
 - **Unsupported behaviour**: red diagnostic with entry, required feature, stride and maxDrawCount; zero draws recorded.
-- **Owned tests**: count=2 draws both triangles, count=1 draws only the first, count above `maxDrawCount` truncates,
-  stride 16 vs 32 agree, stride/misaligned/out-of-range record negatives, buffer-lifetime negative (free or rebind the
-  pool before submit), feature-off negative, and a discrimination case where treating the count as a CPU constant fails.
+- **Owned tests** (plan, not claimed tests): count=2 draws both triangles, count=1 draws only the first, count above
+  `maxDrawCount` truncates, stride 16 vs 32 agree, `maxDrawCount == 0` records zero draws without underflow,
+  stride/misaligned/out-of-range record negatives, buffer-lifetime negative (free or rebind the pool before submit),
+  feature-off negative, and a discrimination case where the count buffer reports 0 or 1 but `maxDrawCount` is large and
+  the indirect buffer only has room for one record — the Vulkan capacity requirement still fails, so the consumer must
+  reject even though "today's count" would fit; plus a case where treating the count as a CPU constant fails.
 
 ## Entry 3 — `nvnCommandBufferMultiDrawElementsIndirectCount` (child: #55)
 
@@ -145,21 +174,32 @@ explains that they were kept as red stubs so a real call cannot pass silently.
   signed value added to each index (Vulkan models it as `int32_t vertexOffset`).
 - **GPU address → owned resource `[OURS]`**: the same resolution, overflow and lifetime rules as entry 2, applied
   separately to `indirect`, `drawCount` and `indices`.
-- **Bounds `[OURS]`**: besides the entry-2 record range, the resolved index range is
-  `indexOffset + firstIndex * indexWidth` for `count * indexWidth` bytes; `firstIndex * indexWidth` must be accounted
-  for separately, because a `count * indexWidth` check alone accepts an out-of-range `firstIndex`. Multiplications and
-  additions are overflow-checked. `baseVertex` is signed, in vertices, and is added to each fetched index; the sum must
-  be checked against the vertex range the bound pipeline declares, where one is known. NVN's own checks and its
-  `baseVertex` sign/units are **unproven**; these are consumer requirements.
+- **Bounds `[OURS]`**: the Vulkan rules of entry 2 apply unchanged, with the indexed sizes and VUIDs —
+  `stride` multiple of 4 **and** `>= sizeof(VkDrawIndexedIndirectCommand)` = 20
+  (`VUID-vkCmdDrawIndexedIndirectCount-stride-03142`); `offset` multiple of 4 (`-offset-02710`);
+  `countBufferOffset` multiple of 4 (`-countBufferOffset-02716`); `buffer`/`countBuffer` created with
+  `VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT` (`-buffer-02709`, `-countBuffer-02715`);
+  `countBufferOffset + 4 <= size(countBuffer)` (`-countBufferOffset-04129`); buffer count
+  `<= maxDrawIndirectCount` (`-countBuffer-02717`); and when `maxDrawCount >= 1`,
+  `offset + stride * (maxDrawCount - 1) + 20 <= size(buffer)` (`-maxDrawCount-03143`, again worst case
+  `maxDrawCount`, and no `-1` arithmetic when it is 0).
+  On top of that, the resolved index range is `indexOffset + firstIndex * indexWidth` for `count * indexWidth` bytes;
+  `firstIndex * indexWidth` must be accounted for separately, because a `count * indexWidth` check alone accepts an
+  out-of-range `firstIndex`. Multiplications and additions are overflow-checked. `baseVertex` is signed, in vertices, and
+  is added to each fetched index; the sum must be checked against the vertex range the bound pipeline declares, where one
+  is known. NVN's own checks and its `baseVertex` sign/units are **unproven**; these are consumer requirements. The same
+  checked narrowing applies: negative or `> UINT32_MAX` `stride`/`maxDrawCount` are rejected, never truncated.
 - **Feature / limit queries**: same as entry 2, plus `VK_BUFFER_USAGE_INDEX_BUFFER_BIT` for the resolved index buffer and
   the `VkIndexType` mapping.
 - **Proposed mapping (hypothesis, not adopted)**: `vkCmdBindIndexBuffer(commandBuffer, indexBuffer, indexOffset,
   indexType)` + `vkCmdDrawIndexedIndirectCount(...)`. Binding requires `VK_BUFFER_USAGE_INDEX_BUFFER_BIT` and an offset
   that is a multiple of the index size
   (https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBindIndexBuffer.html).
-- **Unsupported behaviour / tests**: as entry 2; the discriminating negative must show that ignoring the resolved
-  `indices` buffer (using a previously bound one) produces wrong pixels, and a `firstIndex` out-of-range case must be
-  rejected rather than read past the buffer.
+- **Unsupported behaviour / tests** (plan, not claimed tests): as entry 2, with the indexed sizes — including
+  `maxDrawCount == 0` (no underflow, zero draws), a `firstIndex` out-of-range case, and the capacity discrimination case
+  where the count buffer reports 0 or 1 but `maxDrawCount` is large and the indirect buffer only has room for one
+  20-byte record, which must still fail. The discriminating negative must show that ignoring the resolved `indices`
+  buffer (using a previously bound one) produces wrong pixels.
 
 ## Entry 4 — `nvnCommandBufferDownsampleTextureView` (child: #56, **blocked on semantics**)
 
