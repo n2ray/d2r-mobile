@@ -325,7 +325,7 @@ foreach(symbol vkCreateBuffer vkGetBufferMemoryRequirements vkAllocateMemory vkB
     vkUpdateDescriptorSets vkAllocateCommandBuffers vkBeginCommandBuffer vkEndCommandBuffer vkCreateFence
     vkQueueSubmit vkWaitForFences vkDeviceWaitIdle vkDestroyFence vkFreeCommandBuffers vkDestroyBuffer
     vkUnmapMemory vkFreeMemory vkCmdBindPipeline vkCmdBindDescriptorSets vkCmdPushConstants vkCmdDispatch
-    vkCmdPipelineBarrier)
+    vkCmdPipelineBarrier vkDestroyImage vkDestroyImageView vkDestroySampler)
     target_compile_definitions(dm_vulkan_reflect_sampled_fail_test PRIVATE ${symbol}=dm_test_${symbol})
 endforeach()
 if(ANDROID)

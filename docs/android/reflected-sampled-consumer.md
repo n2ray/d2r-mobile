@@ -28,4 +28,7 @@ compared against an independent host oracle; empty/invalid sampler, multi-level 
 `textures` count 2, duplicate binding, unsupported `images` category and capacity preflight all fail without writing the
 canvas. Host MoltenVK success is not Adreno/device or compliance evidence.
 Post-preflight failure injection covers descriptor-pool creation, command-buffer end and readback invalidation; all
-leave the canvas unchanged, balance call-owned Vulkan objects, and never destroy or retain the caller's texture/sampler.
+leave the canvas unchanged, balance the consumer-owned shader, descriptor/pipeline layouts, pipeline, pool and
+pool-owned set (plus buffer/memory/command/fence), and intercept caller image/view/sampler/memory destruction.
+A deliberately leaked-shader build fails the same test while the unmodified consumer passes; no GPU completion or
+image-rollback claim.
