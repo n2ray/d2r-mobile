@@ -788,6 +788,59 @@ static void provider_stale_action_not_retagged(void) {
     dm_touch_bridge_destroy(b, NULL);
 }
 
+static void source_request_retirement_discards_pending(void) {
+    dm_touch_bridge *b = dm_touch_bridge_create(667, 375, 2.0f);
+    dm_tc_layout layout;
+    dm_android_touch_action a;
+    dm_android_portal_request r;
+    dm_npad_state s;
+    float x, y;
+    uint64_t old_epoch;
+    CHECK(b != NULL);
+    dm_tc_layout_make(&layout, 667, 375);
+    CHECK(!dm_touch_bridge_retire_requests(NULL, 0));
+    CHECK(!dm_touch_bridge_retire_requests(b, -1));
+
+    CHECK(dm_touch_bridge_set_belt_context(b, 4, 1));
+    belt_upper_point(&layout, 1, 1, &x, &y);
+    tap(b, 80, x, y, 8500000000);
+    CHECK(dm_touch_bridge_take_action(b, &a));
+    tap(b, 81, x, y, 8510000000);
+    CHECK(dm_touch_bridge_retire_requests(b, 8520000000));
+    CHECK(!dm_touch_bridge_take_action(b, &a));   /* unread belt request retired */
+    /* Context preserved; a new gesture still asks for the same cell. */
+    CHECK(dm_touch_bridge_set_belt_context(b, 4, 1));
+    tap(b, 82, x, y, 8530000000);
+    CHECK(dm_touch_bridge_take_action(b, &a));
+    CHECK(a.kind == DM_ANDROID_ACTION_BELT && (int)a.x == (0x100 | 1 << 4 | 1));
+
+    /* Portal request and old ack cannot survive retirement. */
+    CHECK(dm_touch_bridge_set_belt_context(b, 0, 0));
+    CHECK(dm_touch_bridge_set_portal_context(b, 1, DM_BTN_ZL | DM_BTN_B, 77, 3));
+    float px = layout.target[DM_TC_PORTAL].x, py = layout.target[DM_TC_PORTAL].y;
+    down(b, 83, px, py, 8540000000);
+    CHECK(dm_touch_bridge_take_portal_request(b, &r));
+    old_epoch = r.gesture_epoch;
+    CHECK(dm_touch_bridge_retire_requests(b, 8550000000));
+    CHECK(!dm_touch_bridge_take_portal_request(b, &r));
+    CHECK(!dm_touch_bridge_portal_ack(b, old_epoch, 77, 3));
+
+    /* A fresh portal gesture works under the retained context. */
+    down(b, 84, px, py, 8560000000);
+    CHECK(dm_touch_bridge_take_portal_request(b, &r));
+    CHECK(r.gesture_epoch != old_epoch && r.binding_identity == 77 && r.scene_epoch == 3);
+    CHECK(dm_touch_bridge_retire_requests(b, 8570000000));
+    CHECK(!dm_touch_bridge_take_portal_request(b, &r));
+
+    /* A pending bottom-row pulse is discarded too; no stale edge survives. */
+    CHECK(dm_touch_bridge_set_belt_context(b, 4, 1));
+    tap(b, 85, layout.target[DM_TC_BELT2].x, layout.target[DM_TC_BELT2].y, 8580000000);
+    CHECK(dm_touch_bridge_retire_requests(b, 8590000000));
+    s = read_state(b);
+    CHECK(s.buttons == 0);
+    dm_touch_bridge_destroy(b, NULL);
+}
+
 static void portal_bridge_request_ack_and_release(void) {
     dm_touch_bridge *b = dm_touch_bridge_create(667, 375, 2.0f);
     dm_tc_layout layout;
@@ -1274,6 +1327,7 @@ int main(void) {
     CASE(belt_context_survives_cancel_and_resize);
     CASE(belt_action_expanded_cell_one_shot);
     CASE(belt_action_null_and_context_retention);
+    CASE(source_request_retirement_discards_pending);
     CASE(portal_bridge_request_ack_and_release);
     CASE(portal_bridge_invalid_same_repeat_provider);
     CASE(portal_provider_attach_disables_latent_binding);

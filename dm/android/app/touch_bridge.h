@@ -132,6 +132,15 @@ int dm_touch_bridge_tick(dm_touch_bridge *bridge, int64_t time_ns);
 // Applies ACTION_CANCEL/focus-loss/pause semantics and queues a neutral state.
 int dm_touch_bridge_cancel_all(dm_touch_bridge *bridge, int64_t time_ns);
 
+// 显式输入来源退休：取消手指/脉冲/待发动作，并丢弃未消费的腰带请求和传送门
+// 请求；保留 belt/portal/scene 等 host context。与普通 cancel_all 区分，因为
+// 上游 dm_tc_cancel_all 有意保留 belt_request；这里由 Android 自有桥显式清除。
+// Explicit source retirement: cancel pointers/pulses/deferred actions and
+// discard unconsumed belt/portal requests while preserving host contexts. It is
+// distinct from plain cancel_all because upstream dm_tc_cancel_all intentionally
+// preserves belt_request; the Android bridge clears it here.
+int dm_touch_bridge_retire_requests(dm_touch_bridge *bridge, int64_t time_ns);
+
 // Read-only visual observation forwarded to the adapter. No pad read, action/
 // pulse/portal-request consumption, timer advance, ownership mutation or
 // retained pointer. density is caller-owned view metric; invalid input returns
