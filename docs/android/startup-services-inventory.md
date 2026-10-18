@@ -39,17 +39,20 @@ initializer slots.
 | 4 | `_init_libc1` | `dda294d:dm/android/LIFECYCLE.md:14` | Historical prefix | No SDK wrapper implementation | Static/historical only |
 | 5 | `nninitInitializeSdkModule` | `dda294d:dm/android/LIFECYCLE.md:15` | Historical entry stopped at `ConnectToNamedPort` SVC `0x1f`, result `0x4201`; the transport is now locally implemented (`dda294d:dm/android/README.md:409`, `:411`) | Named-port/SendSyncRequest transport, local `sm:` and bounded `lm` | The stage has not been rerun through the new transport; later service/session initialization is not closed |
 | 6 | SDK init-array | `dda294d:dm/android/LIFECYCLE.md:16`; `dda294d:dm/android/README.md:115` | Static metadata only; initializers are recorded but never called | Linker inspection/recording | 115 SDK slots are inventory, not a proven reachable set; executing constructors is out of scope |
-| 7 | `nninitStartup` / `nnMain` | `dda294d:dm/android/LIFECYCLE.md:17` | Static only | No game main execution | Main has 852 init slots and 656 undefined symbols; neither is a service count |
-| 8 | `_init_libc2` | `dda294d:dm/android/LIFECYCLE.md:18` | Static only | No SDK wrapper implementation | Unknown |
-| 9 | `nninitFinalizeSdkModule` | `dda294d:dm/android/LIFECYCLE.md:19` | Static symbol is a bare `ret`; no body observed | No owned finalizer path | Reverse rollback and cleanup remain unproven |
-| 10 | `nnosQuickExit` | `dda294d:dm/android/LIFECYCLE.md:20` | Static exit edge only | No real SDK exit | Normal exit and process cleanup remain unproven |
+| 7 | `nninitStartup` | `dda294d:dm/android/LIFECYCLE.md:17` | Static only; main callback subtree is unaudited | No game startup execution | The public row combines `nninitStartup` and `nnMain`; it is not execution-order evidence |
+| 8 | `_init_libc2` | `dda294d:dm/android/LIFECYCLE.md:18` | Static only | No SDK wrapper implementation | Its position comes from the private direct-reference order, not an executed trace |
+| 9 | `nnMain` | `dda294d:dm/android/LIFECYCLE.md:17` | Static only | No game main execution | Main has 852 init slots and 656 undefined symbols; neither is a service count |
+| 10 | `nninitFinalizeSdkModule` | `dda294d:dm/android/LIFECYCLE.md:19` | Static symbol is a bare `ret`; no body observed | No owned finalizer path | Reverse rollback and cleanup remain unproven |
+| 11 | `nnosQuickExit` | `dda294d:dm/android/LIFECYCLE.md:20` | Static exit edge only | No real SDK exit | Normal exit and process cleanup remain unproven |
 
 The private metadata inventory resolves SDK `nn::init::Start` as a direct
 reference chain through libc phase 0, `nnosInitialize`, libc phase 1,
 `nninitInitializeSdkModule`, main `nninitStartup`, libc phase 2, `nnMain`,
 SDK finalize and quick-exit. It also finds indirect callback sites and does not
-close their targets. This is evidence for order, not for successful execution
-of every stage.
+close their targets. The public lifecycle row for `nninitStartup`/`nnMain` is
+combined; the split rows above follow the private direct-reference order, not
+a proven execution order. This is evidence for order, not for successful
+execution of every stage.
 
 ## 2. Implemented subset at `dda294d`
 
@@ -75,7 +78,8 @@ proof that an SDK service session exists or that game initialization advances.
 
 | SVC / query | Current implementation | Limits | Repository anchor |
 |---|---|---|---|
-| SVC `0x04`/`0x05` alias and heap operations | Bounded owned mappings and rollback | Not all Horizon memory services; no general MapSharedMemory/MapPhysicalMemory claim | `dda294d:dm/android/runtime/svc.c:19` |
+| SVC `0x01` SetHeapSize | Bounded heap sizing and zero-on-recommit behavior | Not a full physical-memory or allocator contract | `dda294d:dm/android/runtime/svc.c:18` |
+| SVC `0x04`/`0x05` memory alias map/unmap | Alias creation/removal over owned heap and stack ranges | Alias mapping only; no general `MapSharedMemory`/`MapPhysicalMemory` claim | `dda294d:dm/android/runtime/svc.c:19`, `dda294d:dm/android/runtime/memory.c:49` |
 | SVC `0x06` QueryMemory | Exact owned free/heap/stack/module ranges and output bytes | Requires an owned or explicitly registered range; not every region-policy rule | `dda294d:dm/android/runtime/memory.c:127` |
 | SVC `0x29` GetInfo | IDs 4/5/11/12/13/14/15; conditional 2/3 alias, 16 system-resource zero, 21/22 accounting | ID 0 (virtual core mask) is absent; unsupported IDs return `0x4201`; accounting is synthetic, not host RSS | `dda294d:dm/android/runtime/memory.c:130`, `:141` |
 | Thread SVCs `0x08/0x09/0x0a/0x0c/0x11/0x12/0x16/0x17/0x18/0x19/0x45` | Create/start/exit, priority getter, event and thread waits, cancellation | Virtual priority only; no physical affinity or priority inheritance; `0x0f` SetThreadCoreMask is not implemented | `dda294d:dm/android/runtime/svc.c:43`, `dda294d:dm/android/runtime/sync.c:306` |
@@ -136,8 +140,8 @@ subtask before implementation.
 
 | ID | Proven gap | Existing owner | Required ownership / failure boundary | Negative acceptance |
 |---|---|---|---|---|
-| G1 | GetInfo ID 0 and SetThreadCoreMask SVC `0x0f` are referenced by main but absent from the current dispatcher | None specific; do not mislabel #5, which is synchronization/preemption | Define a guest virtual core-mask model, validate core inputs and keep it distinct from host affinity; unsupported paths stay explicit | Invalid masks or unsupported calls must fail, never report physical affinity success; owned test must distinguish virtual state from host scheduling |
-| G2 | `oe`, `aoc`, `err`, `fs`, `pctl` and diagnostic initialization are directly referenced by SDK module initialization, but no remote service sessions exist | #8 for initialization/service lifecycle; #10 for final real-input acceptance | Host owns every session/domain handle; unknown service names remain unsupported; rollback must retire only handles created by the failed stage | No service may be registered merely to return success; unknown service must remain `0x4201`, and a failed stage must leave no live session |
+| G1 | GetInfo ID 0 and SetThreadCoreMask SVC `0x0f` are referenced by main but absent from the current dispatcher | #72 (bounded child); #8 coordination; #10 acceptance | Define a guest virtual core-mask model, validate core inputs and keep it distinct from host affinity; unsupported paths stay explicit | Invalid masks or unsupported calls must fail, never report physical affinity success; owned test must distinguish virtual state from host scheduling |
+| G2 | `oe`, `aoc`, `err`, `fs`, `pctl` and diagnostic initialization are directly referenced by SDK module initialization, but no remote service sessions exist | #73 (bounded child); #8 lifecycle; #10 acceptance | Host owns every session/domain handle; unknown service names remain unsupported; rollback must retire only handles created by the failed stage | No service may be registered merely to return success; unknown service must remain `0x4201`, and a failed stage must leave no live session |
 | G3 | SVC `0x36` SynchronizePreemptionState and the remaining TLR/preemption contract are not implemented | #3, #4, #5 | Per-thread TLR state; non-Result ABI must not fabricate a Result; admission remains strict | Unsupported pre-admission SVC `0x36` must fail-stop; no unconditional flag clear or fabricated x0; see `docs/android/runtime-contract.md:179-183` |
 | G4 | `lm` SetDestination is unsupported; the four-packet queue has no general consumer/sink | #16 | Consumer owns dequeue/backpressure and stop; bounded queue must not silently discard while returning success | Queue-full, closed session and unsupported SetDestination must return an explicit failure; no success without retained/consumed data |
 | G5 | The six RomFS overrides are read-only and do not cover SDK-local filesystem calls or main `FlushFile` | #20 for persistent filesystem/save semantics | Host owns file handles and roots; writable/unsupported operations fail explicitly | No fake writable/fs success; undefined or uncovered filesystem operations must not be silently treated as mounted |
@@ -182,9 +186,9 @@ These remain **unknown**, not implemented or “not needed”:
 
 - It satisfies only the inventory portion of Issue #7: ordered known path,
   evidence anchors, implemented subset, static imports and unknown boundaries.
-- It does not satisfy the linked-subtask portion for G1 or G2; those require
-  separate owned implementation issues or an owner decision.
-- It does not close #7, #8, #10, #3, #4, #5, #16 or #20.
+- The concrete G1/G2 gaps are now tracked by bounded evidence-first children
+  #72 and #73; their protocol evidence, implementation and review remain open.
+- It does not close #7, #8, #10, #3, #4, #5, #16, #20, #72 or #73.
 - It does not establish that symbol presence means game need, that a static
   import is reachable, that a real service session exists, or that a full SDK
   initialization/exit works.
