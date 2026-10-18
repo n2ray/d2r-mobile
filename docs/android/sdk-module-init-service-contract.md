@@ -29,11 +29,11 @@ Base: accepted `main` `d7739cb` (includes #74 and #71). Repository anchors are `
   function body: 60 bytes, 15 instructions, **9 direct `BL` edges**, **one final `B` tail branch**, **no `RET`**, no
   `SVC`, no direct string references, and two `mov w0, #1` calls.
 - [B-new] All nine `BL` targets are 16-byte `adrp`/`ldr`/`add`/`br x17` import thunks; their GOT slots resolve through
-  `R_AARCH64_RELATIVE` relocations to these defined initializer symbols (family names, no addresses):
+  `R_AARCH64_JUMP_SLOT` (1026) relocations to these defined initializer symbols (family names, no addresses):
   `nndiagStartup`, `nn::os::InitializeVirtualAddressMemory`, `nn::oe::Initialize`, `nn::aoc::Initialize`,
   `nn::err::InitializeContextWriterApi`, `nn::fs::InitializeForApplication`,
   `nn::fs::SetLocalApplicationAccessLog(bool)` (constant `1`), `nn::pctl::Initialize`, and
-  `nn::fs::SetResultHandledByApplication(bool)` (constant `1`). Nine edges map to eight distinct initializers plus two
+  `nn::fs::SetResultHandledByApplication(bool)` (constant `1`). Nine edges map to seven initializer calls plus two
   `fs` setters.
 - [B-new] The final `B` tail target is itself an import thunk whose GOT slot resolves to
   `nn::diag::InitializeApplicationAbortObserver()`. The root therefore does **not** return directly: it tail-branches to
@@ -56,7 +56,7 @@ Base: accepted `main` `d7739cb` (includes #74 and #71). Repository anchors are `
 | GOT slots resolve to `nndiagStartup`, `nn::os::InitializeVirtualAddressMemory`, `nn::oe::Initialize`, `nn::aoc::Initialize`, `nn::err::InitializeContextWriterApi`, `nn::fs::InitializeForApplication`, `nn::fs::SetLocalApplicationAccessLog(bool)`, `nn::pctl::Initialize`, `nn::fs::SetResultHandledByApplication(bool)` | [B-new] RELA/GOT + dynsym | derived metadata |
 | Two `fs` boolean setters receive constant `1` | [B-old] `mov w0,#1` placement + [B-new] names | static only |
 | The final `B` is a tail call whose thunk resolves to `nn::diag::InitializeApplicationAbortObserver()`; the root does not return directly | [B-new] GOT resolution | static only; callee return unproven |
-| `nn::oe::Initialize` body calls `nn::os::SdkMutexType::Lock`, `nn::apm::Initialize`, `nn::oe::InitializeApplet`, `nn::am::GetApplicationFunctions`, all defined in this module; no `SVC` and no service-name string in the bounded body | [B-new] one-level follow | static only |
+| `nn::oe::Initialize` body calls `nn::os::SdkMutexType::Lock`, `nn::apm::Initialize`, `nn::oe::InitializeApplet`, `nn::am::GetApplicationFunctions`, all defined in this module; the bounded linear scan recorded no `SVC` or service-name string (not an absence proof) | [B-new] one-level follow | static only |
 | Local `sm:`/`lm` behavior is implemented and tested | [A] `ipc.c:572`, `sm.c:30`, `lm.c:20,52`, `tests/ipc.c:235` | owned host tests |
 
 Not proven: whether the tail callee returns; whether any of the nine initializers executes at startup; which of
@@ -114,7 +114,7 @@ The following is a plan for a future proven service. It is **not** an implementa
 
 The private input and existing report were read only. The [B-new] derivation used a bounded read-only script in the
 private job workspace: NSO segment decode, dynamic `RELA`/`JMPREL` parsing, `adrp`/`ldr` GOT-address computation from the
-nine thunk bodies and the tail thunk, and dynsym name lookup; no instruction was executed. Derived names/counts only; no
+nine thunk bodies and the tail thunk, and dynsym name lookup; no SDK instruction was executed. The follow-up scanner is linear, stops at its first `RET`, and is capped at 120 instructions; it is not a control-flow or complete string/dataflow proof. A root review corrected the symbol enumeration bound to the `DT_HASH` table’s `nchain` (the tag value itself is an address, not a count); rerunning the bounded analysis retained all nine named edges and the tail target. Derived names/counts only; no
 SDK bytes, addresses, symbol dumps, private paths, logs, saves or credentials are included here.
 
 The repository-side facts can be checked at the cited `path:line`. No new test was added because this slice is docs-only
