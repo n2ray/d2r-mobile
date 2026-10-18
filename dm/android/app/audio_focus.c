@@ -85,6 +85,7 @@ static dm_af_status op_failed(dm_af_policy *policy, dm_af_op op) {
     policy->output = DM_AF_OUT_ERROR;
     policy->generation++;
     policy->transitions++;
+    if (op == DM_AF_OP_GAIN) policy->gain_dirty = 1;   // 增益未获证实，重试时必须重新下发 | gain unproven, retry re-applies
     // 所有权不因失败而消失：已持有的流仍要由一次成功的 stop 退休；失败的首次 start 不会凭空产生所有权。
     // Ownership does not disappear on failure: a retained stream still needs one successful stop, while a failed
     // initial start never invents ownership.
@@ -117,6 +118,7 @@ static dm_af_status apply_policy(dm_af_policy *policy) {
         return DM_AF_OK;
     }
 
+    int started = 0;
     if (!policy->backend_owned || !policy->backend_running) {
         // 持有一个已失效（非我们暂停）的旧流时，先退休它，再开新流；退休失败则保持错误且仍然持有。
         // Retire a retained but dead stream (not one we paused) before starting a replacement; a failed retirement
@@ -136,12 +138,17 @@ static dm_af_status apply_policy(dm_af_policy *policy) {
         policy->backend_running = 1;
         policy->backend_paused = 0;
         policy->starts++;
+        started = 1;   // 新流不继承旧流的增益：本趟必须下发音量目标 | a new stream does not inherit the old gain
     }
 
     const float target_gain = (policy->focus == DM_AF_FOCUS_CAN_DUCK && policy->duck_enabled) ? policy->duck_gain : 1.0f;
-    if (fabsf(policy->gain - target_gain) > DM_AF_GAIN_EPSILON) {
+    // started 守卫：即使目标增益与旧缓存值相同，新流也必须真正收到 set_gain；未启动的重复焦点事件仍保持幂等。
+    // started guard: even when the target equals the old cached value, a new stream really receives set_gain, while
+    // duplicate focus events without a start stay idempotent. A failed gain marks the value unproven so a retry re-applies.
+    if (started || policy->gain_dirty || fabsf(policy->gain - target_gain) > DM_AF_GAIN_EPSILON) {
         if (policy->backend.set_gain(policy->backend.ctx, target_gain)) return op_failed(policy, DM_AF_OP_GAIN);
         policy->gain = target_gain;
+        policy->gain_dirty = 0;
         policy->gain_applied++;
     }
     settle(policy, DM_AF_OUT_PLAYING);

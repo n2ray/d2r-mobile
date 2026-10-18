@@ -100,6 +100,7 @@ typedef struct {
     int backend_running;
     int backend_paused;         // 持有的流处于"我们暂停过、可恢复"的状态 | owned stream paused by us and resumable
     int error_latched;          // 后端失败后锁存，直到新的显式指令 | latched after a backend failure until an explicit event
+    int gain_dirty;            // 增益未被后端证实（失败后重试必须重新下发） | gain not proven by the backend, retry must re-apply
     float gain;
     uint32_t generation;        // 当前可接受的流代次 | generation of the currently acceptable stream
 

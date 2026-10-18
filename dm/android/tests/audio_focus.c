@@ -20,6 +20,7 @@ static int checks, failures;
 typedef struct {
     int calls, starts, pauses, stops, gain_calls;
     int held;                   // 后端是否仍持有流资源 | whether the backend still holds the stream resource
+    float gain;                 // 后端此刻真实的音量 | gain actually held by the backend
     uint32_t last_start_gen;
     float last_gain;
     int fail_start, fail_pause, fail_stop, fail_gain;
@@ -28,6 +29,7 @@ typedef struct {
 static int fb_start(void *ctx, uint32_t generation) {
     fake_backend *f = ctx; f->calls++; f->starts++; f->last_start_gen = generation;
     if (f->fail_start) return 1;
+    if (!f->held) f->gain = 1.0f;   // 新流从后端默认音量开始，不继承旧流的增益 | a new stream starts at backend default
     f->held = 1;
     return 0;
 }
@@ -39,7 +41,11 @@ static int fb_stop(void *ctx) {
     return 0;
 }
 static int fb_gain(void *ctx, float gain) {
-    fake_backend *f = ctx; f->calls++; f->gain_calls++; f->last_gain = gain; return f->fail_gain;
+    fake_backend *f = ctx; f->calls++; f->gain_calls++;
+    if (f->fail_gain) return 1;
+    f->last_gain = gain;
+    f->gain = gain;
+    return 0;
 }
 
 static void init_policy(dm_af_policy *p, fake_backend *f, int duck_enabled, float duck_gain) {
@@ -194,7 +200,9 @@ static void test_duck_policy(void) {
     CHECK(dm_af_handle(&p, DM_AF_EV_FOCUS_CAN_DUCK) == DM_AF_OK);
     CHECK(p.output == DM_AF_OUT_PAUSED_FOCUS);
     CHECK(f.pauses == 1);
-    CHECK(f.gain_calls == 0);
+    // 新流建立后必须下发一次目标音量（1.0），即使与缓存值相同。| A new stream receives its target gain once.
+    CHECK(f.gain_calls == 1);
+    CHECK(fabsf(f.gain - 1.0f) < 1e-6f);
     CHECK(dm_af_handle(&p, DM_AF_EV_FOCUS_GAIN) == DM_AF_OK);
     CHECK(p.output == DM_AF_OUT_PLAYING);
 
@@ -205,7 +213,7 @@ static void test_duck_policy(void) {
     CHECK(dm_af_handle(&d, DM_AF_EV_FOCUS_CAN_DUCK) == DM_AF_OK);
     CHECK(d.output == DM_AF_OUT_PLAYING);
     CHECK(g.pauses == 0);
-    CHECK(g.gain_calls == 1);
+    CHECK(g.gain_calls == 2);                        // 新流的 1.0 + duck 的 0.25 | new-stream 1.0 plus duck 0.25
     CHECK(fabsf(g.last_gain - 0.25f) < 1e-6f);
     CHECK(fabsf(d.gain - 0.25f) < 1e-6f);
     CHECK(dm_af_handle(&d, DM_AF_EV_FOCUS_GAIN) == DM_AF_OK);
@@ -403,6 +411,76 @@ static void test_failed_initial_start_owns_nothing(void) {
     CHECK(p.backend_owned == 0);
 }
 
+static void test_replacement_applies_duck_gain(void) {
+    dm_af_policy p; fake_backend f;
+    init_policy(&p, &f, 1, 0.2f);
+    play_baseline(&p, &f);
+    CHECK(fabsf(f.gain - 1.0f) < 1e-6f);
+    CHECK(dm_af_handle(&p, DM_AF_EV_FOCUS_CAN_DUCK) == DM_AF_OK);
+    CHECK(fabsf(f.gain - 0.2f) < 1e-6f);
+
+    // 路由断开退休旧流，恢复后建立新流：新流必须重新收到 duck 音量，而不是沿用旧缓存。
+    // Route disconnect retires the old stream; the replacement must receive the duck gain instead of reusing the cache.
+    CHECK(dm_af_handle(&p, DM_AF_EV_ROUTE_DISCONNECT) == DM_AF_OK);
+    CHECK(p.backend_owned == 0);
+    CHECK(dm_af_handle(&p, DM_AF_EV_ROUTE_AVAILABLE) == DM_AF_OK);
+    CHECK(f.starts == 2);
+    CHECK(fabsf(f.gain - 0.2f) < 1e-6f);
+    CHECK(fabsf(p.gain - 0.2f) < 1e-6f);
+    CHECK(p.output == DM_AF_OUT_PLAYING);
+}
+
+static void test_replacement_applies_normal_gain(void) {
+    dm_af_policy p; fake_backend f;
+    init_policy(&p, &f, 1, 0.2f);
+    play_baseline(&p, &f);
+    CHECK(dm_af_handle(&p, DM_AF_EV_FOCUS_CAN_DUCK) == DM_AF_OK);
+    CHECK(fabsf(f.gain - 0.2f) < 1e-6f);
+
+    // 异步错误后显式播放：先退休旧流，再建立新流；焦点已恢复普通，新流必须收到 1.0。
+    // Explicit play after an async error retires the old stream; with normal focus the replacement must receive 1.0.
+    CHECK(dm_af_handle_generation(&p, p.generation, DM_AF_EV_BACKEND_ERROR) == DM_AF_OK);
+    CHECK(p.backend_owned == 1);
+    CHECK(dm_af_handle(&p, DM_AF_EV_FOCUS_GAIN) == DM_AF_OK);
+    CHECK(dm_af_handle(&p, DM_AF_EV_USER_PLAY) == DM_AF_OK);
+    CHECK(f.stops >= 1);
+    CHECK(f.starts == 2);
+    CHECK(fabsf(f.gain - 1.0f) < 1e-6f);
+    CHECK(fabsf(p.gain - 1.0f) < 1e-6f);
+    CHECK(p.output == DM_AF_OUT_PLAYING);
+}
+
+static void test_failed_gain_on_new_stream_retry(void) {
+    dm_af_policy p; fake_backend f;
+    init_policy(&p, &f, 1, 0.2f);
+    play_baseline(&p, &f);
+    CHECK(dm_af_handle(&p, DM_AF_EV_FOCUS_CAN_DUCK) == DM_AF_OK);
+    CHECK(dm_af_handle(&p, DM_AF_EV_ROUTE_DISCONNECT) == DM_AF_OK);
+
+    // 新流建立后 set_gain 失败：如实报错、保留清理所有权，增益标记为未证实。
+    // set_gain fails after the new stream started: the error is reported, cleanup ownership is kept and the gain is
+    // marked unproven.
+    f.fail_gain = 1;
+    CHECK(dm_af_handle(&p, DM_AF_EV_ROUTE_AVAILABLE) == DM_AF_BACKEND_REJECTED);
+    CHECK(p.output == DM_AF_OUT_ERROR);
+    CHECK(p.last_failed_op == DM_AF_OP_GAIN);
+    CHECK(p.backend_owned == 1);
+    CHECK(p.gain_dirty == 1);
+    CHECK(fabsf(f.gain - 1.0f) < 1e-6f);             // 后端仍是新流默认音量 | the backend still has the new stream's default
+
+    // 显式重试重新下发；成功后状态与缓存都一致，清理所有权仍可正常退休。
+    // An explicit retry re-applies the gain; afterwards state and cache agree and cleanup still works.
+    f.fail_gain = 0;
+    CHECK(dm_af_handle(&p, DM_AF_EV_USER_PLAY) == DM_AF_OK);
+    CHECK(p.gain_dirty == 0);
+    CHECK(fabsf(f.gain - 0.2f) < 1e-6f);
+    CHECK(fabsf(p.gain - 0.2f) < 1e-6f);
+    CHECK(p.output == DM_AF_OUT_PLAYING);
+    CHECK(dm_af_handle(&p, DM_AF_EV_USER_STOP) == DM_AF_OK);
+    CHECK(f.held == 0);
+    CHECK(p.backend_owned == 0);
+}
+
 int main(void) {
     test_init_and_duck_bounds();
     test_focus_gain_and_duplicates();
@@ -419,6 +497,9 @@ int main(void) {
     test_stop_failure_is_visible_and_retryable();
     test_play_after_error_retires_then_starts();
     test_failed_initial_start_owns_nothing();
+    test_replacement_applies_duck_gain();
+    test_replacement_applies_normal_gain();
+    test_failed_gain_on_new_stream_retry();
     printf("audio_focus: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
