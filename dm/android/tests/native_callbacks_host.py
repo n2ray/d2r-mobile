@@ -311,7 +311,7 @@ static int input_cases(void) {
 
     queue.has_event = 1;
     queue.event.type = AINPUT_EVENT_TYPE_MOTION;
-    queue.event.source = AINPUT_SOURCE_TOUCHSCREEN;
+    queue.event.source = AINPUT_SOURCE_TOUCHSCREEN | AINPUT_SOURCE_MOUSE;
     queue.event.action = AMOTION_EVENT_ACTION_DOWN;
     queue.event.time_ns = 1;
     queue.event.pointer_count = 1;
@@ -720,7 +720,7 @@ def main() -> int:
          'stop_frame_timer(s);\n        if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}',
          "s.frame_fd"),
         ("omit-source-guard",
-         "&&\n                 AInputEvent_getSource(event)==AINPUT_SOURCE_TOUCHSCREEN",
+         "&&\n                 (AInputEvent_getSource(event)&AINPUT_SOURCE_TOUCHSCREEN)==AINPUT_SOURCE_TOUCHSCREEN",
          "",
          "queue.last_handled == 0"),
     ]
