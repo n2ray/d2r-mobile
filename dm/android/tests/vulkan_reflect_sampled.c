@@ -16,7 +16,7 @@ static uint32_t pack_rgba(const uint8_t *p) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 4) { fprintf(stderr, "usage: %s sampled.spv sampled.res.json reflect.res.json\n", argv[0]); return 2; }
+    if (argc < 4) { fprintf(stderr, "usage: %s sampled.spv sampled.res.json reflect.res.json [uint.spv sint.spv shadow.spv]\n", argv[0]); return 2; }
     dm_vk_shader_plan plan;
     char why[DM_VK_REFLECT_WHY] = {0};
     CHECK(dm_vk_reflect_load(argv[1], argv[2], &plan, why, sizeof why) == VK_SUCCESS);
@@ -48,6 +48,12 @@ int main(int argc, char **argv) {
         CHECK(dm_vk_reflect_load(argv[1], path, &bad, bad_why, sizeof bad_why) != VK_SUCCESS);
         CHECK(!bad.code && !bad.binding_count);
         remove(path);
+    }
+    // 有效签名/无符号/阴影模块必须被严格形态拒绝（不是畸形指令）。
+    for (int i = 4; i < argc; i++) {
+        memset(&bad, 0, sizeof bad);
+        CHECK(dm_vk_reflect_load(argv[i], argv[2], &bad, bad_why, sizeof bad_why) != VK_SUCCESS);
+        CHECK(!bad.code);
     }
 
     dm_vk vk = {0};

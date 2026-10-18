@@ -45,7 +45,7 @@
 #define MAX_JSON_BYTES 65536u
 #define MAX_MODULE_BYTES (256u * 1024u)
 
-typedef struct { uint32_t id; uint32_t kind; uint32_t a, b, c, d, e; uint32_t members; uint32_t member_type[MAX_MEMBERS]; uint32_t offset[MAX_MEMBERS]; } type_t;
+typedef struct { uint32_t id; uint32_t kind; uint32_t a, b, c, d, e; uint32_t sampled_type, depth; uint32_t members; uint32_t member_type[MAX_MEMBERS]; uint32_t offset[MAX_MEMBERS]; } type_t;
 typedef struct { uint32_t id; uint32_t storage; uint32_t pointee; } pointer_t;
 typedef struct { uint32_t id; uint32_t type; uint32_t storage; } var_t;
 typedef struct { uint32_t id; uint32_t dec; uint32_t a, b; } decor_t;
@@ -295,6 +295,7 @@ static int scan_module(const uint8_t *data, size_t size, module_t *m, char *why,
             memset(t, 0, sizeof *t);
             t->id = o[0]; t->kind = OP_TYPE_IMAGE;
             t->a = o[2]; t->b = o[4]; t->c = o[5]; t->d = o[6]; t->e = o[7];   // dim, arrayed, ms, sampled, format
+            t->sampled_type = o[1]; t->depth = o[3];
             break;
         }
         case OP_TYPE_SAMPLED_IMAGE:
@@ -386,6 +387,12 @@ static int build_plan(module_t *m, dm_vk_shader_plan *plan, char *why, size_t ca
                 if (img->a != DIM_2D) { set_why(why, cap, "采样图像 %%%u 的 Dim=%u，本子集只接受 2D(1)", var->id, img->a); return 0; }
                 if (img->b || img->c) { set_why(why, cap, "采样图像 %%%u 为数组或多重采样，本子集不支持", var->id); return 0; }
                 if (img->e) { set_why(why, cap, "采样图像 %%%u 的 Image Format=%u，本子集只接受 Unknown(0)", var->id, img->e); return 0; }
+                type_t *scalar = find_type(m, img->sampled_type);
+                if (!scalar || scalar->kind != OP_TYPE_FLOAT || scalar->a != 32) {
+                    set_why(why, cap, "采样图像 %%%u 的 Sampled Type %%%u 不是 float32（本子集只接受 UNORM float 采样）", var->id, img->sampled_type);
+                    return 0;
+                }
+                if (img->depth != 0) { set_why(why, cap, "采样图像 %%%u 的 Depth=%u，本子集不支持深度/阴影采样", var->id, img->depth); return 0; }
                 decor_t *set = find_decor(m, var->id, DEC_DESCRIPTOR_SET);
                 decor_t *bnd = find_decor(m, var->id, DEC_BINDING);
                 if (!set || !bnd) { set_why(why, cap, "采样图像变量 %%%u 缺少 DescriptorSet 或 Binding 装饰", var->id); return 0; }

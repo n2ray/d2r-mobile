@@ -4,17 +4,20 @@
 //
 // 本切片支持的子集 | Supported subset in this slice:
 //   · 单个 OpEntryPoint，执行模型 GLCompute(5)，入口名 "main"，OpExecutionMode LocalSize 恰好一次且目标为该入口；
-//   · 描述符全部位于 set 0，每个绑定 count == 1，只允许 storage buffer（StorageBuffer 存储类 + Block 结构体）
-//     与 storage image（UniformConstant + OpTypeImage sampled=2，普通 2D，非数组、非多重采样）；
+//   · 描述符全部位于 set 0，每个绑定 count == 1；允许 storage buffer（StorageBuffer 存储类 + Block 结构体）
+//     与一个 float32、非深度、普通 2D、非数组、非多重采样的 sampled image（UniformConstant + OpTypeSampledImage）。
 //   · 至多一个 push constant 块（PushConstant 存储类，成员 Offset 装饰，总大小 4 字节对齐且 ≤ 128）；
-//   · res.json 只用于交叉核对，绝不单独决定绑定：stage、sbufs/images 的 binding/count 必须与模块逐项一致，
-//     cbufs/textures 必须为空（本子集不支持），可选 push_constants 与可选 spirv_sha256 必须匹配。
+//   · res.json 只用于交叉核对，绝不单独决定绑定：stage、sbufs/textures 的 binding/count 必须与模块逐项一致，
+//     cbufs/images 必须为空（本子集不支持），可选 push_constants 与可选 spirv_sha256 必须匹配。
+//   · 采样图像只接受 OpTypeSampledImage 包装的普通 2D、非数组、非多重采样、Sampled=1、Sampled Type 为 float32、
+//     Depth=0、Image Format=Unknown 的形式；storage image、整数/有符号采样、深度/阴影、数组、MS、非 2D 一律拒绝。
 //   · 任何不满足上述条件的模块，或模块与 sidecar 不一致，都在创建任何 Vulkan 对象之前失败。
 //     A single OpEntryPoint, GLCompute model, "main", exactly one LocalSize for it; all descriptors on set 0 with
-//     count == 1, only storage buffers (StorageBuffer storage + Block struct) and storage images (UniformConstant +
-//     OpTypeImage sampled=2, plain 2D, not arrayed, not multisampled); at most one push-constant block (PushConstant
-//     storage, Offset-decorated members, 4-byte aligned, <= 128 bytes). res.json is only cross-checked, never trusted
-//     alone. Anything else fails before any Vulkan object is created.
+//     count == 1, only storage buffers (StorageBuffer storage + Block struct) and one plain-2D, non-arrayed,
+//     non-multisampled float32 non-depth sampled image (Sampled=1, Depth=0, Unknown format); storage images, integer/
+//     signed sampled types, shadow/depth, arrays, MS and non-2D are rejected. At most one push-constant block
+//     (PushConstant storage, Offset-decorated members, 4-byte aligned, <= 128 bytes). res.json is only cross-checked,
+//     never trusted alone. Anything else fails before any Vulkan object is created.
 //
 // 这不是完整 SPIR-V 验证，也不是 Maxwell/NVN 语义证明；宿主 MoltenVK 通过不等于 Adreno/真机验收。
 // This is not a full SPIR-V validator and not proof of Maxwell/NVN semantics; host MoltenVK success is not
