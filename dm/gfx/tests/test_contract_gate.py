@@ -200,17 +200,19 @@ class Gate(unittest.TestCase):
         self.assertIn("1.3", gate.CONTRACT_ABI)
 
     def test_build_script_wires_the_gate_where_it_matters(self):
-        # 只做接线检查（不执行出包）：模板里的三个调用点缺一个，闸门就有旁路。 | Wiring check only (no build): missing any of
-        # the three call sites would leave a bypass.
+        # 接线检查（真实路径行为见 test_build_gate_paths.py）：调用点缺一个，闸门就有旁路。 | Wiring check (real-path
+        # behaviour lives in test_build_gate_paths.py): a missing call site would leave a bypass.
         src = read_text(os.path.join(HERE, "..", "tools", "dmsh_build.py"))
         tree = ast.parse(src)
         calls = {n.func.attr for n in ast.walk(tree)
                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
                  and isinstance(n.func.value, ast.Name) and n.func.value.id == "gate"}
-        self.assertTrue({"validate_pair", "record_usable", "published_usable", "stamp"} <= calls, calls)
+        self.assertTrue({"validate_pair", "candidate_usable", "stamp", "pair_digests"} <= calls, calls)
         self.assertIn('DMSH_CONTRACT', src)
+        self.assertIn("def final_exit", src)
+        self.assertIn("_code = final_exit(res)", src)
         tail = [n for n in tree.body if isinstance(n, ast.If)][-1]
-        self.assertIn("CONTRACT_ON", ast.dump(tail.test))
+        self.assertIn("_code", ast.dump(tail.test))
         self.assertIn("exit", ast.dump(tail))
 
 

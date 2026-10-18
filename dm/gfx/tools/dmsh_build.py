@@ -30,7 +30,6 @@ CHAIN = dmsh_chain.version(); out = os.path.join(out, 'b-' + CHAIN)
 if f'"{CHAIN}"' not in open(dmsh_chain.HEADER).read(): sys.exit(f'【红】nvn/dmsh_chain.h 不是当前翻译链版本 {CHAIN}：先跑 dmsh_chain.py --header（否则宿主找不到这批库）')
 CONTRACT_ON = os.environ.get('DMSH_CONTRACT', '0') == '1'   # 显式 opt-in：只影响本进程 | explicit opt-in: affects this process only
 GATE = gate.contract_id() if CONTRACT_ON else ''
-CONTRACT_FAILS = []
 XLATE = os.environ.get('XLATE', f'{DM_ROOT}/build/gfx/dmsh_xlate/dmsh_xlate')
 FACTS = dmsh_facts.load()
 if not FACTS: sys.exit('【红】没有作答表 nvn/shader_facts.tsv（随仓库；维护者用 dmsh_facts.py --freeze 重出）')
@@ -128,25 +127,19 @@ def restore_cache(key, digest):
 def cache_lookup(key, digest, rule_fp, code_fp):
     with CAS_LOCKS_GUARD: lock = CAS_LOCKS.setdefault(('shader', key), threading.Lock())
     with lock:
-        if CONTRACT_ON:   # 命中前先判验证记录：没有同一闸门记录的条目重出，不放行 | judge the validation record first; entries without it are rebuilt
-            ok, why = gate.record_usable(cache_meta_path(key), GATE)
+        if CONTRACT_ON:   # 先验 CAS 候选（留存源产物对按内容重验），通过才恢复；不先覆盖公共输出 | validate the CAS candidate by content, restore only if it passes
+            ok, why = gate.candidate_usable(cache_meta_path(key), cache_path(digest), key, CHAIN, GATE)
             if not ok:
                 PRE_STATS['miss'] += 1; PRE_STATS['契约闸门：缓存不可复用'] += 1
                 return False, '契约闸门：缓存不可复用（' + why + '）'
-        if restore_cache(key, digest):
-            if CONTRACT_ON:   # 恢复后复核已发布反射；损坏/串键的条目按不可复用重出 | re-check the published reflection; corrupt mixes are rebuilt
-                ok, why = gate.published_usable(os.path.join(out, key + '_b.json'), key, CHAIN)
-                if not ok:
-                    PRE_STATS['miss'] += 1; PRE_STATS['契约闸门：缓存不可复用'] += 1
-                    return False, '契约闸门：缓存不可复用（' + why + '）'
-            PRE_STATS['hit'] += 1; return True, '命中'
+        if restore_cache(key, digest): PRE_STATS['hit'] += 1; return True, '命中'
         old = json.load(open(cache_meta_path(key))) if os.path.exists(cache_meta_path(key)) else None
         if old and old.get('code_fp') != code_fp: reason = '代码指纹变化：全部重出'
         elif old and old.get('rule_fp') != rule_fp: reason = '规则变'
         else: reason = '新键'
         PRE_STATS['miss'] += 1; PRE_STATS[reason] += 1; return False, reason
 
-def publish_cache(key, digest, rule_fp, code_fp, verified=None):
+def publish_cache(key, digest, rule_fp, code_fp, verified=None, pair_src=None):
     found = cache_outputs(key, digest)
     if not found: return
     root, files = found
@@ -159,7 +152,15 @@ def publish_cache(key, digest, rule_fp, code_fp, verified=None):
                 value = json.load(open(src)); value.pop('fetch', None)
                 atomic_json(os.path.join(d, name), value)
     meta = {'digest': digest, 'rule_fp': rule_fp, 'code_fp': code_fp}
-    if verified: meta = gate.stamp(meta, verified)   # 发布元数据记下闸门版本，命中复用前按它判 | record the gate version so hits can be judged by it
+    if verified:   # 发布元数据记下闸门版本、源产物对与已发布产物的内容摘要；命中前按内容重验 | record gate version plus content digests for the source pair and published outputs
+        pair = None
+        if pair_src:
+            sd = os.path.join(root, 'src'); os.makedirs(sd, exist_ok=True)
+            for ext in ('.spv', '.res.json'):
+                clone(os.path.join(pair_src, key + ext), os.path.join(sd, key + ext))
+            pair = gate.pair_digests(os.path.join(sd, key + '.spv'), os.path.join(sd, key + '.res.json'))
+        published = {name: gate.file_sha(os.path.join(root, 'mac', name)) for name in files.get('mac', [])}
+        meta = gate.stamp(meta, verified, pair, published)
     atomic_json(cache_meta_path(key), meta)
 
 BF_STATS = collections.Counter()
@@ -475,6 +476,23 @@ def local3(key):   # 作答表里的线程组大小（缺省/形状不对就不�
     return tuple(v) if isinstance(v, (list, tuple)) and len(v) == 3 else None
 
 
+def final_exit(res):
+    """校验模式（DMSH_CONTRACT=1）下，任何一个请求键未成功——翻译失败、缺产物、契约不符、编译失败——都以非 0 退出；
+    缺省模式保持原样（0），不改变既有流程的语义。返回退出码，由脚本末尾使用。
+    In validated mode (DMSH_CONTRACT=1) any requested key that did not succeed - translation failure, missing artifact,
+    contract breach, compile failure - makes the build exit non-zero. Default mode keeps the old semantics (0). Returns the
+    exit code used by the script tail."""
+    if not CONTRACT_ON:
+        return 0
+    bad = [r for r in res if r[1] != 'ok']
+    for key, st, err, _ in bad:
+        print(f'【红】键 {key}：{st}' + (f'：{err}' if err else ''))
+    if bad:
+        print(f'契约闸门 {GATE}：{len(bad)}/{len(res)} 个请求键未成功（未发布；已发布产物保持不动）')
+        return 1
+    return 0
+
+
 def fin(key):
     if key in cache_hits:
         refl = json.load(open(os.path.join(out, key + '_b.json')))
@@ -484,10 +502,9 @@ def fin(key):
     if CONTRACT_ON:   # 编译/发布之前：成对存在且过契约，否则本键不发布、旧产物不动 | before compiling/publishing: pair must exist and pass, else no publish and old outputs stay
         ok, why = gate.validate_pair(key, os.path.join(w, key + '.spv'), os.path.join(w, key + '.res.json'), local3(key))
         if not ok:
-            CONTRACT_FAILS.append((key, why))
             return key, '契约不符', why[:160], None
     result = (key,) + finish(key, w, jobs[key], c1s[key])
-    if result[1] == 'ok': publish_cache(key, digests[key], rule_fps[key], CODE_FP, GATE if CONTRACT_ON else None)
+    if result[1] == 'ok': publish_cache(key, digests[key], rule_fps[key], CODE_FP, GATE if CONTRACT_ON else None, w if CONTRACT_ON else None)
     return result
 with cf.ThreadPoolExecutor(NJ) as ex: res = list(ex.map(fin, keys))
 shutil.rmtree(w, ignore_errors=True)
@@ -511,7 +528,5 @@ for e, n in collections.Counter(f"{b['kind']} {b['msl_name'][:28]}" for x in nor
 nt = collections.Counter(nn.split('（')[0] for x in ok for nn in x['notes'])
 for e, n in nt.most_common(8): print(f'  查询无 PC 作答 {n:5d}  {e}')
 json.dump([{'key': r[0], 'st': r[1], 'err': r[2]} for r in res], open(os.path.join(out, '_b_build.json'), 'w'), ensure_ascii=False)
-if CONTRACT_ON and CONTRACT_FAILS:   # 契约不符 → 非 0，键级原因稳定可查 | contract breach -> non-zero with stable per-key reasons
-    for key, why in CONTRACT_FAILS: print(f'【红】契约 {key}：{why}')
-    print(f'契约闸门 {GATE}：{len(CONTRACT_FAILS)}/{len(keys)} 个键未发布（已发布产物保持不动）')
-    sys.exit(1)
+_code = final_exit(res)   # 校验模式下任何请求键失败 → 非 0；缺省模式 0 | validated mode: any failed key -> non-zero; default mode 0
+if _code: sys.exit(_code)

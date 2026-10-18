@@ -86,8 +86,83 @@ def published_usable(refl_path, key, chain):
     return True, ""
 
 
-def stamp(meta, gate_id):
-    """发布元数据加上验证记录（新 dict，不改入参）。 | Return a copy of the publish metadata carrying the validation record."""
+def stamp(meta, gate_id, pair=None, published=None):
+    """发布元数据加上验证记录（新 dict，不改入参）。pair / published 是源产物对与已发布产物的内容摘要，缓存命中时据此重验。
+    Return a copy of the publish metadata carrying the validation record; pair / published hold content digests of the
+    source pair and the published outputs that a cache hit is re-validated against."""
     out = dict(meta or {})
     out["contract"] = gate_id
+    if pair:
+        out["pair"] = dict(pair)
+    if published:
+        out["published"] = dict(published)
     return out
+
+
+def file_sha(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def pair_digests(spv, resp):
+    """源产物对的 sha256（保留原字节，不解析）。 | sha256 of the source pair (raw bytes, no parsing)."""
+    return {"spv": file_sha(spv), "res": file_sha(resp)}
+
+
+def retained_pair_usable(root, key, meta):
+    """留存源产物对的内容校验：文件在、摘要与元数据记录一致、再跑一遍契约。改动一个字节（哪怕 JSON 仍合法、
+    键/阶段标签不变）都会因摘要不符被拒。
+    Content check for the retained source pair: files present, digests equal to the recorded ones, and the contract holds
+    again. A single altered byte - even with valid JSON and unchanged key/stage labels - fails the digest check."""
+    pair = (meta or {}).get("pair") or {}
+    spv = os.path.join(root, "src", key + ".spv")
+    resp = os.path.join(root, "src", key + ".res.json")
+    for label, path in (("spv", spv), ("res", resp)):
+        if not os.path.exists(path):
+            return False, "缓存里没有留存的源产物 %s（旧条目或未留存）" % label
+        if _empty(path):
+            return False, "留存的源产物 %s 是空文件" % label
+        want = pair.get(label)
+        if not want:
+            return False, "发布记录里没有 %s 的内容摘要" % label
+        got = file_sha(path)
+        if got != want:
+            return False, "留存的源产物 %s 内容与发布时记录的摘要不符（被改动过）" % label
+    try:
+        contract.check_pair(spv, resp)
+    except contract.Violation as e:
+        return False, "留存源产物对不再满足契约：%s" % e
+    except Exception as e:   # 输入形态意外也不放行 | unexpected shapes must not pass
+        return False, "留存源产物对校验内部错误 %s: %s" % (type(e).__name__, e)
+    return True, ""
+
+
+def candidate_usable(meta_path, root, key, chain, gate_id):
+    """缓存候选（还在 CAS 里、未进公共输出目录）的完整复用判定：验证记录 + 留存源产物对内容重验 + 已发布反射自洽。
+    任何一步不过就重出，且绝不先恢复再验。
+    Full reuse decision for a cache candidate (still in the CAS, not yet in the public output dir): validation record,
+    re-validation of the retained source pair by content, and the published reflection's self-consistency. Any failure means
+    rebuild, and validation always happens before restore."""
+    ok, why = record_usable(meta_path, gate_id)
+    if not ok:
+        return False, why
+    try:
+        meta = json.load(open(meta_path, encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, "无缓存元数据"
+    ok, why = retained_pair_usable(root, key, meta)
+    if not ok:
+        return False, why
+    published = meta.get("published") or {}
+    if not published:
+        return False, "发布记录里没有已发布产物的内容摘要（旧条目或未留存）"
+    for name, want in published.items():
+        path = os.path.join(root, "mac", name)
+        if not os.path.exists(path):
+            return False, "缓存里没有已发布产物 %s" % name
+        if file_sha(path) != want:
+            return False, "已发布产物 %s 的内容与发布时记录的摘要不符（被改动过）" % name
+    return published_usable(os.path.join(root, "mac", key + "_b.json"), key, chain)
