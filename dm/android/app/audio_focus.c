@@ -85,10 +85,9 @@ static dm_af_status op_failed(dm_af_policy *policy, dm_af_op op) {
     policy->output = DM_AF_OUT_ERROR;
     policy->generation++;
     policy->transitions++;
-    if (op == DM_AF_OP_START) {
-        policy->backend_alive = 0;
-        policy->backend_running = 0;
-    }
+    // 所有权不因失败而消失：已持有的流仍要由一次成功的 stop 退休；失败的首次 start 不会凭空产生所有权。
+    // Ownership does not disappear on failure: a retained stream still needs one successful stop, while a failed
+    // initial start never invents ownership.
     return DM_AF_BACKEND_REJECTED;
 }
 
@@ -98,17 +97,19 @@ static dm_af_status apply_policy(dm_af_policy *policy) {
     if (policy->error_latched) return DM_AF_OK;   // 不自动重试；等待显式指令 | no auto retry; wait for an explicit event
 
     if (!wants_play(policy)) {
-        if (policy->backend_alive) {
+        if (policy->backend_owned) {
             const int must_stop = !policy->desired_play || policy->requires_user_rearm || !policy->route_ok;
             if (must_stop) {
                 if (policy->backend.stop(policy->backend.ctx)) return op_failed(policy, DM_AF_OP_STOP);
-                policy->backend_alive = 0;
+                policy->backend_owned = 0;
                 policy->backend_running = 0;
+                policy->backend_paused = 0;
                 policy->stops++;
                 policy->generation++;   // 旧流的所有迟到回调失效 | every late callback of the old stream is stale
             } else if (policy->backend_running) {
                 if (policy->backend.pause(policy->backend.ctx)) return op_failed(policy, DM_AF_OP_PAUSE);
                 policy->backend_running = 0;
+                policy->backend_paused = 1;
                 policy->pauses++;
             }
         }
@@ -116,14 +117,24 @@ static dm_af_status apply_policy(dm_af_policy *policy) {
         return DM_AF_OK;
     }
 
-    if (!policy->backend_alive || !policy->backend_running) {
+    if (!policy->backend_owned || !policy->backend_running) {
+        // 持有一个已失效（非我们暂停）的旧流时，先退休它，再开新流；退休失败则保持错误且仍然持有。
+        // Retire a retained but dead stream (not one we paused) before starting a replacement; a failed retirement
+        // keeps the error and the ownership.
+        if (policy->backend_owned && !policy->backend_paused) {
+            if (policy->backend.stop(policy->backend.ctx)) return op_failed(policy, DM_AF_OP_STOP);
+            policy->backend_owned = 0;
+            policy->stops++;
+            policy->generation++;
+        }
         // 新流或恢复：每次 start 都拿新的代次，旧代次的事件随后一律 STALE。
         // Fresh stream or resume: every start takes a new generation, so events of older streams become STALE.
         const uint32_t generation = policy->generation + 1;
         if (policy->backend.start(policy->backend.ctx, generation)) return op_failed(policy, DM_AF_OP_START);
         policy->generation = generation;
-        policy->backend_alive = 1;
+        policy->backend_owned = 1;
         policy->backend_running = 1;
+        policy->backend_paused = 0;
         policy->starts++;
     }
 
@@ -189,11 +200,12 @@ dm_af_status dm_af_handle(dm_af_policy *policy, dm_af_event event) {
         policy->route_ok = 1;
         break;
     case DM_AF_EV_BACKEND_ERROR:
-        // 异步错误在回调线程上到达：只更新状态，绝不回调后端。
-        // An async error arrives on a callback thread: only state is updated, the backend is never called.
+        // 异步错误在回调线程上到达：只更新状态，绝不回调后端。流资源仍归后端所有，留给后续串行的 stop/替换退休。
+        // An async error arrives on a callback thread: only state is updated, the backend is never called. The stream
+        // resource stays owned by the backend and is retired by a later serialized stop/replacement.
         policy->backend_failures++;
-        policy->backend_alive = 0;
         policy->backend_running = 0;
+        policy->backend_paused = 0;
         policy->error_latched = 1;
         policy->generation++;
         policy->output = DM_AF_OUT_ERROR;

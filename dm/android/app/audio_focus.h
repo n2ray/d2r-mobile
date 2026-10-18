@@ -91,8 +91,14 @@ typedef struct {
     dm_af_focus focus;
 
     dm_af_output output;
-    int backend_alive;          // 后端仍持有流（可能已暂停） | backend still holds a stream (maybe paused)
+    // 所有权与运行状态分开：backend_owned = 后端仍持有流资源（可能已暂停/已失效），必须由一次成功的 stop 退休；
+    // backend_running = 此刻确实在出音。失败与异步错误都不转移所有权，generation 只决定回调是否仍然有效。
+    // Ownership is separate from running: backend_owned means the backend still holds the stream resource (paused or
+    // failed) and only a successful stop retires it; backend_running means audio is actually being produced now.
+    // Failures and async errors never transfer ownership; the generation only decides whether a callback is valid.
+    int backend_owned;
     int backend_running;
+    int backend_paused;         // 持有的流处于"我们暂停过、可恢复"的状态 | owned stream paused by us and resumable
     int error_latched;          // 后端失败后锁存，直到新的显式指令 | latched after a backend failure until an explicit event
     float gain;
     uint32_t generation;        // 当前可接受的流代次 | generation of the currently acceptable stream

@@ -19,16 +19,25 @@ static int checks, failures;
 
 typedef struct {
     int calls, starts, pauses, stops, gain_calls;
+    int held;                   // 后端是否仍持有流资源 | whether the backend still holds the stream resource
     uint32_t last_start_gen;
     float last_gain;
     int fail_start, fail_pause, fail_stop, fail_gain;
 } fake_backend;
 
 static int fb_start(void *ctx, uint32_t generation) {
-    fake_backend *f = ctx; f->calls++; f->starts++; f->last_start_gen = generation; return f->fail_start;
+    fake_backend *f = ctx; f->calls++; f->starts++; f->last_start_gen = generation;
+    if (f->fail_start) return 1;
+    f->held = 1;
+    return 0;
 }
 static int fb_pause(void *ctx) { fake_backend *f = ctx; f->calls++; f->pauses++; return f->fail_pause; }
-static int fb_stop(void *ctx) { fake_backend *f = ctx; f->calls++; f->stops++; return f->fail_stop; }
+static int fb_stop(void *ctx) {
+    fake_backend *f = ctx; f->calls++; f->stops++;
+    if (f->fail_stop) return 1;      // 清理失败：资源仍归后端所有 | failed cleanup: the backend still owns the resource
+    f->held = 0;
+    return 0;
+}
 static int fb_gain(void *ctx, float gain) {
     fake_backend *f = ctx; f->calls++; f->gain_calls++; f->last_gain = gain; return f->fail_gain;
 }
@@ -290,6 +299,110 @@ static void test_async_error_never_calls_backend(void) {
     CHECK(f.starts == 2);
 }
 
+static void test_async_error_retains_ownership(void) {
+    dm_af_policy p; fake_backend f;
+    init_policy(&p, &f, 0, 0.2f);
+    play_baseline(&p, &f);
+    CHECK(f.held == 1);
+    const uint32_t generation = p.generation;
+    int calls_before = f.calls;
+
+    // 异步错误：回调里零后端调用，但资源仍归后端所有。| Async error: zero backend calls, ownership retained.
+    CHECK(dm_af_handle_generation(&p, generation, DM_AF_EV_BACKEND_ERROR) == DM_AF_OK);
+    CHECK(f.calls == calls_before);
+    CHECK(p.backend_owned == 1);
+    CHECK(p.backend_running == 0);
+    CHECK(f.held == 1);
+
+    // 之后的串行 USER_STOP 必须恰好退休一次。| A later serialized USER_STOP retires it exactly once.
+    CHECK(dm_af_handle(&p, DM_AF_EV_USER_STOP) == DM_AF_OK);
+    CHECK(f.stops == 1);
+    CHECK(f.held == 0);
+    CHECK(p.backend_owned == 0);
+    CHECK(p.output == DM_AF_OUT_STOPPED);
+    CHECK(dm_af_handle(&p, DM_AF_EV_USER_STOP) == DM_AF_OK);
+    CHECK(f.stops == 1);                             // 重复停止不再调用 | duplicate stop issues no second call
+}
+
+static void test_failed_resume_retains_ownership(void) {
+    dm_af_policy p; fake_backend f;
+    init_policy(&p, &f, 0, 0.2f);
+    play_baseline(&p, &f);
+    CHECK(dm_af_handle(&p, DM_AF_EV_APP_PAUSE) == DM_AF_OK);
+    CHECK(f.pauses == 1);
+    CHECK(p.backend_owned == 1);
+    CHECK(p.backend_paused == 1);
+
+    // 恢复被拒：旧流仍然被持有，等待清理。| Rejected resume: the old stream is still owned and needs cleanup.
+    f.fail_start = 1;
+    CHECK(dm_af_handle(&p, DM_AF_EV_APP_RESUME) == DM_AF_BACKEND_REJECTED);
+    CHECK(p.backend_owned == 1);
+    CHECK(p.backend_running == 0);
+    CHECK(f.held == 1);
+
+    CHECK(dm_af_handle(&p, DM_AF_EV_USER_STOP) == DM_AF_OK);
+    CHECK(f.stops == 1);
+    CHECK(f.held == 0);
+    CHECK(p.backend_owned == 0);
+    CHECK(p.output == DM_AF_OUT_STOPPED);
+}
+
+static void test_stop_failure_is_visible_and_retryable(void) {
+    dm_af_policy p; fake_backend f;
+    init_policy(&p, &f, 0, 0.2f);
+    play_baseline(&p, &f);
+    f.fail_stop = 1;
+    CHECK(dm_af_handle(&p, DM_AF_EV_USER_STOP) == DM_AF_BACKEND_REJECTED);
+    CHECK(p.output == DM_AF_OUT_ERROR);
+    CHECK(p.last_failed_op == DM_AF_OP_STOP);
+    CHECK(p.backend_owned == 1);                     // 清理失败不谎称已释放 | a failed cleanup is not a release
+    CHECK(p.stops == 0);
+    CHECK(f.held == 1);
+
+    // 重试成功后才算释放，且只成功一次。| Only a successful retry releases it, once.
+    f.fail_stop = 0;
+    CHECK(dm_af_handle(&p, DM_AF_EV_USER_STOP) == DM_AF_OK);
+    CHECK(p.stops == 1);
+    CHECK(p.backend_owned == 0);
+    CHECK(f.held == 0);
+    CHECK(p.output == DM_AF_OUT_STOPPED);
+    CHECK(f.stops == 2);                             // 一次失败 + 一次成功调用 | one failure plus one successful call
+}
+
+static void test_play_after_error_retires_then_starts(void) {
+    dm_af_policy p; fake_backend f;
+    init_policy(&p, &f, 0, 0.2f);
+    play_baseline(&p, &f);
+    CHECK(dm_af_handle_generation(&p, p.generation, DM_AF_EV_BACKEND_ERROR) == DM_AF_OK);
+    CHECK(p.backend_owned == 1);
+    int starts_before = f.starts;
+    // 明确的新播放意图：先退休保留的旧流，再开新流。| Explicit play: retire the retained stream, then start.
+    CHECK(dm_af_handle(&p, DM_AF_EV_USER_PLAY) == DM_AF_OK);
+    CHECK(f.stops == 1);
+    CHECK(f.starts == starts_before + 1);
+    CHECK(p.backend_owned == 1);
+    CHECK(p.backend_running == 1);
+    CHECK(f.held == 1);
+}
+
+static void test_failed_initial_start_owns_nothing(void) {
+    dm_af_policy p; fake_backend f;
+    init_policy(&p, &f, 0, 0.2f);
+    CHECK(dm_af_handle(&p, DM_AF_EV_APP_RESUME) == DM_AF_OK);
+    CHECK(dm_af_handle(&p, DM_AF_EV_USER_PLAY) == DM_AF_OK);
+    f.fail_start = 1;
+    CHECK(dm_af_handle(&p, DM_AF_EV_FOCUS_GAIN) == DM_AF_BACKEND_REJECTED);
+    CHECK(p.backend_owned == 0);                     // 首次启动失败不产生所有权 | a failed initial start owns nothing
+
+    // 没有流可清理：停止不应调用后端。| Nothing to clean up: stop must not call the backend.
+    int calls_before = f.calls;
+    f.fail_start = 0;
+    CHECK(dm_af_handle(&p, DM_AF_EV_USER_STOP) == DM_AF_OK);
+    CHECK(f.calls == calls_before);
+    CHECK(p.output == DM_AF_OUT_STOPPED);
+    CHECK(p.backend_owned == 0);
+}
+
 int main(void) {
     test_init_and_duck_bounds();
     test_focus_gain_and_duplicates();
@@ -301,6 +414,11 @@ int main(void) {
     test_route_disconnect();
     test_backend_failures();
     test_async_error_never_calls_backend();
+    test_async_error_retains_ownership();
+    test_failed_resume_retains_ownership();
+    test_stop_failure_is_visible_and_retryable();
+    test_play_after_error_retires_then_starts();
+    test_failed_initial_start_owns_nothing();
     printf("audio_focus: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
