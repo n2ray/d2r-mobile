@@ -2,8 +2,10 @@
 // NativeActivity engineering diagnostics: synthetic ARM64 gates / Vulkan pattern inside the APK domain, borrow windows only during callbacks, never run the game.
 #include "../artifact.h"
 #include "../vulkan/vk_host.h"
+#include "input_policy.h"
 #include "lifecycle.h"
 #include "touch_bridge.h"
+#include "view_policy.h"
 #include <android/asset_manager.h>
 #include <android/configuration.h>
 #include <android/log.h>
@@ -21,7 +23,7 @@
 #include <time.h>
 #include <unistd.h>
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"D2R-Diagnostic",__VA_ARGS__)
-typedef struct{dm_vk vk;AInputQueue*input;dm_app_lifecycle*lifecycle;ANativeActivity*activity;ANativeWindow*window;dm_touch_bridge*touch;ALooper*looper;int timer_fd;float density,touch_width_pt,touch_height_pt;uint64_t last_touch_buttons;int32_t last_touch_lx,last_touch_ly,last_touch_rx,last_touch_ry;int64_t last_touch_log_ns;char vertex[4096],fragment[4096];}app_state;
+typedef struct{dm_vk vk;AInputQueue*input;dm_app_lifecycle*lifecycle;ANativeActivity*activity;ANativeWindow*window;dm_touch_bridge*touch;dm_view_policy view;dm_input_policy gate;ALooper*looper;int timer_fd;int resumed,focused,touch_allowed;float density,touch_width_pt,touch_height_pt;uint64_t last_touch_buttons;int32_t last_touch_lx,last_touch_ly,last_touch_rx,last_touch_ry;int64_t last_touch_log_ns;char vertex[4096],fragment[4096];}app_state;
 static int copy_asset(ANativeActivity*a,const char*name,char path[4096]){
     int n=snprintf(path,4096,"%s/%s",a->internalDataPath,name);if(n<0||n>=4096)return 1;
     AAsset*asset=AAssetManager_open(a->assetManager,name,AASSET_MODE_STREAMING);if(!asset)return 1;
@@ -122,7 +124,8 @@ static void touch_resize_window(app_state*s,ANativeWindow*window){
     if(!s||!s->touch||!window)return;
     int width=ANativeWindow_getWidth(window),height=ANativeWindow_getHeight(window);
     if(width<=0||height<=0||s->density<=0)return;
-    float width_pt=(float)width/s->density,height_pt=(float)height/s->density;
+    if(!dm_view_policy_set_view(&s->view,(uint32_t)width,(uint32_t)height,s->density))return;
+    float width_pt=s->view.view_width_pt,height_pt=s->view.view_height_pt;
     if(width_pt==s->touch_width_pt&&height_pt==s->touch_height_pt)return;
     int64_t now=monotonic_ns();if(now<0)now=0;
     if(!dm_touch_bridge_resize(s->touch,width_pt,height_pt,now)){
@@ -143,17 +146,28 @@ static void draw(ANativeActivity*a,ANativeWindow*window){
         if(p[0]!=(x&15u)*17||p[1]!=(y&15u)*17||p[2]!=((x^y)&1u)*255||p[3]!=255){
             LOG("Vulkan pixel mismatch at %u,%u",x,y);free(pixels);return;}
     }
-    if((ANativeWindow_getWidth(window)!=256||ANativeWindow_getHeight(window)!=256||ANativeWindow_getFormat(window)!=WINDOW_FORMAT_RGBA_8888)&&
-        ANativeWindow_setBuffersGeometry(window,256,256,WINDOW_FORMAT_RGBA_8888)){LOG("window geometry failed");free(pixels);return;}
+    int window_width=ANativeWindow_getWidth(window),window_height=ANativeWindow_getHeight(window);
+    if(window_width>0&&window_height>0)
+        (void)dm_view_policy_set_view(&s->view,(uint32_t)window_width,(uint32_t)window_height,s->density);
     ANativeWindow_Buffer buffer;
     if(!ANativeWindow_lock(window,&buffer,NULL)){
         int copied=0;
-        if(buffer.bits&&buffer.format==WINDOW_FORMAT_RGBA_8888&&buffer.width>=256&&buffer.height>=256&&buffer.stride>=buffer.width){
-            for(unsigned y=0;y<256;y++)memcpy((uint8_t*)buffer.bits+(size_t)y*buffer.stride*4,pixels+y*256*4,256*4);
+        if(buffer.bits&&buffer.format==WINDOW_FORMAT_RGBA_8888&&buffer.width>0&&
+           buffer.height>0&&buffer.stride>=buffer.width){
+            (void)dm_view_policy_set_buffer(&s->view,buffer.width,buffer.height);
+            for(uint32_t y=0;y<(uint32_t)buffer.height;y++)
+                memset((uint8_t*)buffer.bits+(size_t)y*buffer.stride*4,0,(size_t)buffer.width*4);
+            uint32_t copy_w=buffer.width<256?buffer.width:256;
+            uint32_t copy_h=buffer.height<256?buffer.height:256;
+            uint32_t origin_x=(buffer.width-copy_w)/2,origin_y=(buffer.height-copy_h)/2;
+            for(uint32_t y=0;y<copy_h;y++)
+                memcpy((uint8_t*)buffer.bits+((size_t)(origin_y+y)*buffer.stride+origin_x)*4,
+                       pixels+(size_t)y*256*4,(size_t)copy_w*4);
             copied=1;
         }else LOG("unexpected window buffer");
         if(ANativeWindow_unlockAndPost(window))LOG("window post failed");
-        else if(copied)LOG("Vulkan graphics diagnostic: 256x256 pixel-check=PASS, CPU-readback window post=PASS; game presenter not implemented");
+        else if(copied)LOG("Vulkan graphics diagnostic: 256x256 pixel-check=PASS, CPU-readback window post=PASS (%dx%d view, %dx%d buffer); game presenter not implemented",
+            window_width,window_height,buffer.width,buffer.height);
     }else LOG("window lock failed");
     free(pixels);
 }
@@ -163,15 +177,31 @@ static void stop_input_timer(app_state*s){
     close(s->timer_fd);s->timer_fd=-1;
 }
 static int input_timer(int fd,int events,void*data){
-    (void)events;app_state*s=data;
+    app_state*s=data;
+    if(events&(ALOOPER_EVENT_ERROR|ALOOPER_EVENT_HANGUP)){
+        LOG("touch timer error/hangup events=%d",events);
+        stop_input_timer(s);
+        dm_input_policy_set_timer(&s->gate,0);s->touch_allowed=0;
+        int64_t now=monotonic_ns();touch_cancel(s,"timer_error",now<0?0:now);
+        return 0;
+    }
     uint64_t expirations;
-    while(read(fd,&expirations,sizeof(expirations))<0&&errno==EINTR){}
+    ssize_t got=read(fd,&expirations,sizeof(expirations));
+    if(got<0&&errno!=EAGAIN&&errno!=EWOULDBLOCK&&errno!=EINTR){
+        LOG("touch timer read failed: %d",errno);
+        stop_input_timer(s);
+        dm_input_policy_set_timer(&s->gate,0);s->touch_allowed=0;
+        int64_t now=monotonic_ns();touch_cancel(s,"timer_read_error",now<0?0:now);
+        return 0;
+    }
+    if(!s->touch_allowed)return 1;
     int64_t now=monotonic_ns();if(now<0)return 1;
     if(dm_touch_bridge_tick(s->touch,now))touch_consume(s,"timer");
     return 1;
 }
 static int start_input_timer(app_state*s){
-    if(!s||s->timer_fd>=0||!s->touch)return 0;
+    if(!s||!s->touch)return 0;
+    if(s->timer_fd>=0)return 1;
     int fd=timerfd_create(CLOCK_MONOTONIC,TFD_NONBLOCK|TFD_CLOEXEC);
     if(fd<0){LOG("timerfd_create failed: %d",errno);return 0;}
     struct itimerspec spec;
@@ -189,6 +219,26 @@ static int start_input_timer(app_state*s){
     s->timer_fd=fd;
     return 1;
 }
+static void update_touch_state(app_state*s){
+    if(!s)return;
+    dm_input_policy_set_resumed(&s->gate,s->resumed);
+    dm_input_policy_set_focused(&s->gate,s->focused);
+    dm_input_policy_set_queue(&s->gate,s->input!=NULL);
+    dm_input_policy_set_window(&s->gate,s->window!=NULL);
+    dm_input_policy_set_touch(&s->gate,s->touch!=NULL);
+    if(!dm_input_policy_ready(&s->gate)){
+        stop_input_timer(s);dm_input_policy_set_timer(&s->gate,0);s->touch_allowed=0;return;
+    }
+    if(!start_input_timer(s)){
+        dm_input_policy_set_timer(&s->gate,0);s->touch_allowed=0;
+        s->timer_fd=-1;
+        LOG("touch unavailable: timer start failed; gestures gated until retry");
+        int64_t now=monotonic_ns();touch_cancel(s,"timer_unavailable",now<0?0:now);
+        return;
+    }
+    dm_input_policy_set_timer(&s->gate,1);
+    s->touch_allowed=1;
+}
 static int motion_action(int32_t action){
     switch(action&AMOTION_EVENT_ACTION_MASK){
     case AMOTION_EVENT_ACTION_DOWN:return DM_TOUCH_ACTION_DOWN;
@@ -202,6 +252,7 @@ static int motion_action(int32_t action){
 }
 static void handle_motion(app_state*s,AInputEvent*event){
     if(!s||!s->touch)return;
+    if(!s->touch_allowed){LOG("touch event ignored while inactive");return;}
     int32_t packed=AMotionEvent_getAction(event);
     int action=motion_action(packed);
     if(action<0){LOG("touch unsupported action=%d",packed&AMOTION_EVENT_ACTION_MASK);return;}
@@ -238,8 +289,13 @@ static int input_ready(int fd,int events,void*data){
     }return 1;
 }
 static void input_created(ANativeActivity*a,AInputQueue*queue){app_state*s=a->instance;if(!s)return;
-    if(s->input==queue){if(s->timer_fd<0)start_input_timer(s);return;}
-    if(s->input){AInputQueue_detachLooper(s->input);s->input=NULL;stop_input_timer(s);}
+    if(s->input==queue){update_touch_state(s);return;}
+    if(s->input){
+        AInputQueue_detachLooper(s->input);s->input=NULL;
+        update_touch_state(s);
+        if(s->touch){dm_npad_state neutral;dm_touch_bridge_destroy(s->touch,&neutral);s->touch=NULL;
+            LOG("touch bridge replaced on queue change buttons=%llu",(unsigned long long)neutral.buttons);}
+    }
     if(!s->touch){
         s->density=activity_density(a);
         s->touch=dm_touch_bridge_create(667,375,s->density);
@@ -251,11 +307,11 @@ static void input_created(ANativeActivity*a,AInputQueue*queue){app_state*s=a->in
     if(!looper){LOG("input looper unavailable");return;}
     s->looper=looper;
     s->input=queue;AInputQueue_attachLooper(queue,looper,1,input_ready,a);
-    if(!start_input_timer(s))LOG("touch timer disabled; ticks require input events");
+    update_touch_state(s);
 }
 static void input_destroyed(ANativeActivity*a,AInputQueue*queue){app_state*s=a->instance;if(!s)return;
     if(s->input!=queue){LOG("stale input queue destroy ignored");return;}
-    AInputQueue_detachLooper(queue);s->input=NULL;stop_input_timer(s);
+    AInputQueue_detachLooper(queue);s->input=NULL;update_touch_state(s);
     if(s->touch){dm_npad_state neutral;dm_touch_bridge_destroy(s->touch,&neutral);s->touch=NULL;
         LOG("touch bridge destroyed on input queue loss buttons=%llu",(unsigned long long)neutral.buttons);}
 }
@@ -269,11 +325,13 @@ static void window_ready(ANativeActivity*a,ANativeWindow*window){
     }
     s->window=window;
     touch_resize_window(s,window);
+    update_touch_state(s);
     if(dm_app_lifecycle_state(s->lifecycle)==DM_APP_STATE_OWNED_DIAGNOSTIC)draw(a,window);
 }
 static void window_destroyed(ANativeActivity*a,ANativeWindow*window){
     app_state*s=a->instance;if(!s||!s->lifecycle)return;
-    if(s->window==window){int64_t now=monotonic_ns();touch_cancel(s,"window_destroyed",now<0?0:now);s->window=NULL;}
+    if(s->window==window){s->window=NULL;update_touch_state(s);
+        int64_t now=monotonic_ns();touch_cancel(s,"window_destroyed",now<0?0:now);}
     if(!dm_app_lifecycle_surface_destroyed(s->lifecycle,window))
         LOG("stale surface destroy ignored");
 }
@@ -295,11 +353,14 @@ static void destroy(ANativeActivity*a){app_state*s=a->instance;if(s){
 }}
 static void low_memory(ANativeActivity*a){app_state*s=a->instance;if(s&&s->vk.device){dm_vk_destroy(&s->vk);LOG("low memory: GPU context released; redraw recreates diagnostic");}}
 static void pause_app(ANativeActivity*a){app_state*s=a->instance;if(!s||!s->lifecycle)return;
+    s->resumed=0;update_touch_state(s);
     int64_t now=monotonic_ns();touch_cancel(s,"pause",now<0?0:now);
     if(!dm_app_lifecycle_pause(s->lifecycle))LOG("pause rejected: state=%s",dm_app_lifecycle_state_name(dm_app_lifecycle_state(s->lifecycle)));}
 static void resume_app(ANativeActivity*a){app_state*s=a->instance;if(!s||!s->lifecycle)return;
-    if(!dm_app_lifecycle_resume(s->lifecycle))LOG("resume rejected: state=%s",dm_app_lifecycle_state_name(dm_app_lifecycle_state(s->lifecycle)));}
+    if(!dm_app_lifecycle_resume(s->lifecycle)){LOG("resume rejected: state=%s",dm_app_lifecycle_state_name(dm_app_lifecycle_state(s->lifecycle)));return;}
+    s->resumed=1;update_touch_state(s);}
 static void focus_changed(ANativeActivity*a,int focused){app_state*s=a->instance;if(!s)return;
+    s->focused=focused?1:0;update_touch_state(s);
     if(!focused){int64_t now=monotonic_ns();touch_cancel(s,"focus_lost",now<0?0:now);}
 }
 static void configuration_changed(ANativeActivity*a){app_state*s=a->instance;if(!s)return;
@@ -309,10 +370,13 @@ static void configuration_changed(ANativeActivity*a){app_state*s=a->instance;if(
     if(s->touch)dm_touch_bridge_set_density(s->touch,density);
     s->touch_width_pt=0;s->touch_height_pt=0;
     if(s->window)touch_resize_window(s,s->window);
+    update_touch_state(s);
 }
 __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActivity*a,void*saved,size_t saved_size){
     (void)saved;(void)saved_size;app_state*s=calloc(1,sizeof(*s));if(!s){ANativeActivity_finish(a);return;}a->instance=s;
-    s->activity=a;s->timer_fd=-1;
+    s->activity=a;s->timer_fd=-1;s->resumed=0;s->focused=0;
+    dm_view_policy_init(&s->view);
+    dm_input_policy_init(&s->gate);
     a->callbacks->onDestroy=destroy;a->callbacks->onLowMemory=low_memory;
     a->callbacks->onNativeWindowCreated=window_ready;a->callbacks->onNativeWindowRedrawNeeded=window_ready;
     a->callbacks->onNativeWindowDestroyed=window_destroyed;a->callbacks->onNativeWindowResized=window_ready;

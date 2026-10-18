@@ -37,13 +37,20 @@ NativeActivity 输入 looper 现在通过 `app/touch_bridge.c` 把 Android
 `MotionEvent` 转交给复用的 r2d 触控核心。`DOWN`、`POINTER_DOWN`、`MOVE`、
 `UP`、`POINTER_UP`、`CANCEL` 都在同一 looper／核心线程处理。pointer ID 是不透明
 Android ID；事件时间使用 `CLOCK_MONOTONIC` 纳秒；调用适配器前按 Activity density
-把物理像素换算为逻辑点；动作索引支持不连续 ID。
+把物理像素换算为逻辑点；动作索引支持不连续 ID。`app/view_policy.c` 把物理视图
+尺寸、density 与逻辑点边界同诊断渲染缓冲区分开；绘制路径不再强制 256x256 窗口
+几何，因此后续重绘不会把 1440x900 的物理输入域变成 256x256。
 
 同一 looper 上的 `timerfd` 让 `dm_android_touch_tick` 在之后没有新触点时仍推进
-定时器（ZL 领先、延迟脉冲、判定和重复）。窗口尺寸和配置 density 变化会取消当前
-手势并原子重建核心布局；失焦、暂停、窗口／输入队列丢失和销毁都会取消活动指针与
-排队脉冲，并只消费一次中性快照。重复／陈旧输入队列和 timer 回调会被忽略或清理，
-不保留失效指针。
+定时器（ZL 领先、延迟脉冲、判定和重复）。只有 `app/input_policy.c` 同时报告
+resumed、focused、输入队列、窗口和 bridge 就绪时，才接受 MotionEvent 和 timer
+tick。timer 启动失败、致命 read 错误或 hangup 也属于接受条件：输入被门控、触控
+状态归零并记录不可用，直到后续回调明确重试成功。暂停、失焦、队列替换、窗口丢失
+和销毁都会停止 timer，取消活动指针与排队脉冲，并只消费一次中性快照。输入队列
+替换会先取消并销毁旧 bridge，再连接新队列。进程创建时不假定已 resume/focus，
+只有对应 NativeActivity 回调实际观察到后才接受输入。重复／陈旧输入队列和 timer
+回调会被忽略或清理，不保留失效指针。timer error/hangup 和 read 失败会停止 timer、
+取消触控并记录日志；不会用合成输入事件冒充 tick。
 
 bridge 是明确的诊断消费者：每次 read 最多取一个有序脉冲并保存有界快照，供限流
 日志观察；`diagnostic_reads` 只表示 bridge 消费了快照，不表示客体／游戏 HID

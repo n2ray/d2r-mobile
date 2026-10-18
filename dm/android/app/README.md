@@ -50,15 +50,26 @@ existing reusable r2d touch core through `app/touch_bridge.c`. `DOWN`,
 looper/core thread. Pointer IDs are opaque Android IDs; event time is
 `CLOCK_MONOTONIC` nanoseconds; physical pixels are divided by the activity
 density before the adapter call. Action-index pointer selection supports
-non-contiguous IDs.
+non-contiguous IDs. `app/view_policy.c` keeps the physical view dimensions,
+density and logical point bounds separate from the diagnostic render buffer; the
+draw path no longer forces 256x256 window geometry, so a later redraw cannot
+turn a 1440x900 physical input view into a 256x256 input domain.
 
 A `timerfd` is attached to the same looper so `dm_android_touch_tick` advances
 timers (ZL lead, deferred pulses, settle and repeat) even when no further touch
-arrives. Window resize and configuration density changes cancel the current
-gesture and resize the core atomically; focus loss, pause, window/input-queue
-loss and destruction cancel active pointers and queued pulses, then consume a
-neutral snapshot exactly once. Duplicate/stale input queue and timer callbacks
-are ignored or cleaned up without stale pointer use.
+arrives. Timer ticks and MotionEvents are accepted only while
+`app/input_policy.c` reports resumed, focused, input-queue, window and bridge
+readiness together. A timer start failure, fatal read error or hangup is part of
+that acceptance decision: input is gated, touch state is neutralized, and the
+failure is logged until a later callback deliberately retries the timer. Pause,
+focus loss, queue replacement, window loss and destruction stop the timer, cancel
+active pointers and queued pulses, then consume a neutral snapshot exactly once.
+A replacing input queue cancels and destroys the old bridge before attaching the
+new queue. Resume/focus are not assumed at process creation; they are accepted
+only after the corresponding NativeActivity callbacks observe them. Duplicate/stale
+input queue and timer callbacks are ignored or cleaned up without stale pointer use.
+Timer error/hangup and read failures stop the timer, cancel touch state and log;
+there is no synthetic input event used as a tick fallback.
 
 The bridge is the explicit diagnostic consumer: it drains at most one ordered
 pulse per read and stores a bounded snapshot for log-throttled observation. Its
