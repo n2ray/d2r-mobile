@@ -186,7 +186,9 @@ pickup/drop `A` pulses, drag-out discard `Y`, drag-back `A` (pad only; cursor
 position is not observed), panel/scene change cancel, stash double-tap `Y`,
 stacked-cell `STACK_TAKE` and stack drag `SHOP_DROP`. Non-zero core holds
 (`0.6 s` stash `Y`, `0.15 s` discard `Y`) stay pressed across repeated reads and
-ticks until the standalone first-read hold clock expires; this is an adapter
+ticks until the standalone first-read hold clock expires; a full pulse queue
+still lets an already observed head expire and drain while an unobserved head
+keeps its full first-read hold. This is an adapter
 consumption boundary, not a guest/cursor-delivery acknowledgement. This is
 offline adapter evidence only: there is still no
 item hit/model, cursor overlay, host drop query, storage or trade result,

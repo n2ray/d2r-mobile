@@ -1134,6 +1134,55 @@ static void inventory_timed_hold_consumption(fixture *f) {
     s = read_pad(f); CHECK(s.buttons == 0);
 }
 
+static void inventory_fast_double_tap_item(fixture *f, int32_t id, float x, float y, int64_t t) {
+    CHECK(dm_android_touch_down(f->touch, id, x, y, t));
+    CHECK(dm_android_touch_pointer_hit(f->touch, id, 1));
+    CHECK(dm_android_touch_up(f->touch, id, t + 1000000));
+    CHECK(dm_android_touch_down(f->touch, id, x, y, t + 5000000));
+    CHECK(dm_android_touch_pointer_hit(f->touch, id, 1));
+    CHECK(dm_android_touch_up(f->touch, id, t + 6000000));
+}
+
+/* A full pulse queue must not deadlock an already observed timed hold: its
+   expiry tick has to make progress so the held key can release and the queue
+   can drain. An unobserved full head remains unexpired and gets a full hold on
+   its delayed first read. */
+static void inventory_full_queue_timed_hold_progress(fixture *f) {
+    dm_npad_state s;
+    CHECK(dm_android_touch_set_game_context(f->touch, 1, 1, 40, 1, 1, 1));
+    int64_t t0 = 70000000000;
+    inventory_fast_double_tap_item(f, 71, 300, 180, t0);
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);   /* starts the head hold */
+    for (int i = 1; i < 16; ++i)
+        inventory_fast_double_tap_item(f, 71, 300, 180, t0 + (int64_t)i * 25000000);
+    /* 16 observed Y holds are queued before the first 0.6 s expires. */
+    CHECK(!dm_android_touch_down(f->touch, 73, 300, 180, t0 + 400000000));   /* full queue rejects */
+    CHECK(dm_android_touch_tick(f->touch, 73000000000));   /* full, but head is due */
+    s = read_pad(f); CHECK(s.buttons == 0);                /* neutral before successor */
+    int64_t t = 73000000000;
+    for (int i = 0; i < 15; ++i) {
+        s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);     /* successor starts */
+        t += 700000000;
+        CHECK(dm_android_touch_tick(f->touch, t));          /* full, head due -> expiry */
+        s = read_pad(f); CHECK(s.buttons == 0);            /* release */
+    }
+    s = read_pad(f); CHECK(s.buttons == 0);                /* drained */
+
+    /* Full queue with an unobserved head: backpressure holds, then the first
+       read starts the full hold and its expiry can progress. */
+    t0 = 90000000000;
+    for (int i = 0; i < 16; ++i)
+        inventory_fast_double_tap_item(f, 72, 300, 180, t0 + (int64_t)i * 25000000);
+    CHECK(!dm_android_touch_down(f->touch, 74, 300, 180, t0 + 400000000));   /* full queue */
+    CHECK(!dm_android_touch_tick(f->touch, 93000000000));  /* unobserved: no expiry */
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);          /* starts full hold */
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);          /* no early release */
+    CHECK(!dm_android_touch_tick(f->touch, 90500000000));   /* full and not yet due */
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);
+    CHECK(dm_android_touch_tick(f->touch, 91100000000));    /* due: expiry progresses */
+    s = read_pad(f); CHECK(s.buttons == 0);
+}
+
 int main(void) {
     CASE(two_ids_live);
     CASE(ids_are_not_slots);
@@ -1172,6 +1221,7 @@ int main(void) {
     CASE(inventory_tap_double_long_and_cancel);
     CASE(inventory_drag_release_and_context_change);
     CASE(inventory_timed_hold_consumption);
+    CASE(inventory_full_queue_timed_hold_progress);
     printf("PASS %d/%d cases; %d/%d checks\n", cases, cases, checks, checks);
     return 0;
 }

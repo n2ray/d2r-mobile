@@ -47,6 +47,10 @@ extern "C" {
 // after the deadline releases it (with a neutral read before a same-button
 // successor). This is a standalone consumption boundary, not an acknowledgement
 // of real guest/cursor delivery, and no such acknowledgement is invented.
+// When the ring is full, a tick may still expire an already observed timed head
+// so the held key can release and the queue can drain; an unobserved head stays
+// queued for its full first-read hold. New mutating input remains rejected while
+// the ring is full.
 // Zero-hold release-to-cast pulses keep their existing one-read ordering and
 // same-button neutral separation.
 #define DM_ANDROID_TOUCH_PULSE_CAPACITY 16

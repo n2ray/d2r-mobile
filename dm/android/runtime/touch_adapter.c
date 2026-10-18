@@ -132,6 +132,13 @@ static void sync_pointer_slots(dm_android_touch *touch) {
     }
 }
 
+static int timed_head_due(const dm_android_touch *touch, int64_t time_ns) {
+    if (touch->pulse_count == 0) return 0;
+    const int head = touch->pulse_head;
+    return touch->pulses[head].hold_s > 0 && touch->pulses[head].hold_started &&
+           time_ns >= touch->pulses[head].hold_until_ns;
+}
+
 static void expire_timed_pulse(dm_android_touch *touch) {
     if (touch->pulse_count == 0) return;
     int head = touch->pulse_head;
@@ -528,8 +535,13 @@ int dm_android_touch_take_action(dm_android_touch *touch, dm_android_touch_actio
 
 int dm_android_touch_tick(dm_android_touch *touch, int64_t time_ns) {
     double now_s;
-    if (!touch) return 0;
-    if (pending_full(touch)) return 0;   /* backpressure before timer/core mutation */
+    if (!touch || time_ns < 0) return 0;
+    /* A full queue normally rejects timer mutation (explicit backpressure),
+       but an already observed timed head must still be allowed to expire:
+       otherwise the held key can never be released and the queue can never
+       drain. An unobserved head stays queued for a full first-read hold. */
+    int64_t effective_ns = time_ns < touch->last_ns ? touch->last_ns : time_ns;
+    if (pending_full(touch) && !timed_head_due(touch, effective_ns)) return 0;
     if (!accept_time(touch, time_ns, &now_s)) return 0;
     if (!touch->suspended) {
         dm_tc_tick(&touch->state, now_s);
