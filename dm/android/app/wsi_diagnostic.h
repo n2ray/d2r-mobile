@@ -24,10 +24,14 @@ typedef enum {
 } dm_wsi_status;
 
 // 注入边界：全部同步、串行，由 Android 控制线程调用。open 返回 0/UNSUPPORTED/ERROR；close 仅在排空后调用，
-// 失败必须保留所有权；frame 内部完成 acquire→clear-submit→present，不跨调用保留在途帧。
+// 失败必须保留所有权；frame 内部完成 acquire→clear-submit→present 并返回已翻译的状态。Vulkan 的 acquire/present
+// 本身是异步的：链内保存 presentation fence，真正的完成证明由 close（dm_vk_swapchain_destroy）等待后给出，
+// 因此"排空"指该证明成功，而不是假设帧内没有任何在途工作。
 // Injected boundary, fully synchronous and serialized on the Android control thread. open returns
 // 0/UNSUPPORTED/ERROR; close is only called after a drain and must retain ownership on failure; frame performs
-// acquire -> clear-submit -> present internally and never leaves a frame in flight across calls.
+// acquire -> clear-submit -> present and returns the translated status. Vulkan acquire/present are themselves
+// asynchronous: the chain tracks presentation fences and close (dm_vk_swapchain_destroy) performs the real
+// completion proof, so "drained" means that proof succeeded, not that no work is ever in flight inside a frame.
 typedef struct {
     void *ctx;
     int (*open)(void *ctx, void *window, uint32_t width, uint32_t height);

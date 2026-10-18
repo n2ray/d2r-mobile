@@ -12,7 +12,9 @@
 #include "touch_hud.h"
 #include "touch_hud_overlay.h"
 #include "view_policy.h"
+#include "wsi_bridge.h"
 #include "wsi_diagnostic.h"
+#include "wsi_frame_result.h"
 #include <android/asset_manager.h>
 #include <android/configuration.h>
 #include <android/log.h>
@@ -32,7 +34,7 @@
 #include <time.h>
 #include <unistd.h>
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"D2R-Diagnostic",__VA_ARGS__)
-typedef struct{dm_vk vk;AInputQueue*input;dm_app_lifecycle*lifecycle;ANativeActivity*activity;ANativeWindow*window;dm_touch_bridge*touch;dm_view_policy view;dm_input_policy gate;ALooper*looper;int timer_fd;int resumed,focused,touch_allowed;float density,touch_width_pt,touch_height_pt;uint64_t last_touch_buttons;int32_t last_touch_lx,last_touch_ly,last_touch_rx,last_touch_ry;int64_t last_touch_log_ns;dm_android_touch_observation hud_obs;dm_touch_hud_frame hud_frame;int hud_obs_valid;dm_wsi wsi;dm_vk wsi_vk;dm_vk_swapchain wsi_chain;int wsi_chain_live;int frame_fd;int wsi_last_logged;char vertex[4096],fragment[4096];}app_state;
+typedef struct{dm_vk vk;AInputQueue*input;dm_app_lifecycle*lifecycle;ANativeActivity*activity;ANativeWindow*window;dm_touch_bridge*touch;dm_view_policy view;dm_input_policy gate;ALooper*looper;int timer_fd;int resumed,focused,touch_allowed;float density,touch_width_pt,touch_height_pt;uint64_t last_touch_buttons;int32_t last_touch_lx,last_touch_ly,last_touch_rx,last_touch_ry;int64_t last_touch_log_ns;dm_android_touch_observation hud_obs;dm_touch_hud_frame hud_frame;int hud_obs_valid;dm_wsi wsi;dm_wsi_bridge wsi_bridge;dm_vk wsi_vk;dm_vk_swapchain wsi_chain;int wsi_chain_live;int frame_fd;int wsi_last_logged;char vertex[4096],fragment[4096];}app_state;
 static int copy_asset(ANativeActivity*a,const char*name,char path[4096]){
     int n=snprintf(path,4096,"%s/%s",a->internalDataPath,name);if(n<0||n>=4096)return 1;
     AAsset*asset=AAssetManager_open(a->assetManager,name,AASSET_MODE_STREAMING);if(!asset)return 1;
@@ -131,25 +133,24 @@ static int wsi_close(void*ctx){
     if(s->wsi_vk.device){dm_vk_destroy(&s->wsi_vk);s->wsi_vk=(dm_vk){0};}
     return 0;
 }
+static VkResult wsi_acquire(void*ctx,int*suboptimal){app_state*s=ctx;return dm_vk_swapchain_acquire(&s->wsi_vk,&s->wsi_chain,suboptimal);}
+static VkResult wsi_submit(void*ctx){app_state*s=ctx;return dm_vk_swapchain_submit(&s->wsi_vk,&s->wsi_chain);}
+static VkResult wsi_present(void*ctx,int*suboptimal){app_state*s=ctx;return dm_vk_swapchain_present(&s->wsi_vk,&s->wsi_chain,suboptimal);}
 static int wsi_frame(void*ctx){
     app_state*s=ctx;
-    int suboptimal=0;
-    VkResult r=dm_vk_swapchain_acquire(&s->wsi_vk,&s->wsi_chain,&suboptimal);
-    if(r==VK_ERROR_OUT_OF_DATE_KHR)return DM_WSI_REBUILD;
-    if(r==VK_ERROR_SURFACE_LOST_KHR)return DM_WSI_SURFACE_LOST;
-    if(r!=VK_SUCCESS){LOG("wsi acquire failed: %d",(int)r);return DM_WSI_ERROR;}
-    r=dm_vk_swapchain_submit(&s->wsi_vk,&s->wsi_chain);
-    if(r!=VK_SUCCESS){LOG("wsi clear submit failed: %d",(int)r);return DM_WSI_ERROR;}
-    r=dm_vk_swapchain_present(&s->wsi_vk,&s->wsi_chain,&suboptimal);
-    if(r==VK_ERROR_OUT_OF_DATE_KHR)return DM_WSI_REBUILD;
-    if(r==VK_ERROR_SURFACE_LOST_KHR)return DM_WSI_SURFACE_LOST;
-    if(r!=VK_SUCCESS){LOG("wsi present failed: %d",(int)r);return DM_WSI_ERROR;}
-    return suboptimal?DM_WSI_SUBOPTIMAL:DM_WSI_OK;
+    dm_wsi_frame_ops ops={.ctx=s,.acquire=wsi_acquire,.submit=wsi_submit,.present=wsi_present};
+    dm_wsi_status status=dm_wsi_present_frame(&ops);
+    if(status==DM_WSI_ERROR)LOG("wsi frame failed: acquire/submit/present reported an error");
+    return (int)status;
 }
 static void lifecycle_state(void*ctx,dm_app_state state){
     (void)ctx;
     LOG("app lifecycle state=%s",dm_app_lifecycle_state_name(state));
 }
+// #143 桥的生命周期回调：直接调用真实控制器，测试用同一套顺序。| #143 bridge lifecycle calls into the real controller.
+static int bridge_surface_created(void*ctx,void*window){return dm_app_lifecycle_surface_created((dm_app_lifecycle*)ctx,window);}
+static int bridge_surface_destroyed(void*ctx,void*window){return dm_app_lifecycle_surface_destroyed((dm_app_lifecycle*)ctx,window);}
+static void bridge_trace(void*ctx,const char*event){(void)ctx;LOG("wsi bridge: %s",event);}
 static int64_t monotonic_ns(void){
     struct timespec ts;
     if(clock_gettime(CLOCK_MONOTONIC,&ts))return -1;
@@ -255,6 +256,9 @@ static void touch_resize_window(app_state*s,ANativeWindow*window){
 #define DM_DIAG_TARGET_EXTENT 256u
 static void draw_diagnostic(ANativeActivity*a,ANativeWindow*window,int external_redraw){
     app_state*s=a->instance;if(!s||!window)return;
+    // #143 WSI 模式下禁止任何 CPU 锁窗绘制入口，包括触摸 HUD 定时器触发的这条路径。
+    // #143 no CPU window-lock render entry may run in WSI mode, including this touch-HUD timer path.
+    if(s->wsi.enabled){LOG("cpu-copy renderer disabled in wsi mode; draw skipped");return;}
     touch_refresh_hud(s);
     if(!dm_diag_scene_ready(s->lifecycle,window)){
         LOG("graphics draw suppressed: state=%s owned-surface=%s",
@@ -411,6 +415,11 @@ static int frame_timer(int fd,int events,void*data){
         stop_frame_timer(s);return 0;
     }
     dm_wsi_status status=dm_wsi_tick(&s->wsi);
+    if(status==DM_WSI_ERROR||status==DM_WSI_UNSUPPORTED||status==DM_WSI_SURFACE_LOST){
+        // 终态/等待替换：停止定时器，不留空转唤醒。| Terminal or awaiting states stop the timer, leaving no idle wakeups.
+        LOG("wsi frames stop: status=%d frames=%u losses=%u",(int)status,s->wsi.frames,s->wsi.losses);
+        stop_frame_timer(s);
+    }
     if((int)status!=s->wsi_last_logged){
         s->wsi_last_logged=(int)status;
         if(status==DM_WSI_IDLE)LOG("wsi idle: paused/windowless/failed; no device work and no spin");
@@ -531,6 +540,24 @@ static void input_destroyed(ANativeActivity*a,AInputQueue*queue){app_state*s=a->
 }
 static void window_ready(ANativeActivity*a,ANativeWindow*window){
     app_state*s=a->instance;if(!s||!s->lifecycle)return;
+    if(s->wsi.enabled){
+        int width=ANativeWindow_getWidth(window),height=ANativeWindow_getHeight(window);
+        if(width<=0||height<=0){LOG("wsi window has no extent; awaiting a valid replacement");return;}
+        // 桥内固定顺序：旧窗口先排空 → 生命周期取新引用 → 打开 WSI；失败不绘制、不回落、不释放引用。
+        // Bridge order: drain the old window first, then acquire the new lifecycle reference, then open WSI.
+        if(!dm_wsi_bridge_window_ready(&s->wsi_bridge,window,(uint32_t)width,(uint32_t)height)){
+            LOG("wsi window not ready: state=%s; no cpu fallback",
+                dm_app_lifecycle_state_name(dm_app_lifecycle_state(s->lifecycle)));
+            return;
+        }
+        s->window=window;
+        touch_resize_window(s,window);
+        update_touch_state(s);
+        if(!s->resumed)return;   /* 未恢复不出帧 | no frames before resume */
+        if(!start_frame_timer(s)){LOG("wsi frames unavailable: frame timer start failed; no frame claimed");return;}
+        dm_wsi_tick(&s->wsi);
+        return;
+    }
     if(!dm_app_lifecycle_surface_created(s->lifecycle,window)){
         LOG("surface callback rejected: state=%s pending=%u",
             dm_app_lifecycle_state_name(dm_app_lifecycle_state(s->lifecycle)),
@@ -540,29 +567,39 @@ static void window_ready(ANativeActivity*a,ANativeWindow*window){
     s->window=window;
     touch_resize_window(s,window);
     update_touch_state(s);
-    if(s->wsi.enabled){
-        // WSI 模式：只用 swapchain；任何路径都不调用 ANativeWindow_lock。
-        // WSI mode: swapchain only; no path calls ANativeWindow_lock.
-        int width=ANativeWindow_getWidth(window),height=ANativeWindow_getHeight(window);
-        if(width<=0||height<=0){LOG("wsi window has no extent; awaiting a valid replacement");return;}
-        dm_wsi_status status=dm_wsi_window_ready(&s->wsi,window,(uint32_t)width,(uint32_t)height);
-        if(status!=DM_WSI_OK){LOG("wsi window not ready: status=%d; no cpu fallback",(int)status);return;}
-        if(s->resumed)start_frame_timer(s);
-        dm_wsi_tick(&s->wsi);
-        return;
-    }
     if(dm_diag_scene_ready(s->lifecycle,window))draw_diagnostic(a,window,1);
+}
+static void window_resized(ANativeActivity*a,ANativeWindow*window){
+    app_state*s=a->instance;if(!s||!window)return;
+    touch_resize_window(s,window);
+    if(!s->wsi.enabled){update_touch_state(s);return;}
+    int width=ANativeWindow_getWidth(window),height=ANativeWindow_getHeight(window);
+    if(width<=0||height<=0){LOG("wsi resize: window has no extent");return;}
+    // 真实 resize 回调必须走 dm_wsi_resize 并触发重建，不能只更新报告尺寸。
+    // The real resize callback must go through dm_wsi_resize and trigger a rebuild, never a report-only refresh.
+    dm_wsi_status status=dm_wsi_bridge_window_resized(&s->wsi_bridge,(uint32_t)width,(uint32_t)height);
+    if(status==DM_WSI_ERROR){LOG("wsi resize rejected: status=%d; frames stop",(int)status);stop_frame_timer(s);return;}
+    if(!s->resumed)return;
+    if(!start_frame_timer(s)){LOG("wsi frames unavailable after resize: timer start failed");return;}
+    dm_wsi_tick(&s->wsi);
 }
 static void window_destroyed(ANativeActivity*a,ANativeWindow*window){
     app_state*s=a->instance;if(!s||!s->lifecycle)return;
-    if(s->window==window){stop_frame_timer(s);
-        if(s->wsi.enabled){
-            // 借用窗口被生命周期释放之前先排空并关闭 swapchain/设备。
-            // Drain and close the swapchain/device before the lifecycle releases the borrowed window.
-            if(dm_wsi_window_lost(&s->wsi,window)==DM_WSI_ERROR)
-                LOG("wsi surface loss teardown failed; presentation ownership retained");
+    if(s->wsi.enabled){
+        stop_frame_timer(s);
+        if(s->wsi_bridge.window!=window||!s->wsi_bridge.accepted){LOG("wsi stale window destroy ignored");return;}
+        // 只有排空被证明成功后才让生命周期释放真实 ANativeWindow 引用。
+        // The lifecycle releases the real ANativeWindow reference only after a proven drain.
+        if(!dm_wsi_bridge_window_destroyed(&s->wsi_bridge,window)){
+            LOG("wsi window destroy: drain not proven; ANativeWindow reference retained; no cpu fallback");
+            return;
         }
         s->window=NULL;update_touch_state(s);
+        s->hud_obs_valid=0;dm_touch_hud_frame_suppress(&s->hud_frame);
+        int64_t now=monotonic_ns();touch_cancel(s,"window_destroyed",now<0?0:now);
+        return;
+    }
+    if(s->window==window){s->window=NULL;update_touch_state(s);
         s->hud_obs_valid=0;dm_touch_hud_frame_suppress(&s->hud_frame);
         int64_t now=monotonic_ns();touch_cancel(s,"window_destroyed",now<0?0:now);}
     if(!dm_app_lifecycle_surface_destroyed(s->lifecycle,window))
@@ -631,7 +668,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     }
     a->callbacks->onDestroy=destroy;a->callbacks->onLowMemory=low_memory;
     a->callbacks->onNativeWindowCreated=window_ready;a->callbacks->onNativeWindowRedrawNeeded=window_ready;
-    a->callbacks->onNativeWindowDestroyed=window_destroyed;a->callbacks->onNativeWindowResized=window_ready;
+    a->callbacks->onNativeWindowDestroyed=window_destroyed;a->callbacks->onNativeWindowResized=window_resized;
     a->callbacks->onPause=pause_app;a->callbacks->onResume=resume_app;
     a->callbacks->onWindowFocusChanged=focus_changed;a->callbacks->onConfigurationChanged=configuration_changed;
     a->callbacks->onInputQueueCreated=input_created;a->callbacks->onInputQueueDestroyed=input_destroyed;
@@ -640,6 +677,11 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
         .surface_acquire=host_surface_acquire,.surface_release=host_surface_release};
     s->lifecycle=dm_app_lifecycle_create(&ops,lifecycle_state,s);
     if(!s->lifecycle){LOG("app lifecycle create failed");ANativeActivity_finish(a);return;}
+    {
+        dm_wsi_lifecycle_ops bridge_ops={.ctx=s->lifecycle,.surface_created=bridge_surface_created,
+            .surface_destroyed=bridge_surface_destroyed,.trace=bridge_trace};
+        dm_wsi_bridge_init(&s->wsi_bridge,&s->wsi,&bridge_ops);
+    }
     if(!dm_app_lifecycle_start(s->lifecycle)){
         LOG("app lifecycle start failed: state=%s",dm_app_lifecycle_state_name(dm_app_lifecycle_state(s->lifecycle)));
         ANativeActivity_finish(a);return;

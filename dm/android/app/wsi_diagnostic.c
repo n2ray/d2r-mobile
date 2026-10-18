@@ -50,9 +50,16 @@ dm_wsi_status dm_wsi_window_ready(dm_wsi *wsi, void *window, uint32_t width, uin
     if (!wsi) return DM_WSI_IDLE;
     if (!wsi->enabled) return (wsi->last = DM_WSI_IDLE);
     if (!window || !width || !height) return fail(wsi, DM_WSI_ERROR);
-    // 同一窗口的重绘不重建；其余情况先排空旧设备再打开新窗口。
-    // A redraw of the same window keeps the device; anything else drains the old device before opening.
+    // 同一窗口的重绘不重建；尺寸变化必须走重建（回调路径由 dm_wsi_resize 标记）。
+    // A redraw of the same window keeps the device; a size change requires a rebuild (the callback path marks it
+    // through dm_wsi_resize).
     if (wsi->window == window && wsi->open && !wsi->needs_rebuild && !wsi->error) {
+        if (width != wsi->width || height != wsi->height) {
+            wsi->width = width;
+            wsi->height = height;
+            wsi->needs_rebuild = 1;
+            return (wsi->last = DM_WSI_REBUILD);
+        }
         wsi->width = width;
         wsi->height = height;
         return wsi->last;
