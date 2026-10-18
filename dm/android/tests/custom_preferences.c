@@ -235,18 +235,24 @@ static void test_language_and_mercenary_compat(void) {
     CHECK(dm_cp_apply(&p, store_fn, &store) == DM_CP_OK);
     CHECK(!contains(store.document, "lang_en="));
 
-    // merc_pot_v2 存在時對 merc_pot 有權威性，並在寫回時保留。| merc_pot_v2 is authoritative and preserved on write.
+    // merc_pot_v2 存在時對 merc_pot 有權威性（與行序無關），並在寫回時保留。
+    // merc_pot_v2 is authoritative for merc_pot regardless of line order, and is preserved on write.
     dm_cp_instance m;
     dm_cp_init(&m);
     const char merc[] = "version=1\nmerc_pot=1\nmerc_pot_v2=0\n";
     CHECK(dm_cp_parse(&m, merc, strlen(merc)) == DM_CP_OK);
     CHECK(dm_cp_get(&m, "merc_pot") == 0);
     CHECK(m.merc_explicit == 1);
+    char doc[DM_CP_MAX_BYTES];
+    size_t doc_len = 0;
+    CHECK(dm_cp_serialize(&m, 0, doc, sizeof doc, &doc_len) == DM_CP_OK);
+    CHECK(contains(doc, "merc_pot=0\n"));
+    CHECK(contains(doc, "merc_pot_v2=0\n"));
+    // 沒有待定改動時 apply 不寫盤（等價事務），與上游一致。| With no pending change apply writes nothing.
     fake_store mstore;
     memset(&mstore, 0, sizeof mstore);
     CHECK(dm_cp_apply(&m, store_fn, &mstore) == DM_CP_OK);
-    CHECK(contains(mstore.document, "merc_pot=0\n"));
-    CHECK(contains(mstore.document, "merc_pot_v2=0\n"));
+    CHECK(mstore.calls == 0);
 
     // 玩家改過 merc_pot：寫回時同時寫 merc_pot_v2。| Changing merc_pot also writes merc_pot_v2.
     dm_cp_instance c;
@@ -289,6 +295,105 @@ static void test_crlf_and_whitespace(void) {
     CHECK(p.unknown_keys == 1);
 }
 
+static void test_merc_migration_order(void) {
+    dm_cp_instance p;
+    // 只有舊 merc_pot 行：不上報，使用源缺省值 1（上游從不用舊行的值）。
+    // Legacy merc_pot alone is not honoured: the source default 1 applies (upstream never uses the legacy value).
+    dm_cp_init(&p);
+    const char legacy_only[] = "version=1\nmerc_pot=0\n";
+    CHECK(dm_cp_parse(&p, legacy_only, strlen(legacy_only)) == DM_CP_OK);
+    CHECK(dm_cp_get(&p, "merc_pot") == 1);
+    CHECK(p.merc_explicit == 0);
+
+    // 有效 v2 勝過舊行，與行序無關。| A valid v2 beats the legacy line in either order.
+    const char v2_first[] = "version=1\nmerc_pot_v2=0\nmerc_pot=1\n";
+    dm_cp_init(&p);
+    CHECK(dm_cp_parse(&p, v2_first, strlen(v2_first)) == DM_CP_OK);
+    CHECK(dm_cp_get(&p, "merc_pot") == 0);
+    CHECK(p.merc_explicit == 1);
+    const char v2_last[] = "version=1\nmerc_pot=1\nmerc_pot_v2=0\n";
+    dm_cp_init(&p);
+    CHECK(dm_cp_parse(&p, v2_last, strlen(v2_last)) == DM_CP_OK);
+    CHECK(dm_cp_get(&p, "merc_pot") == 0);
+    const char v2_on[] = "version=1\nmerc_pot=0\nmerc_pot_v2=1\n";
+    dm_cp_init(&p);
+    CHECK(dm_cp_parse(&p, v2_on, strlen(v2_on)) == DM_CP_OK);
+    CHECK(dm_cp_get(&p, "merc_pot") == 1);
+
+    // 非法 v2 不建立顯式選擇，也不覆蓋已記下的有效 v2。| An invalid v2 creates no explicit choice and keeps a valid one.
+    const char invalid_only[] = "version=1\nmerc_pot_v2=2\nmerc_pot=0\n";
+    dm_cp_init(&p);
+    CHECK(dm_cp_parse(&p, invalid_only, strlen(invalid_only)) == DM_CP_OK);
+    CHECK(dm_cp_get(&p, "merc_pot") == 1);
+    CHECK(p.merc_explicit == 0);
+    const char valid_then_invalid[] = "version=1\nmerc_pot_v2=0\nmerc_pot_v2=x\n";
+    dm_cp_init(&p);
+    CHECK(dm_cp_parse(&p, valid_then_invalid, strlen(valid_then_invalid)) == DM_CP_OK);
+    CHECK(dm_cp_get(&p, "merc_pot") == 0);
+    CHECK(p.merc_explicit == 1);
+    CHECK(p.invalid_values == 1);
+
+    // 多個有效 v2：最後一個有效值勝出，並計為重複。| Several valid v2 lines: the last valid one wins and is counted.
+    const char duplicate_v2[] = "version=1\nmerc_pot_v2=0\nmerc_pot_v2=1\n";
+    dm_cp_init(&p);
+    CHECK(dm_cp_parse(&p, duplicate_v2, strlen(duplicate_v2)) == DM_CP_OK);
+    CHECK(dm_cp_get(&p, "merc_pot") == 1);
+    CHECK(p.duplicates == 1);
+
+    // 往返：寫回保留 v2 行，重新加載得到同一值。| Roundtrip keeps the v2 line and reloads the same value.
+    dm_cp_init(&p);
+    CHECK(dm_cp_parse(&p, v2_first, strlen(v2_first)) == DM_CP_OK);
+    char document[DM_CP_MAX_BYTES];
+    size_t length = 0;
+    CHECK(dm_cp_serialize(&p, 0, document, sizeof document, &length) == DM_CP_OK);
+    CHECK(contains(document, "merc_pot=0\n"));
+    CHECK(contains(document, "merc_pot_v2=0\n"));
+    dm_cp_instance again;
+    dm_cp_init(&again);
+    CHECK(dm_cp_parse(&again, document, length) == DM_CP_OK);
+    CHECK(dm_cp_get(&again, "merc_pot") == 0);
+}
+
+static void test_noop_apply(void) {
+    dm_cp_instance p;
+    fake_store store;
+    dm_cp_init(&p);
+    memset(&store, 0, sizeof store);
+
+    // 空事務：成功、不調用存儲、沒有顯式選擇。| Empty transaction: succeeds, no storage call, no explicit choice.
+    CHECK(dm_cp_apply(&p, store_fn, &store) == DM_CP_OK);
+    CHECK(store.calls == 0);
+    CHECK(p.apply_skips == 1);
+    CHECK(p.applies == 0);
+    CHECK(dm_cp_dirty(&p) == 0);
+
+    // 等價待定（語言/傭兵都是缺省值）：仍然成功且不寫、不產生顯式選擇，但待定被清空。
+    // Equal pending values (language and mercenary at their defaults): still succeeds without a write or an explicit
+    // choice, while pending values are cleared.
+    CHECK(dm_cp_set(&p, "lang_en", 0) == DM_CP_OK);
+    CHECK(dm_cp_set(&p, "merc_pot", 1) == DM_CP_OK);
+    CHECK(dm_cp_apply(&p, store_fn, &store) == DM_CP_OK);
+    CHECK(store.calls == 0);
+    CHECK(p.lang_explicit == 0);
+    CHECK(p.merc_explicit == 0);
+    CHECK(dm_cp_dirty(&p) == 0);
+    char document[DM_CP_MAX_BYTES];
+    size_t length = 0;
+    CHECK(dm_cp_serialize(&p, 0, document, sizeof document, &length) == DM_CP_OK);
+    CHECK(!contains(document, "lang_en="));
+    CHECK(!contains(document, "merc_pot_v2="));
+
+    // 真正改動仍然保存一次，且只包含真正改動產生的顯式標誌。
+    // A real change still writes once and only produces explicit markers for the real change.
+    CHECK(dm_cp_set(&p, "eco_fps", 1) == DM_CP_OK);
+    CHECK(dm_cp_apply(&p, store_fn, &store) == DM_CP_OK);
+    CHECK(store.calls == 1);
+    CHECK(p.applies == 1);
+    CHECK(!contains(store.document, "lang_en="));
+    CHECK(!contains(store.document, "merc_pot_v2="));
+    CHECK(contains(store.document, "eco_fps=1\n"));
+}
+
 int main(void) {
     test_frozen_key_table();
     test_init_and_pending();
@@ -299,6 +404,8 @@ int main(void) {
     test_language_and_mercenary_compat();
     test_serialize_bounds();
     test_crlf_and_whitespace();
+    test_merc_migration_order();
+    test_noop_apply();
     printf("custom_preferences: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

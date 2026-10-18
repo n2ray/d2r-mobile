@@ -18,10 +18,15 @@ Taken from `dm/host/dm_custom.c` (verified against the source at this base):
   `ver`) are skipped.
 - `lang_en` is written only after the player actually changes it; otherwise the original game's language setting is
   left alone.
-- `merc_pot_v2` is the explicit-value line for `merc_pot` under the new default and is authoritative when present.
+- `merc_pot_v2` is the explicit-value line for `merc_pot` under the new default. The migration is resolved after the
+  whole document, independent of line order: a valid `merc_pot_v2` wins over the legacy `merc_pot` line in either
+  order (last valid v2 wins if repeated), and without a valid v2 the source default applies — the legacy line alone
+  never changes it.
 - Apply (`AcceptChanges`) commits pending values and saves only if something changed; Discard (`CancelChanges`)
   clears pending values; Defaults (`ResetToDefaults`) resets the pending values of rows 1..N-1 and deliberately
   leaves the language row alone.
+- An empty or equal transaction therefore succeeds without touching storage and never invents an explicit language
+  or mercenary choice; pending values are still cleared, as upstream does.
 
 ## Android-specific choices in this slice
 
@@ -32,8 +37,10 @@ Explicit decisions, not upstream behaviour:
 2. **Whole-file refusal.** Input larger than 2048 bytes, or a `version=` other than 1, refuses the whole document and
    leaves the instance unchanged. Per-line problems (unknown key, invalid value, over-long line, missing `=`) are
    skipped and counted so one bad line cannot discard a whole profile.
-3. **Transactional save.** `dm_cp_apply` renders the merged pending/effective document into the module's own buffer,
-   hands it to the store callback, and commits pending values only when the callback returns 0. A failing store leaves
+3. **Transactional save.** `dm_cp_apply` compares merged pending values with effective values first. If nothing
+   really changed it returns `DM_CP_OK` without calling storage, clears the pending transaction state and leaves the
+   explicit language/mercenary markers untouched. Otherwise it renders the post-commit document into the module's own
+   buffer, hands it to the store callback, and commits only when the callback returns 0. A failing store leaves
    effective and pending values untouched, counts `save_failures`, and can be retried; no success is claimed.
 4. **No partial writes.** Serialisation uses bounded buffers; insufficient capacity returns `DM_CP_SAVE_TOO_LARGE`
    without leaving a partial document in the caller's buffer and without calling the store.

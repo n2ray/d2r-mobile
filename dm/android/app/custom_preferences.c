@@ -142,9 +142,39 @@ dm_cp_status dm_cp_serialize(const dm_cp_instance *instance, int include_pending
 
 dm_cp_status dm_cp_apply(dm_cp_instance *instance, dm_cp_store_fn store, void *ctx) {
     if (!instance || !store) return DM_CP_INVALID;
+
+    // 與上游 AcceptChanges 一致：只有待定值真的不同於生效值才算改動。
+    // As upstream AcceptChanges: only a pending value that really differs from the effective value is a change.
+    int changed[DM_CP_KEY_MAX];
+    int any_change = 0;
+    int lang_index = dm_cp_key_index("lang_en");
+    int merc_index = dm_cp_key_index("merc_pot");
+    for (int i = 0; i < DM_CP_KEY_MAX; i++) {
+        changed[i] = instance->has_pending[i] && instance->pending[i] != instance->effective[i];
+        any_change |= changed[i];
+    }
+    if (!any_change) {
+        // 空/等價事務：不調用存儲、不產生顯式語言/傭兵選擇，但清空待定（上游同樣清空）。
+        // Empty/equal transaction: no storage call and no explicit language/mercenary choice, but pending values are
+        // cleared exactly as upstream does.
+        memset(instance->has_pending, 0, sizeof instance->has_pending);
+        instance->apply_skips++;
+        return DM_CP_OK;
+    }
+
+    // 用"提交後的視圖"序列化：只有真正改動的鍵才更新數值與顯式標誌。
+    // Serialise a post-commit view: only genuinely changed keys update values and explicit markers.
+    dm_cp_instance view = *instance;
+    for (int i = 0; i < DM_CP_KEY_MAX; i++) {
+        if (changed[i]) view.effective[i] = instance->pending[i];
+        view.has_pending[i] = 0;
+    }
+    if (changed[lang_index]) view.lang_explicit = 1;
+    if (changed[merc_index]) view.merc_explicit = 1;
+
     char document[DM_CP_MAX_BYTES];
     size_t length = 0;
-    const dm_cp_status serialised = dm_cp_serialize(instance, 1, document, sizeof document, &length);
+    const dm_cp_status serialised = serialize_into(&view, 0, document, sizeof document, &length);
     if (serialised != DM_CP_OK) return serialised;
 
     instance->store_calls++;
@@ -155,12 +185,11 @@ dm_cp_status dm_cp_apply(dm_cp_instance *instance, dm_cp_store_fn store, void *c
     }
 
     for (int i = 0; i < DM_CP_KEY_MAX; i++) {
-        if (!instance->has_pending[i]) continue;
-        instance->effective[i] = instance->pending[i];
-        instance->has_pending[i] = 0;
-        if (i == dm_cp_key_index("lang_en")) instance->lang_explicit = 1;
-        if (i == dm_cp_key_index("merc_pot")) instance->merc_explicit = 1;
+        if (changed[i]) instance->effective[i] = instance->pending[i];
+        instance->has_pending[i] = 0;   // 上游：應用後待定全部清空，包括與生效值相同的項
     }
+    if (changed[lang_index]) instance->lang_explicit = 1;
+    if (changed[merc_index]) instance->merc_explicit = 1;
     instance->applies++;
     return DM_CP_OK;
 }
@@ -181,6 +210,8 @@ dm_cp_status dm_cp_parse(dm_cp_instance *instance, const char *data, size_t len)
     next.lang_explicit = 0;
     next.merc_explicit = 0;
     next.loaded = 0;
+    int merc_v2 = -1;
+    int merc_v2_seen = 0;
 
     size_t pos = 0;
     while (pos < len) {
@@ -207,8 +238,11 @@ dm_cp_status dm_cp_parse(dm_cp_instance *instance, const char *data, size_t len)
         }
         if (key_len == 11 && !memcmp(line, "merc_pot_v2", 11)) {
             if (!value_is_bool(value, value_len)) { next.invalid_values++; continue; }
-            next.merc_explicit = 1;
-            next.effective[dm_cp_key_index("merc_pot")] = value[0] - '0';
+            // 多個 v2 時最後一個有效值勝出；非法值不影響已記下的有效值。
+            // With several v2 lines the last valid one wins; an invalid line never discards an earlier valid value.
+            if (merc_v2_seen) next.duplicates++;
+            merc_v2 = value[0] - '0';
+            merc_v2_seen = 1;
             continue;
         }
 
@@ -226,6 +260,13 @@ dm_cp_status dm_cp_parse(dm_cp_instance *instance, const char *data, size_t len)
     }
 
     memset(next.has_pending, 0, sizeof next.has_pending);
+    // 傭兵遷移在整份文檔解析後才解析，與文件行序無關：有效 v2 勝過舊 merc_pot；沒有有效 v2 就用源缺省值（上游
+    // load_once 正是先收集 merc_pot_v2，再用 merc<0 ? k_def : merc 覆蓋，舊行因此從不生效）。
+    // Mercenary migration is resolved after the whole document, independent of line order: a valid v2 beats the legacy
+    // merc_pot line, and without a valid v2 the source default applies (upstream load_once collects merc_pot_v2 and
+    // then overwrites with merc < 0 ? k_def : merc, so the legacy line never wins).
+    next.effective[dm_cp_key_index("merc_pot")] = merc_v2 >= 0 ? merc_v2 : k_keys[dm_cp_key_index("merc_pot")].def;
+    next.merc_explicit = merc_v2_seen;
     next.loaded = 1;
     next.loads = instance->loads + 1;
     *instance = next;

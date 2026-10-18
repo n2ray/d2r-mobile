@@ -64,7 +64,7 @@ typedef struct {
     int merc_explicit;          // merc_pot_v2 存在，或玩家改過 merc_pot | merc_pot_v2 present or changed here
     int loaded;                 // 至少成功加載過一次 | at least one successful load
 
-    uint32_t loads, applies, discards, default_resets;
+    uint32_t loads, applies, apply_skips, discards, default_resets;
     uint32_t save_failures, store_calls;
     uint32_t lines_skipped, invalid_values, unknown_keys, duplicates, long_lines;
 } dm_cp_instance;
@@ -86,9 +86,11 @@ int dm_cp_pending(const dm_cp_instance *instance, const char *key);
 dm_cp_status dm_cp_set(dm_cp_instance *instance, const char *key, int value);
 int dm_cp_dirty(const dm_cp_instance *instance);
 
-// 「應用」：用待定值生成字節 → 交回調保存 → 成功後才提交。保存被拒時生效值與待定值都不變，可重試。
-// Apply: serialise the pending values, hand them to the store, and commit only on success. A rejected store leaves
-// both effective and pending values unchanged and retryable.
+// 「應用」：只有待定值與生效值真的不同時才序列化並交回調保存，成功後才提交；空/等價事務直接成功、不調用存儲、
+// 不產生顯式語言/傭兵選擇，但清空待定（與上游 AcceptChanges 一致）。保存被拒時生效值與待定值都不變，可重試。
+// Apply: serialise and store only when a pending value really differs from the effective one, then commit on success.
+// An empty/equal transaction succeeds without touching storage and without inventing explicit language/mercenary
+// choices, while clearing pending values as upstream does. A rejected store keeps effective and pending values.
 dm_cp_status dm_cp_apply(dm_cp_instance *instance, dm_cp_store_fn store, void *ctx);
 // 「放棄」：丟掉待定值（生效值與持久化不變）。| Discard: drop pending values (effective and storage unchanged).
 void dm_cp_discard(dm_cp_instance *instance);
