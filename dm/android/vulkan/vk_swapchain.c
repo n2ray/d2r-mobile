@@ -3,6 +3,9 @@
 #include "vk_swapchain.h"
 #include <stdlib.h>
 #include <string.h>
+#ifndef VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
+#define VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME "VK_EXT_swapchain_maintenance1"
+#endif
 
 static uint32_t dm_clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -25,7 +28,10 @@ static void dm_swapchain_destroy_owned(dm_vk *vk, dm_vk_swapchain *chain, int de
     if (!chain) return;
     if (vk && vk->device) {
         if (chain->fence) vkDestroyFence(vk->device, chain->fence, NULL);
-        if (chain->render_finished) vkDestroySemaphore(vk->device, chain->render_finished, NULL);
+        for (uint32_t i = 0; i < chain->image_count; i++) {
+            if (chain->present_fences && chain->present_fences[i]) vkDestroyFence(vk->device, chain->present_fences[i], NULL);
+            if (chain->render_finished && chain->render_finished[i]) vkDestroySemaphore(vk->device, chain->render_finished[i], NULL);
+        }
         if (chain->image_available) vkDestroySemaphore(vk->device, chain->image_available, NULL);
         if (chain->commands_allocated && chain->commands && vk->pool) vkFreeCommandBuffers(vk->device, vk->pool, chain->image_count, chain->commands);
         for (uint32_t i = 0; i < chain->image_count; i++) {
@@ -36,6 +42,7 @@ static void dm_swapchain_destroy_owned(dm_vk *vk, dm_vk_swapchain *chain, int de
         if (destroy_swapchain && chain->handle) vkDestroySwapchainKHR(vk->device, chain->handle, NULL);
     }
     free(chain->images); free(chain->views); free(chain->framebuffers); free(chain->commands);
+    free(chain->render_finished); free(chain->present_fences); free(chain->present_pending);
     memset(chain, 0, sizeof *chain);
 }
 
@@ -44,6 +51,7 @@ static VkResult dm_swapchain_create_impl(dm_vk *vk, const dm_vk_swapchain_option
     if (!vk || !vk->device || !vk->physical || !vk->surface || !vk->pool || !options ||
         options->struct_size != sizeof *options || !options->width || !options->height)
         return VK_ERROR_INITIALIZATION_FAILED;
+    if (!vk->swapchain_maintenance1) return VK_ERROR_FEATURE_NOT_PRESENT;
     if (options->present_mode != VK_PRESENT_MODE_FIFO_KHR) return VK_ERROR_FEATURE_NOT_PRESENT;
     *out = (dm_vk_swapchain){0};
     VkResult result;
@@ -118,7 +126,11 @@ static VkResult dm_swapchain_create_impl(dm_vk *vk, const dm_vk_swapchain_option
     out->views = calloc(out->image_count, sizeof *out->views);
     out->framebuffers = calloc(out->image_count, sizeof *out->framebuffers);
     out->commands = calloc(out->image_count, sizeof *out->commands);
-    if (!out->images || !out->views || !out->framebuffers || !out->commands) {
+    out->render_finished = calloc(out->image_count, sizeof *out->render_finished);
+    out->present_fences = calloc(out->image_count, sizeof *out->present_fences);
+    out->present_pending = calloc(out->image_count, sizeof *out->present_pending);
+    if (!out->images || !out->views || !out->framebuffers || !out->commands ||
+        !out->render_finished || !out->present_fences || !out->present_pending) {
         result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail;
     }
     result = vkGetSwapchainImagesKHR(vk->device, out->handle, &out->image_count, out->images);
@@ -179,8 +191,12 @@ static VkResult dm_swapchain_create_impl(dm_vk *vk, const dm_vk_swapchain_option
     VkFenceCreateInfo fence_info = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     result = vkCreateSemaphore(vk->device, &semaphore_info, NULL, &out->image_available);
     if (result != VK_SUCCESS) goto fail;
-    result = vkCreateSemaphore(vk->device, &semaphore_info, NULL, &out->render_finished);
-    if (result != VK_SUCCESS) goto fail;
+    for (uint32_t i = 0; i < out->image_count; i++) {
+        result = vkCreateSemaphore(vk->device, &semaphore_info, NULL, &out->render_finished[i]);
+        if (result != VK_SUCCESS) goto fail;
+        result = vkCreateFence(vk->device, &fence_info, NULL, &out->present_fences[i]);
+        if (result != VK_SUCCESS) goto fail;
+    }
     result = vkCreateFence(vk->device, &fence_info, NULL, &out->fence);
     if (result != VK_SUCCESS) goto fail;
     return VK_SUCCESS;
@@ -196,9 +212,26 @@ VkResult dm_vk_swapchain_create(dm_vk *vk, const dm_vk_swapchain_options *option
     return dm_swapchain_create_impl(vk, options, VK_NULL_HANDLE, out);
 }
 
+static VkResult dm_wait_presentation(dm_vk *vk, dm_vk_swapchain *chain) {
+    if (!vk || !vk->device || !chain) return VK_ERROR_INITIALIZATION_FAILED;
+    if (chain->retire_blocked) return VK_ERROR_INITIALIZATION_FAILED;
+    for (uint32_t i = 0; i < chain->image_count; i++) {
+        if (!chain->present_pending || !chain->present_pending[i]) continue;
+        VkResult result = vkWaitForFences(vk->device, 1, &chain->present_fences[i], VK_TRUE, UINT64_MAX);
+        if (result != VK_SUCCESS) return result;
+        chain->present_pending[i] = 0;
+    }
+    if (chain->fence_pending) {
+        VkResult result = vkWaitForFences(vk->device, 1, &chain->fence, VK_TRUE, UINT64_MAX);
+        if (result != VK_SUCCESS) return result;
+        chain->fence_pending = 0;
+    }
+    return VK_SUCCESS;
+}
+
 VkResult dm_vk_swapchain_recreate(dm_vk *vk, dm_vk_swapchain *chain, const dm_vk_swapchain_options *options) {
     if (!vk || !vk->device || !chain || !chain->handle) return VK_ERROR_INITIALIZATION_FAILED;
-    VkResult result = vkDeviceWaitIdle(vk->device);
+    VkResult result = dm_wait_presentation(vk, chain);
     if (result != VK_SUCCESS) return result;
     dm_vk_swapchain fresh = {0};
     result = dm_swapchain_create_impl(vk, options, chain->handle, &fresh);
@@ -219,8 +252,6 @@ VkResult dm_vk_swapchain_acquire(dm_vk *vk, dm_vk_swapchain *chain, int *subopti
     if (chain->fence_pending) {
         VkResult result = vkWaitForFences(vk->device, 1, &chain->fence, VK_TRUE, UINT64_MAX);
         if (result != VK_SUCCESS) return result;
-        result = vkQueueWaitIdle(vk->queue);
-        if (result != VK_SUCCESS) return result;
         chain->fence_pending = 0;
     }
     uint32_t index = 0;
@@ -230,6 +261,11 @@ VkResult dm_vk_swapchain_acquire(dm_vk *vk, dm_vk_swapchain *chain, int *subopti
     if (result == VK_SUBOPTIMAL_KHR) { if (suboptimal) *suboptimal = 1; }
     else if (result != VK_SUCCESS) return result;
     if (index >= chain->image_count) return VK_ERROR_INITIALIZATION_FAILED;
+    if (chain->present_pending[index]) {
+        result = vkWaitForFences(vk->device, 1, &chain->present_fences[index], VK_TRUE, UINT64_MAX);
+        if (result != VK_SUCCESS) return result;
+        chain->present_pending[index] = 0;
+    }
     chain->image_index = index; chain->acquired = 1;
     return result;
 }
@@ -242,7 +278,7 @@ VkResult dm_vk_swapchain_submit(dm_vk *vk, dm_vk_swapchain *chain) {
     VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .waitSemaphoreCount = 1, .pWaitSemaphores = &chain->image_available, .pWaitDstStageMask = &wait_stage,
         .commandBufferCount = 1, .pCommandBuffers = &chain->commands[chain->image_index],
-        .signalSemaphoreCount = 1, .pSignalSemaphores = &chain->render_finished};
+        .signalSemaphoreCount = 1, .pSignalSemaphores = &chain->render_finished[chain->image_index]};
     result = vkQueueSubmit(vk->queue, 1, &submit, chain->fence);
     if (result != VK_SUCCESS) return result;
     chain->acquired = 0; chain->submitted = 1; chain->fence_pending = 1;
@@ -253,18 +289,36 @@ VkResult dm_vk_swapchain_present(dm_vk *vk, dm_vk_swapchain *chain, int *subopti
     if (suboptimal) *suboptimal = 0;
     if (!vk || !vk->device || !chain || !chain->handle || !chain->submitted)
         return VK_ERROR_INITIALIZATION_FAILED;
-    VkPresentInfoKHR present = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .waitSemaphoreCount = 1, .pWaitSemaphores = &chain->render_finished,
-        .swapchainCount = 1, .pSwapchains = &chain->handle, .pImageIndices = &chain->image_index};
-    VkResult result = vkQueuePresentKHR(vk->queue, &present);
-    if (result == VK_SUCCESS) { chain->submitted = 0; return result; }
-    if (result == VK_SUBOPTIMAL_KHR) { if (suboptimal) *suboptimal = 1; chain->needs_recreate = 1; chain->submitted = 0; return result; }
-    if (result == VK_ERROR_OUT_OF_DATE_KHR) { chain->needs_recreate = 1; chain->submitted = 0; return result; }
+    uint32_t image = chain->image_index;
+    if (chain->present_pending[image]) {
+        VkResult result = vkWaitForFences(vk->device, 1, &chain->present_fences[image], VK_TRUE, UINT64_MAX);
+        if (result != VK_SUCCESS) return result;
+        chain->present_pending[image] = 0;
+    }
+    VkResult result = vkResetFences(vk->device, 1, &chain->present_fences[image]);
+    if (result != VK_SUCCESS) return result;
+    VkSwapchainPresentFenceInfoEXT fence_info = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
+        .swapchainCount = 1, .pFences = &chain->present_fences[image]};
+    VkPresentInfoKHR present = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = &fence_info,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &chain->render_finished[image],
+        .swapchainCount = 1, .pSwapchains = &chain->handle, .pImageIndices = &image};
+    result = vkQueuePresentKHR(vk->queue, &present);
+    if (result == VK_SUCCESS) { chain->submitted = 0; chain->present_pending[image] = 1; return result; }
+    if (result == VK_SUBOPTIMAL_KHR) {
+        if (suboptimal) *suboptimal = 1;
+        chain->needs_recreate = 1; chain->submitted = 0; chain->present_pending[image] = 1; return result;
+    }
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        chain->needs_recreate = 1; chain->submitted = 0; chain->retire_blocked = 1; return result;
+    }
+    chain->retire_blocked = 1;
     return result;
 }
 
-void dm_vk_swapchain_destroy(dm_vk *vk, dm_vk_swapchain *chain) {
-    if (!chain) return;
-    if (vk && vk->device) vkDeviceWaitIdle(vk->device);
+VkResult dm_vk_swapchain_destroy(dm_vk *vk, dm_vk_swapchain *chain) {
+    if (!chain) return VK_SUCCESS;
+    VkResult result = dm_wait_presentation(vk, chain);
+    if (result != VK_SUCCESS) return result;
     dm_swapchain_destroy_owned(vk, chain, 1);
+    return VK_SUCCESS;
 }

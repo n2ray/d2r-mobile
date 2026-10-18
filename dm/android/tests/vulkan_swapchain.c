@@ -5,6 +5,7 @@
 #include <string.h>
 
 static int checks, failures;
+static VkSemaphore pending_present[3];
 #define CHECK(c) do { checks++; if (!(c)) { failures++; fprintf(stderr, "FAIL %d: %s\n", __LINE__, #c); } } while (0)
 #define H(t, v) ((t)(uintptr_t)(v))
 
@@ -15,6 +16,7 @@ static int g_mode_count = 1, g_fail_swapchain, g_fail_renderpass, g_fail_view, g
 static int g_fail_commands, g_fail_semaphore, g_fail_fence, g_fail_device_wait;
 static VkResult g_acquire_result, g_present_result, g_submit_result;
 static uint32_t g_acquire_count, g_submit_count, g_present_count, g_wait_fence_count, g_queue_wait_count;
+static uint32_t g_present_wait_count;
 static VkSwapchainKHR g_old_seen, g_swapchain_handle;
 static VkExtent2D g_create_extent;
 static char g_order[512]; static unsigned g_order_n;
@@ -71,10 +73,17 @@ VKAPI_ATTR VkResult VKAPI_CALL test_vkCreateSemaphore(VkDevice d, const VkSemaph
 }
 VKAPI_ATTR void VKAPI_CALL test_vkDestroySemaphore(VkDevice d, VkSemaphore s, const VkAllocationCallbacks *a) { (void)d; (void)s; (void)a; g_sem_destroyed++; event('e'); }
 VKAPI_ATTR VkResult VKAPI_CALL test_vkCreateFence(VkDevice d, const VkFenceCreateInfo *i, const VkAllocationCallbacks *a, VkFence *f) {
-    (void)d; (void)i; (void)a; if (g_fail_fence) return VK_ERROR_OUT_OF_DEVICE_MEMORY; g_fence_created++; *f = H(VkFence, 0x8000); event('F'); return VK_SUCCESS;
+    (void)d; (void)i; (void)a; if (g_fail_fence) return VK_ERROR_OUT_OF_DEVICE_MEMORY; g_fence_created++; *f = H(VkFence, 0x8000 + g_fence_created); event('F'); return VK_SUCCESS;
 }
 VKAPI_ATTR void VKAPI_CALL test_vkDestroyFence(VkDevice d, VkFence f, const VkAllocationCallbacks *a) { (void)d; (void)f; (void)a; g_fence_destroyed++; event('g'); }
-VKAPI_ATTR VkResult VKAPI_CALL test_vkWaitForFences(VkDevice d, uint32_t n, const VkFence *f, VkBool32 all, uint64_t t) { (void)d; (void)n; (void)f; (void)all; (void)t; g_wait_fence_count++; event('W'); return VK_SUCCESS; }
+VKAPI_ATTR VkResult VKAPI_CALL test_vkWaitForFences(VkDevice d, uint32_t n, const VkFence *f, VkBool32 all, uint64_t t) {
+    (void)d; (void)n; (void)all; (void)t; g_wait_fence_count++; event('W');
+    if (f) {
+        uintptr_t v = (uintptr_t)*f;
+        if (v >= 0x8001 && v <= 0x8003) { pending_present[(v - 0x8001) % 3] = VK_NULL_HANDLE; g_present_wait_count++; }
+    }
+    return VK_SUCCESS;
+}
 VKAPI_ATTR VkResult VKAPI_CALL test_vkResetFences(VkDevice d, uint32_t n, const VkFence *f) { (void)d; (void)n; (void)f; event('X'); return VK_SUCCESS; }
 VKAPI_ATTR VkResult VKAPI_CALL test_vkQueueWaitIdle(VkQueue q) { (void)q; g_queue_wait_count++; event('Q'); return VK_SUCCESS; }
 VKAPI_ATTR VkResult VKAPI_CALL test_vkDeviceWaitIdle(VkDevice d) { (void)d; if (g_fail_device_wait) return VK_ERROR_DEVICE_LOST; event('D'); return VK_SUCCESS; }
@@ -85,15 +94,22 @@ VKAPI_ATTR VkResult VKAPI_CALL test_vkAcquireNextImageKHR(VkDevice d, VkSwapchai
     *i = (g_acquire_count - 1) % 3; return VK_SUCCESS;
 }
 VKAPI_ATTR VkResult VKAPI_CALL test_vkQueueSubmit(VkQueue q, uint32_t n, const VkSubmitInfo *s, VkFence f) {
-    (void)q; (void)n; (void)s; (void)f; g_submit_count++; event('s'); return g_submit_result;
+    (void)q; (void)n; (void)f; g_submit_count++; event('s');
+    if (g_submit_result == VK_SUCCESS && s && s->pSignalSemaphores)
+        for (unsigned k = 0; k < 3; k++) CHECK(!pending_present[k] || pending_present[k] != s->pSignalSemaphores[0]);
+    return g_submit_result;
 }
 VKAPI_ATTR VkResult VKAPI_CALL test_vkQueuePresentKHR(VkQueue q, const VkPresentInfoKHR *p) {
-    (void)q; (void)p; g_present_count++; event('p');
+    (void)q; g_present_count++; event('p');
+    CHECK(p->pNext != NULL);
+    if (p->pNext) CHECK(((const VkSwapchainPresentFenceInfoEXT *)p->pNext)->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT);
+    pending_present[p->pImageIndices[0]] = p->pWaitSemaphores[0];
     if (g_present_result != VK_SUCCESS) return g_present_result;
     return VK_SUCCESS;
 }
 
 static void reset(void) {
+    memset(pending_present, 0, sizeof pending_present);
     memset(&g_caps, 0, sizeof g_caps);
     g_caps.minImageCount = 3; g_caps.maxImageCount = 4;
     g_caps.currentExtent = (VkExtent2D){640, 480};
@@ -115,11 +131,11 @@ static void reset(void) {
     g_view_n = 0;
 }
 
-static dm_vk fake_vk(void) { dm_vk vk = {0}; vk.device = H(VkDevice, 0x200); vk.physical = H(VkPhysicalDevice, 0x300); vk.queue = H(VkQueue, 0x400); vk.pool = H(VkCommandPool, 0x500); vk.surface = H(VkSurfaceKHR, 0x100); return vk; }
+static dm_vk fake_vk(void) { dm_vk vk = {0}; vk.device = H(VkDevice, 0x200); vk.physical = H(VkPhysicalDevice, 0x300); vk.queue = H(VkQueue, 0x400); vk.pool = H(VkCommandPool, 0x500); vk.surface = H(VkSurfaceKHR, 0x100); vk.swapchain_maintenance1 = 1; return vk; }
 static dm_vk_swapchain_options options(void) { dm_vk_swapchain_options o = DM_VK_SWAPCHAIN_OPTIONS_INIT; o.width = 640; o.height = 480; return o; }
 static void expect_destroyed(void) {
     CHECK(g_destroy_swapchains == 1); CHECK(g_free_commands == 3); CHECK(g_destroy_views == 3);
-    CHECK(g_destroy_fbs == 3); CHECK(g_destroy_rp == 1); CHECK(g_sem_destroyed == 2); CHECK(g_fence_destroyed == 1);
+    CHECK(g_destroy_fbs == 3); CHECK(g_destroy_rp == 1); CHECK(g_sem_destroyed == 4); CHECK(g_fence_destroyed == 4);
 }
 
 int main(void) {
@@ -128,7 +144,7 @@ int main(void) {
     CHECK(sc.handle == H(VkSwapchainKHR, 0x1000) && sc.image_count == 3);
     CHECK(sc.extent.width == 640 && sc.extent.height == 480 && sc.format == VK_FORMAT_B8G8R8A8_UNORM);
     CHECK(sc.present_mode == VK_PRESENT_MODE_FIFO_KHR && sc.views && sc.framebuffers && sc.commands);
-    CHECK(g_sem_created == 2 && g_fence_created == 1 && g_free_commands == 0);
+    CHECK(g_sem_created == 4 && g_fence_created == 4 && g_free_commands == 0);
 
     for (int frame = 0; frame < 3; frame++) {
         int sub = 0;
@@ -136,18 +152,24 @@ int main(void) {
         CHECK(dm_vk_swapchain_submit(&vk, &sc) == VK_SUCCESS && !sc.acquired && sc.submitted);
         CHECK(dm_vk_swapchain_present(&vk, &sc, &sub) == VK_SUCCESS && !sub && !sc.submitted);
     }
-    CHECK(g_acquire_count == 3 && g_submit_count == 3 && g_present_count == 3);
-    CHECK(g_wait_fence_count == 2 && g_queue_wait_count == 2);
+    // Delayed presentation: image 0 is acquired again while presentation fences remain pending.
+    int sub = 0;
+    CHECK(dm_vk_swapchain_acquire(&vk, &sc, &sub) == VK_SUCCESS && !sub && sc.acquired);
+    CHECK(g_present_wait_count >= 1);
+    CHECK(dm_vk_swapchain_submit(&vk, &sc) == VK_SUCCESS && sc.submitted);
+    CHECK(dm_vk_swapchain_present(&vk, &sc, &sub) == VK_SUCCESS && !sub);
+    CHECK(g_acquire_count == 4 && g_submit_count == 4 && g_present_count == 4);
+    CHECK(g_queue_wait_count == 0);
     g_order_n = 0; g_order[0] = 0;
-    dm_vk_swapchain_destroy(&vk, &sc); expect_destroyed();
-    CHECK(!strcmp(g_order, "DgeefbvbvbvrS"));
+    CHECK(dm_vk_swapchain_destroy(&vk, &sc) == VK_SUCCESS); expect_destroyed();
+    CHECK(strncmp(g_order, "WWW", 3) == 0);
 
     reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0};
     CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_SUCCESS);
     CHECK(dm_vk_swapchain_recreate(&vk, &sc, &o) == VK_SUCCESS);
     CHECK(g_old_seen == H(VkSwapchainKHR, 0x1000) && sc.handle == H(VkSwapchainKHR, 0x1000));
     CHECK(g_destroy_swapchains == 1 && g_free_commands == 3);
-    dm_vk_swapchain_destroy(&vk, &sc); CHECK(g_destroy_swapchains == 2);
+    CHECK(dm_vk_swapchain_destroy(&vk, &sc) == VK_SUCCESS); CHECK(g_destroy_swapchains == 2);
 
     reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0};
     CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_SUCCESS);
@@ -162,23 +184,24 @@ int main(void) {
     g_present_result = VK_ERROR_OUT_OF_DATE_KHR;
     CHECK(dm_vk_swapchain_present(&vk, &sc, NULL) == VK_ERROR_OUT_OF_DATE_KHR);
     CHECK(sc.needs_recreate && sc.handle == H(VkSwapchainKHR, 0x1000) && g_destroy_swapchains == 0);
-    dm_vk_swapchain_destroy(&vk, &sc); CHECK(g_destroy_swapchains == 1);
+    CHECK(dm_vk_swapchain_destroy(&vk, &sc) == VK_ERROR_INITIALIZATION_FAILED);
+    CHECK(sc.handle == H(VkSwapchainKHR, 0x1000) && g_destroy_swapchains == 0);
 
     reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0};
     CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_SUCCESS);
-    g_acquire_result = VK_SUBOPTIMAL_KHR; int sub = 0;
-    CHECK(dm_vk_swapchain_acquire(&vk, &sc, &sub) == VK_SUBOPTIMAL_KHR && sub && sc.acquired);
+    g_acquire_result = VK_SUBOPTIMAL_KHR; int sub2 = 0;
+    CHECK(dm_vk_swapchain_acquire(&vk, &sc, &sub2) == VK_SUBOPTIMAL_KHR && sub2 && sc.acquired);
     g_acquire_result = VK_SUCCESS;
     CHECK(dm_vk_swapchain_submit(&vk, &sc) == VK_SUCCESS);
-    CHECK(dm_vk_swapchain_present(&vk, &sc, &sub) == VK_SUCCESS);
-    dm_vk_swapchain_destroy(&vk, &sc); expect_destroyed();
+    CHECK(dm_vk_swapchain_present(&vk, &sc, &sub2) == VK_SUCCESS);
+    CHECK(dm_vk_swapchain_destroy(&vk, &sc) == VK_SUCCESS); expect_destroyed();
 
     reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0};
     CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_SUCCESS);
     g_acquire_result = VK_ERROR_OUT_OF_DATE_KHR;
     CHECK(dm_vk_swapchain_acquire(&vk, &sc, NULL) == VK_ERROR_OUT_OF_DATE_KHR);
     CHECK(sc.needs_recreate && !sc.acquired && g_acquire_count == 1 && g_destroy_swapchains == 0);
-    dm_vk_swapchain_destroy(&vk, &sc); CHECK(g_destroy_swapchains == 1);
+    CHECK(dm_vk_swapchain_destroy(&vk, &sc) == VK_SUCCESS); CHECK(g_destroy_swapchains == 1);
 
     reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0}; g_caps.supportedUsageFlags = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_ERROR_FEATURE_NOT_PRESENT);
@@ -192,7 +215,7 @@ int main(void) {
     dm_vk_swapchain_options clamp = o; clamp.width = 2000; clamp.height = 100;
     CHECK(dm_vk_swapchain_create(&vk, &clamp, &sc) == VK_SUCCESS);
     CHECK(g_create_extent.width == 1280 && g_create_extent.height == 240 && sc.extent.width == 1280 && sc.extent.height == 240);
-    dm_vk_swapchain_destroy(&vk, &sc);
+    CHECK(dm_vk_swapchain_destroy(&vk, &sc) == VK_SUCCESS);
 
     reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0}; g_modes[0] = VK_PRESENT_MODE_MAILBOX_KHR;
     CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_ERROR_FEATURE_NOT_PRESENT && !sc.handle);
@@ -229,7 +252,7 @@ int main(void) {
     CHECK(dm_vk_swapchain_acquire(&vk, &sc, NULL) == VK_SUCCESS);
     g_submit_result = VK_ERROR_DEVICE_LOST;
     CHECK(dm_vk_swapchain_submit(&vk, &sc) == VK_ERROR_DEVICE_LOST && sc.acquired && !sc.submitted);
-    dm_vk_swapchain_destroy(&vk, &sc); CHECK(g_destroy_swapchains == 1);
+    CHECK(dm_vk_swapchain_destroy(&vk, &sc) == VK_SUCCESS); CHECK(g_destroy_swapchains == 1);
 
     reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0};
     CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_SUCCESS);
@@ -238,12 +261,11 @@ int main(void) {
     g_present_result = VK_ERROR_DEVICE_LOST;
     CHECK(dm_vk_swapchain_present(&vk, &sc, NULL) == VK_ERROR_DEVICE_LOST && sc.submitted);
     CHECK(sc.handle == H(VkSwapchainKHR, 0x1000) && g_destroy_swapchains == 0);
-    dm_vk_swapchain_destroy(&vk, &sc); CHECK(g_destroy_swapchains == 1);
+    CHECK(dm_vk_swapchain_destroy(&vk, &sc) == VK_ERROR_INITIALIZATION_FAILED);
+    CHECK(sc.handle == H(VkSwapchainKHR, 0x1000) && g_destroy_swapchains == 0);
 
-    reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0};
-    CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_SUCCESS);
-    g_fail_fence = 0; g_fail_semaphore = 0; g_fail_device_wait = 1;
-    dm_vk_swapchain_destroy(&vk, &sc); CHECK(!sc.handle);
+    reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0}; vk.swapchain_maintenance1 = 0;
+    CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_ERROR_FEATURE_NOT_PRESENT && !sc.handle);
 
     printf("vulkan_swapchain: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

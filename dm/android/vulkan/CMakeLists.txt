@@ -414,7 +414,7 @@ foreach(symbol vkEnumerateInstanceVersion vkEnumerateInstanceLayerProperties vkE
     vkCreateInstance vkDestroyInstance vkGetInstanceProcAddr vkEnumeratePhysicalDevices
     vkGetPhysicalDeviceQueueFamilyProperties vkEnumerateDeviceExtensionProperties
     vkGetPhysicalDeviceSurfaceSupportKHR vkGetPhysicalDeviceProperties vkGetPhysicalDeviceMemoryProperties
-    vkCreateDevice vkDestroyDevice vkGetDeviceQueue vkCreateCommandPool vkDestroyCommandPool vkDeviceWaitIdle
+    vkGetPhysicalDeviceFeatures2 vkCreateDevice vkDestroyDevice vkGetDeviceQueue vkCreateCommandPool vkDestroyCommandPool vkDeviceWaitIdle
     vkDestroySurfaceKHR)
     target_compile_definitions(dm_vulkan_present_init_test PRIVATE ${symbol}=test_${symbol})
 endforeach()

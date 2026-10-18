@@ -75,6 +75,7 @@ VKAPI_ATTR VkResult VKAPI_CALL test_vkGetPhysicalDeviceSurfaceSupportKHR(VkPhysi
     (void)family; CHECK(s == H(VkSurfaceKHR, 0x5001)); *supported = (p == H(VkPhysicalDevice, 0x2002) && g_present_supported) ? VK_TRUE : VK_FALSE; return VK_SUCCESS;
 }
 VKAPI_ATTR void VKAPI_CALL test_vkGetPhysicalDeviceProperties(VkPhysicalDevice p, VkPhysicalDeviceProperties *o) { (void)p; memset(o, 0, sizeof *o); o->apiVersion = VK_API_VERSION_1_1; }
+VKAPI_ATTR void VKAPI_CALL test_vkGetPhysicalDeviceFeatures2(VkPhysicalDevice p, VkPhysicalDeviceFeatures2 *o) { (void)p; (void)o; }
 VKAPI_ATTR void VKAPI_CALL test_vkGetPhysicalDeviceMemoryProperties(VkPhysicalDevice p, VkPhysicalDeviceMemoryProperties *o) { (void)p; memset(o, 0, sizeof *o); }
 VKAPI_ATTR VkResult VKAPI_CALL test_vkCreateDevice(VkPhysicalDevice p, const VkDeviceCreateInfo *i, const VkAllocationCallbacks *a, VkDevice *d) {
     (void)a; CHECK(p == H(VkPhysicalDevice, 0x2002) && i->enabledExtensionCount == (g_subset ? 2u : 1u));
@@ -121,6 +122,7 @@ int main(void) {
     reset(); dm_vk vk = {0}; CHECK(dm_vk_create_present(&o, &vk) == VK_SUCCESS);
     CHECK(vk.device == H(VkDevice, 0x3001) && vk.surface == H(VkSurfaceKHR, 0x5001) && vk.surface_owned);
     CHECK(vk.family == 0);
+    CHECK(!vk.swapchain_maintenance1);
     CHECK(vk.api_version == VK_API_VERSION_1_1 && g_app_api == VK_API_VERSION_1_1);
     dm_vk_destroy(&vk); expect_clean();
     CHECK(!strcmp(g_order, "WPDSI"));

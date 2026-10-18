@@ -12,6 +12,9 @@
 #ifndef VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME
 #define VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME "VK_KHR_portability_subset"
 #endif
+#ifndef VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
+#define VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME "VK_EXT_swapchain_maintenance1"
+#endif
 
 #define DM_VK_VALIDATION_LAYER "VK_LAYER_KHRONOS_validation"
 
@@ -180,19 +183,31 @@ VkResult dm_vk_create_present(const dm_vk_present_options *options, dm_vk *out) 
     vk.driver_api_version = vk.properties.apiVersion;
     vk.driver_version = vk.properties.driverVersion;
     vkGetPhysicalDeviceMemoryProperties(vk.physical, &vk.memory);
-    const char *device_extensions[2];
+    const char *device_extensions[3];
     uint32_t device_extension_count = 0;
     device_extensions[device_extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     int portability_subset = dm_device_extension_present(vk.physical, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
     if (portability_subset) device_extensions[device_extension_count++] = VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME;
+    int maintenance1 = dm_device_extension_present(vk.physical, VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+    VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance_features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT};
+    if (maintenance1) {
+        VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+            .pNext = &maintenance_features};
+        vkGetPhysicalDeviceFeatures2(vk.physical, &features);
+        maintenance1 = maintenance_features.swapchainMaintenance1;
+    }
+    if (maintenance1) device_extensions[device_extension_count++] = VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME;
     float priority = 1;
     VkDeviceQueueCreateInfo queue = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         .queueFamilyIndex = vk.family, .queueCount = 1, .pQueuePriorities = &priority};
     VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = maintenance1 ? &maintenance_features : NULL,
         .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue,
         .enabledExtensionCount = device_extension_count, .ppEnabledExtensionNames = device_extensions};
     result = vkCreateDevice(vk.physical, &device, NULL, &vk.device);
     if (result != VK_SUCCESS) { dm_vk_destroy(&vk); return result; }
+    vk.swapchain_maintenance1 = maintenance1;
     vkGetDeviceQueue(vk.device, vk.family, 0, &vk.queue);
     VkCommandPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .queueFamilyIndex = vk.family, .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT};

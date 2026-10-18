@@ -16,11 +16,13 @@ typedef struct {
     VkFramebuffer *framebuffers;     // owned
     VkCommandBuffer *commands;       // allocated from dm_vk::pool; owned
     int commands_allocated;          // true only after vkAllocateCommandBuffers succeeds
-    VkSemaphore image_available;     // owned
-    VkSemaphore render_finished;     // owned
-    VkFence fence;                   // owned; submission completion, not presentation completion
+    VkSemaphore image_available;     // owned; acquire semaphore
+    VkSemaphore *render_finished;    // one per image; present wait semaphore
+    VkFence *present_fences;         // one per image; VK_EXT_swapchain_maintenance1 completion proof
+    VkFence fence;                   // submission completion only
+    uint8_t *present_pending;        // per image: a present fence must be waited before reuse/retire
     uint32_t image_index;            // valid only while acquired/submitted
-    int acquired, submitted, fence_pending, needs_recreate;
+    int acquired, submitted, fence_pending, needs_recreate, retire_blocked;
 } dm_vk_swapchain;
 
 typedef struct {
@@ -34,7 +36,8 @@ typedef struct {
 // 创建/替换：成功时 out 拥有一套新对象，旧 swapchain 在新对象建立后销毁；失败时旧对象也按 fail-closed 销毁，
 // 不声称旧链仍可回滚使用。调用前/后宿主串行化；recreate 会先 device wait idle。
 // Create/replace: on success out owns fresh objects and the old chain is retired after creation; on failure the old
-// chain is also destroyed (fail-closed), never claimed to be a usable rollback. Host serializes; recreate waits idle.
+// chain is also destroyed (fail-closed), never claimed to be a usable rollback. Host serializes; recreate waits for
+// all in-flight presentation fences before retiring the old chain.
 VkResult dm_vk_swapchain_create(dm_vk *vk, const dm_vk_swapchain_options *options, dm_vk_swapchain *out);
 VkResult dm_vk_swapchain_recreate(dm_vk *vk, dm_vk_swapchain *chain, const dm_vk_swapchain_options *options);
 
@@ -45,6 +48,8 @@ VkResult dm_vk_swapchain_acquire(dm_vk *vk, dm_vk_swapchain *chain, int *subopti
 VkResult dm_vk_swapchain_submit(dm_vk *vk, dm_vk_swapchain *chain);
 // Present only consumes a submitted frame; OUT_OF_DATE/SUBOPTIMAL mark needs_recreate and never free in-flight objects.
 VkResult dm_vk_swapchain_present(dm_vk *vk, dm_vk_swapchain *chain, int *suboptimal);
-// 先 device wait idle，再销毁 fence/semaphore/command/view/framebuffer/renderpass/swapchain；可重复调用。
-// Waits device idle, then destroys fence/semaphores/commands/views/framebuffers/renderpass/swapchain; idempotent.
-void dm_vk_swapchain_destroy(dm_vk *vk, dm_vk_swapchain *chain);
+// 先等待每个 in-flight present fence（maintenance1 证明 presentation 完成），再销毁所有对象。
+// 任一 present fence 无法证明完成时返回错误并保留全部对象（fail-closed，不静默释放）。
+// Waits each in-flight present fence (maintenance1 proof of presentation completion) before destroying objects.
+// If any proof is unavailable/fails, returns an error and retains all objects (fail-closed, no silent release).
+VkResult dm_vk_swapchain_destroy(dm_vk *vk, dm_vk_swapchain *chain);
