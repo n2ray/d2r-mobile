@@ -23,6 +23,22 @@
 #include <time.h>
 #include <unistd.h>
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"D2R-Diagnostic",__VA_ARGS__)
+static int native_game_snapshot(void *context,dm_tgp_snapshot *out){
+    (void)context;if(!out)return 0;memset(out,0,sizeof(*out));
+    out->abi_version=DM_TGP_ABI_VERSION;out->module_id=1;out->generation=1;
+    out->available=0;return 1;
+}
+static int native_game_hit(void *context,float x,float y,dm_tgp_hit *out){
+    (void)context;(void)x;(void)y;if(out)memset(out,0,sizeof(*out));return 0;
+}
+static int native_game_action(void *context,const dm_tgp_action *action,uint64_t now_ns){
+    (void)context;(void)action;(void)now_ns;return 0;
+}
+static const dm_tgp_provider native_game_provider={
+    .abi_version=DM_TGP_ABI_VERSION,.module_id=1,.generation=1,
+    .module_base=0x10000,.module_size=0x1000,
+    .snapshot=native_game_snapshot,.hit=native_game_hit,.action=native_game_action
+};
 typedef struct{dm_vk vk;AInputQueue*input;dm_app_lifecycle*lifecycle;ANativeActivity*activity;ANativeWindow*window;dm_touch_bridge*touch;dm_view_policy view;dm_input_policy gate;ALooper*looper;int timer_fd;int resumed,focused,touch_allowed;float density,touch_width_pt,touch_height_pt;uint64_t last_touch_buttons;int32_t last_touch_lx,last_touch_ly,last_touch_rx,last_touch_ry;int64_t last_touch_log_ns;char vertex[4096],fragment[4096];}app_state;
 static int copy_asset(ANativeActivity*a,const char*name,char path[4096]){
     int n=snprintf(path,4096,"%s/%s",a->internalDataPath,name);if(n<0||n>=4096)return 1;
@@ -300,6 +316,9 @@ static void input_created(ANativeActivity*a,AInputQueue*queue){app_state*s=a->in
         s->density=activity_density(a);
         s->touch=dm_touch_bridge_create(667,375,s->density);
         if(!s->touch){LOG("touch bridge recreate failed");return;}
+        if(!dm_touch_bridge_attach_game(s->touch,&native_game_provider))
+            LOG("touch game provider attach failed");
+        else LOG("touch game provider unavailable: production scene/hit/action disabled");
         s->touch_width_pt=667;s->touch_height_pt=375;
         if(s->window)touch_resize_window(s,s->window);
     }
