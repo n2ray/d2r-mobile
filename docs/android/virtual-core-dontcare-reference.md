@@ -71,7 +71,7 @@ this is scheduler state, not merely a virtual field.
 
 | Condition | Result | Virtual state |
 |---|---|---|
-| valid owned handle; non-zero subset mask; `core_id = -1` | success | ideal `-1`; mask replaced with the request |
+| valid owned handle; non-zero subset mask; `core_id = -1` | success unless the late termination path applies | ideal `-1`; mask replaced with the request |
 | mask contains a bit outside the process core mask | `ResultInvalidCoreId` | unchanged |
 | mask is zero | `ResultInvalidCombination` | unchanged |
 | invalid or foreign thread handle | `ResultInvalidHandle` | unchanged |
@@ -93,34 +93,45 @@ check constrains which virtual bits can reach this conversion.
 
 For `-1`, the physical ideal is negative, so the active-core fallback is the
 highest set bit of the converted physical mask, not the process ideal and not
-the original virtual ideal (`kern_k_thread.cpp:790-798`).
+the original virtual ideal (`kern_k_thread.cpp:790-798`). This is reference
+guest-board mapping; it does not require or authorize pinning Android/Linux
+host threads to physical CPUs.
 
 ## 4. Reference vs owned model vs target
 
-- **Pinned reference:** the operation changes virtual ideal/mask, physical
-  ideal/mask, possibly active core, and runnable scheduler queue; it can
-  block/retry and can return a termination result after mutation.
-- **Owned model:** the current opt-in model stores only per-thread virtual
-  core/mask fields. It has no physical ideal/mask, active core, scheduler
-  queue, migration-disabled original state, or pinned/termination wait path.
+- **Pinned reference:** the operation changes virtual ideal/mask, guest
+  physical ideal/mask, possibly the guest active core, and runnable scheduler
+  queue state; it can block/retry and can return a termination result after
+  mutation.
+- **Current owned model:** the per-thread fields store only virtual core/mask.
+  They do not expose guest physical ideal/mask, the guest active/current core,
+  scheduler queue placement, migration-disabled original state, or
+  pinned/termination wait/result behavior.
 - **Actual target kernel:** not proven. The SDK callsite evidence establishes
   that the recorded `nnMain` call passes `-1`; it does not establish that the
   target kernel has this exact Atmosphère implementation or result behavior.
 
-## 5. Can an owned `-1` implementation be truthful?
+## 5. Model gap and possible future logical model
 
-A virtual-only projection could store `ideal = -1` and the requested mask and
-would make a virtual readback coherent. It would **not** implement the
-reference operation: physical ideal/mask conversion, active-core selection,
-scheduler queue affinity updates, migration-disabled original state, blocking
-and retry, and the post-mutation termination result are part of the pinned
-reference path.
+The current fields are insufficient to implement the observed `-1` semantics;
+that is an implementation gap, not a proof that no owned implementation can
+exist. A software emulator can model guest physical/active/scheduler state
+without binding host threads to native CPUs. The pinned NX
+virtual-to-physical map is guest-board semantics, not a host-affinity mandate.
 
-Therefore, under the current no-physical-affinity model, there is no complete
-truthful owned implementation of the reference `-1` operation. A virtual-only
-projection would have to be a separately named, explicitly non-reference
-contract; it must not be advertised as SVC `0x0f` support or as target-kernel
-behavior. This round does not add that implementation.
+A fuller software guest-core model would need a reviewed executable contract
+covering at least:
+
+- guest physical ideal/mask conversion and active/current-core observations;
+- runnable queue placement and migration-disabled original state;
+- pinned/current-thread wait/retry behavior;
+- the late termination-requested result after mutation, including its
+  non-atomic observable state;
+- which host/native scheduling effects are explicitly excluded.
+
+A virtual-only projection alone is incomplete reference emulation. A fuller
+logical CPU model is possible, but it requires owner review and a new contract;
+no runtime extension is approved in this round.
 
 ## 6. Source anchors
 
