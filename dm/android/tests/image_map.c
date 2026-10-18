@@ -32,7 +32,7 @@ void unimpl_c(void) { abort(); }
 static uintptr_t expected_return;
 static int calls;
 
-static void rejects_execution_when_data_protected(uint8_t *data) {
+static void DM_NO_UBSAN_FUNCTION rejects_execution_when_data_protected(uint8_t *data) {
     // Given：RW 数据页中放入独立 ret 指令。 | Given: a standalone ret instruction in an RW data page.
     *(uint32_t *)data = 0xd65f03c0;
     __builtin___clear_cache((char *)data, (char *)data + 4);
