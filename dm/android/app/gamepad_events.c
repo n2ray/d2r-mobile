@@ -104,18 +104,24 @@ static int32_t deadzone_value(float value) {
     return stick_value(value);
 }
 
-static int apply_key(const AInputEvent *event, dm_npad_state *state) {
+static int apply_key(dm_gamepad_context *context, const AInputEvent *event,
+                     dm_npad_state *state) {
     int32_t action = AKeyEvent_getAction(event);
     int32_t repeat = AKeyEvent_getRepeatCount(event);
     uint64_t mask = key_button(AKeyEvent_getKeyCode(event));
     if (!mask || (action != AKEY_EVENT_ACTION_DOWN && action != AKEY_EVENT_ACTION_UP) ||
         repeat < 0)
         return 0;
-    dm_npad_state next = *state;
+    dm_gamepad_context next_context = *context;
     if (action == AKEY_EVENT_ACTION_DOWN)
-        next.buttons |= mask;   /* repeated DOWN is idempotent */
+        next_context.digital_buttons |= mask;   /* repeated DOWN is idempotent */
     else
-        next.buttons &= ~mask;
+        next_context.digital_buttons &= ~mask;
+    dm_npad_state next = *state;
+    uint64_t old = context->digital_buttons | context->analog_buttons;
+    next.buttons = (state->buttons & ~old) |
+                   next_context.digital_buttons | next_context.analog_buttons;
+    *context = next_context;
     *state = next;
     return 1;
 }
@@ -124,23 +130,33 @@ static int axis_in_range(float value, float low, float high) {
     return isfinite(value) && value >= low && value <= high;
 }
 
-static int apply_motion(const AInputEvent *event, dm_npad_state *state) {
+static int apply_motion(dm_gamepad_context *context, const AInputEvent *event,
+                        dm_npad_state *state) {
     int32_t action = AMotionEvent_getAction(event) & AMOTION_EVENT_ACTION_MASK;
     if (action != AMOTION_EVENT_ACTION_DOWN && action != AMOTION_EVENT_ACTION_MOVE &&
         action != AMOTION_EVENT_ACTION_UP && action != AMOTION_EVENT_ACTION_CANCEL)
         return 0;
 
+    dm_gamepad_context next_context = *context;
     dm_npad_state next = *state;
+    uint64_t old = context->digital_buttons | context->analog_buttons;
     if (action == AMOTION_EVENT_ACTION_CANCEL) {
-        next.buttons = 0;
+        next_context.digital_buttons = 0;
+        next_context.analog_buttons = 0;
+        next.buttons = state->buttons & ~old;
         next.lx = next.ly = next.rx = next.ry = 0;
+        *context = next_context;
         *state = next;
         return 1;
     }
     if (action == AMOTION_EVENT_ACTION_UP) {
-        /* Motion UP releases axes/hat/trigger state, not digital key buttons. */
-        next.buttons &= ~(uint64_t)(DM_GAMEPAD_DPAD_BITS | DM_GAMEPAD_TRIGGER_BITS);
+        /* Motion UP releases only analog axes/hat/triggers; digital key buttons
+           remain owned by the KeyEvent channel. */
+        next_context.analog_buttons = 0;
+        next.buttons = (state->buttons & ~old) |
+                       next_context.digital_buttons | next_context.analog_buttons;
         next.lx = next.ly = next.rx = next.ry = 0;
+        *context = next_context;
         *state = next;
         return 1;
     }
@@ -165,22 +181,30 @@ static int apply_motion(const AInputEvent *event, dm_npad_state *state) {
     next.ly = deadzone_value(-y);
     next.rx = deadzone_value(z);
     next.ry = deadzone_value(-rz);
-    next.buttons &= ~(uint64_t)(DM_GAMEPAD_DPAD_BITS | DM_GAMEPAD_TRIGGER_BITS);
-    if (hat_x <= -0.5f) next.buttons |= DM_BTN_LEFT;
-    if (hat_x >= 0.5f) next.buttons |= DM_BTN_RIGHT;
-    if (hat_y <= -0.5f) next.buttons |= DM_BTN_UP;
-    if (hat_y >= 0.5f) next.buttons |= DM_BTN_DOWN;
-    if (lt > DM_GAMEPAD_TRIGGER_THRESHOLD) next.buttons |= DM_BTN_ZL;
-    if (rt > DM_GAMEPAD_TRIGGER_THRESHOLD) next.buttons |= DM_BTN_ZR;
+    next_context.analog_buttons = 0;
+    if (hat_x <= -0.5f) next_context.analog_buttons |= DM_BTN_LEFT;
+    if (hat_x >= 0.5f) next_context.analog_buttons |= DM_BTN_RIGHT;
+    if (hat_y <= -0.5f) next_context.analog_buttons |= DM_BTN_UP;
+    if (hat_y >= 0.5f) next_context.analog_buttons |= DM_BTN_DOWN;
+    if (lt > DM_GAMEPAD_TRIGGER_THRESHOLD) next_context.analog_buttons |= DM_BTN_ZL;
+    if (rt > DM_GAMEPAD_TRIGGER_THRESHOLD) next_context.analog_buttons |= DM_BTN_ZR;
+    next.buttons = (state->buttons & ~old) |
+                   next_context.digital_buttons | next_context.analog_buttons;
+    *context = next_context;
     *state = next;
     return 1;
 }
 
-int dm_gamepad_event_apply(const AInputEvent *event, dm_npad_state *state) {
-    if (!event || !state) return 0;
+void dm_gamepad_context_init(dm_gamepad_context *context) {
+    if (context) *context = (dm_gamepad_context){0};
+}
+
+int dm_gamepad_event_apply(dm_gamepad_context *context, const AInputEvent *event,
+                           dm_npad_state *state) {
+    if (!context || !event || !state) return 0;
     int32_t type = AInputEvent_getType(event);
     if (!recognized_source(AInputEvent_getSource(event))) return 0;
-    if (type == AINPUT_EVENT_TYPE_KEY) return apply_key(event, state);
-    if (type == AINPUT_EVENT_TYPE_MOTION) return apply_motion(event, state);
+    if (type == AINPUT_EVENT_TYPE_KEY) return apply_key(context, event, state);
+    if (type == AINPUT_EVENT_TYPE_MOTION) return apply_motion(context, event, state);
     return 0;
 }

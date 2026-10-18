@@ -50,8 +50,8 @@ def main() -> int:
          "    case AKEYCODE_BUTTON_A: return DM_BTN_A;",
          "    case AKEYCODE_BUTTON_A: return DM_BTN_B;"),
         ("omit-trigger-release",
-         "        next.buttons &= ~(uint64_t)(DM_GAMEPAD_DPAD_BITS | DM_GAMEPAD_TRIGGER_BITS);\n        next.lx = next.ly = next.rx = next.ry = 0;",
-         "        next.buttons &= ~(uint64_t)DM_GAMEPAD_DPAD_BITS;\n        next.lx = next.ly = next.rx = next.ry = 0;"),
+         "        next_context.analog_buttons = 0;\n        next.buttons = (state->buttons & ~old) |\n                       next_context.digital_buttons | next_context.analog_buttons;\n        next.lx = next.ly = next.rx = next.ry = 0;",
+         "        next.buttons = (state->buttons & ~old) |\n                       next_context.digital_buttons | next_context.analog_buttons;\n        next.lx = next.ly = next.rx = next.ry = 0;"),
     ]
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
