@@ -56,7 +56,8 @@ dm_host *dm_host_create_process_layout(size_t heap_capacity,size_t stack_capacit
 dm_host *dm_host_create_accounted_process(size_t heap_capacity,size_t stack_capacity,size_t alias_capacity,size_t budget);
 int dm_host_destroy(dm_host *host);
 // Explicit opt-in virtual-core policy: a 64-bit allowed mask plus one preferred core bit.
-// Configure before guest threads; EBUSY while any thread is active. Unconfigured hosts keep GetInfo 0 unsupported.
+// Configure before guest threads or attachment; EBUSY while the host is attached or any thread is active.
+// Unconfigured hosts keep GetInfo 0 unsupported.
 // No physical affinity, core-count inference or legacy mask is implied.
 int dm_host_configure_virtual_cores(dm_host *host, uint64_t mask, uint32_t preferred_core);
 // 在附着线程／开始等待前登记模块的可写映射（最多 16 段）；调用方须保持内存有效直到销毁宿主，禁止与预留堆重叠。

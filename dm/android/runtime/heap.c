@@ -90,7 +90,7 @@ dm_host *dm_host_create_arena(size_t heap,size_t stack,size_t alias,size_t arena
 int dm_host_configure_virtual_cores(dm_host *host, uint64_t mask, uint32_t preferred_core) {
     if (!host || !mask || preferred_core >= 64 || !(mask & (UINT64_C(1) << preferred_core))) return EINVAL;
     pthread_mutex_lock(&host->mutex);
-    int busy = dm_host_sync_busy(host);
+    int busy = host->attached || dm_host_sync_busy(host);
     for (unsigned i = 0; !busy && i < 64; i++) if (host->thread_stacks[i].in_use) busy = 1;
     if (!busy) {
         host->virtual_core_mask = mask;

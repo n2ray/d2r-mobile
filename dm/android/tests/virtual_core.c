@@ -41,12 +41,12 @@ static void prepare(void){
     for(unsigned i=0;i<2;i++)sites[i].return_address+=(uintptr_t)program.base;
     gate_table=(dm_gate_table){sites,2};
 }
-static returned query(dm_host*h,uint64_t handle,uint64_t subid){
+static returned DM_NO_UBSAN_FUNCTION query(dm_host*h,uint64_t handle,uint64_t subid){
     dm_guest_context*c=dm_guest_current();CHECK(c&&c->host==h);
     typedef returned(*function)(uint64_t,uint64_t,uint64_t,uint64_t);
     return ((function)(void*)program.base)(0,0,handle,subid);
 }
-static created create(dm_host*h,uintptr_t top,int32_t core){
+static created DM_NO_UBSAN_FUNCTION create(dm_host*h,uintptr_t top,int32_t core){
     dm_guest_context*c=dm_guest_current();CHECK(c&&c->host==h);
     typedef created(*function)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
     return ((function)(void*)((uint8_t*)program.base+32))(0,(uintptr_t)program.base,0,top,44,(uint32_t)core);
@@ -62,8 +62,8 @@ int main(void){
 #if defined(__aarch64__)
     prepare();
 #endif
-    dm_host *a=dm_host_create(2*UNIT),*b=dm_host_create(2*UNIT),*c=dm_host_create(2*UNIT),*d=dm_host_create(2*UNIT);
-    CHECK(a&&b&&c&&d);
+    dm_host *a=dm_host_create(2*UNIT),*b=dm_host_create(2*UNIT),*c=dm_host_create(2*UNIT),*d=dm_host_create(2*UNIT),*e=dm_host_create(2*UNIT);
+    CHECK(a&&b&&c&&d&&e);
     uint8_t *ha=heap_for(a),*hb=heap_for(b),*hc=heap_for(c),*hd=heap_for(d);
     (void)ha;(void)hb;(void)hc;(void)hd;
 
@@ -73,6 +73,18 @@ int main(void){
     CHECK(!dm_host_configure_virtual_cores(a,0x5,2));
     CHECK(!dm_host_configure_virtual_cores(b,0x2,1));
     CHECK(!dm_host_configure_virtual_cores(d,HIGH_CORE,63));
+
+    // A plain attached main thread is enough to freeze the policy even before
+    // any managed thread exists.
+    static const dm_gate_table no_gates={0};
+    CHECK(!dm_host_configure_virtual_cores(e,0x5,2));
+    CHECK(!dm_guest_attach(e,&no_gates));
+    CHECK(dm_host_configure_virtual_cores(e,0x7,0)==EBUSY);
+    uint64_t er[31]={[1]=0,[2]=CURRENT};
+    CHECK(!dm_host_svc(e,0x29,er)&&er[1]==0x5);
+    CHECK(!dm_guest_detach());
+    CHECK(!dm_host_configure_virtual_cores(e,0x7,0));
+    CHECK(!dm_host_destroy(e));
 
 #if defined(__aarch64__)
     CHECK(!dm_host_register_executable(a,program.base,192));

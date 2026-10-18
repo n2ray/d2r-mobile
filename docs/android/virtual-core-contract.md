@@ -285,8 +285,9 @@ The implemented slice is deliberately narrower than the generic contract:
 - `dm_host_configure_virtual_cores(host, mask, preferred_core)` accepts a
   host-supplied 64-bit non-zero mask and one preferred core whose bit is set.
   It rejects zero, a core >= 64 and a preferred core outside the mask with
-  `EINVAL`. It returns `EBUSY` without changing the host if a thread is active
-  (sync wait/running/starting/pin or a thread stack lease).
+  `EINVAL`. It returns `EBUSY` without changing the host if the host is
+  attached or a thread is active (sync wait/running/starting/pin or a thread
+  stack lease). A plain attached main thread is sufficient to freeze policy.
 - A host starts unconfigured. GetInfo ID 0 remains unsupported (`0x4201`)
   until this explicit call succeeds; it never infers a mask or core count.
 - A configured GetInfo ID 0 returns exactly the configured 64-bit mask for the
@@ -302,8 +303,8 @@ The implemented slice is deliberately narrower than the generic contract:
   change is made.
 - Configuration fields are host-local; a rejected call does not mutate another
   host. The owned test exercises the real rewritten gates for configured
-  GetInfo0/CreateThread, unconfigured GetInfo0, a high-bit mask and two-host
-  isolation.
+  GetInfo0/CreateThread, unconfigured GetInfo0, a high-bit mask, two-host
+  isolation and attach→EBUSY/no-change→detach→allowed policy.
 
 The exact initial mask and target core count remain host policy; no legacy
 hardcoded `7` is used. This slice does not complete the negative plan above or
