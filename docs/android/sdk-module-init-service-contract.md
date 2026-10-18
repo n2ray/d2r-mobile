@@ -16,21 +16,32 @@ Base: accepted `main` `d7739cb` (includes #74 and #71). Repository anchors are `
 | Tag | Meaning |
 |---|---|
 | **A** | Repository code/docs/tests at the stated commit. |
-| **B** | Existing read-only static metadata report from the private SDK image. Summarized only; no bytes, addresses or symbol dumps are republished. A direct edge is not execution or reachability proof. |
-| **U** | Unknown; no evidence in the existing reports. |
+| **B-old** | Existing private report only: body/thunk shape. It does not resolve imports. A direct edge is not execution or reachability proof. |
+| **B-new** | New bounded read-only static derivation in this revision: GOT/relocation and symbol resolution from the same private input. Derived metadata only; no bytes, addresses or symbol dumps published. |
+| **U** | Unknown; no evidence yet. |
 
 ## 1. Selected root
 
 **`nninitInitializeSdkModule`** — the SDK module-initialization stage already listed in the public lifecycle inventory
 (`dm/android/LIFECYCLE.md:15`, `docs/android/startup-services-inventory.md:40`). This is the one root for phase 1.
 
-- [B] An existing private bounded report (unpublished; SDK image identity recorded inside it) decodes the exact function
-  body: 60 bytes, 15 instructions, **9 direct `BL` edges**, no `SVC`, no direct string references, and two `mov w0, #1`
-  calls.
-- [B] All nine `BL` targets are 16-byte import thunks of the shape `adrp` / `ldr` / `add` / `br x17`: the call leaves the
-  module through a GOT slot. The existing report records the thunk bodies, not the resolved import names.
+- [B-old] An existing private bounded report (unpublished; SDK image identity recorded inside it) decodes the exact
+  function body: 60 bytes, 15 instructions, **9 direct `BL` edges**, **one final `B` tail branch**, **no `RET`**, no
+  `SVC`, no direct string references, and two `mov w0, #1` calls.
+- [B-new] All nine `BL` targets are 16-byte `adrp`/`ldr`/`add`/`br x17` import thunks; their GOT slots resolve through
+  `R_AARCH64_RELATIVE` relocations to these defined initializer symbols (family names, no addresses):
+  `nndiagStartup`, `nn::os::InitializeVirtualAddressMemory`, `nn::oe::Initialize`, `nn::aoc::Initialize`,
+  `nn::err::InitializeContextWriterApi`, `nn::fs::InitializeForApplication`,
+  `nn::fs::SetLocalApplicationAccessLog(bool)` (constant `1`), `nn::pctl::Initialize`, and
+  `nn::fs::SetResultHandledByApplication(bool)` (constant `1`). Nine edges map to eight distinct initializers plus two
+  `fs` setters.
+- [B-new] The final `B` tail target is itself an import thunk whose GOT slot resolves to
+  `nn::diag::InitializeApplicationAbortObserver()`. The root therefore does **not** return directly: it tail-branches to
+  that initializer. Whether the tail callee returns, and with what state, is unproven here.
 - [A] The public inventory records that this stage has named direct references to the `oe`, `aoc`, `err`, `fs`, `pctl` and
-  diagnostic initialization families (`startup-services-inventory.md:118`), but only as a set of families.
+  diagnostic initialization families (`startup-services-inventory.md:118`). The [B-new] resolution above is the per-edge
+  mapping; it confirms the family set and shows the two `fs` boolean setters. This is derived metadata, not an SDK
+  execution or reachability claim.
 - [A] Current runtime transport: `ConnectToNamedPort` resolves only locally registered names (`dm/android/runtime/ipc.c:572`
   dispatch, `:163` comment), `sm: GetServiceHandle` returns only an already registered local port
   (`dm/android/runtime/sm.c:30` handler), and `lm` OpenLogger/Log are bounded local implementations
@@ -40,45 +51,40 @@ Base: accepted `main` `d7739cb` (includes #74 and #71). Repository anchors are `
 
 | Fact | Evidence | Strength |
 |---|---|---|
-| The root exists and is a normal function with a return path | [B] body size/instructions | static only |
-| It performs nine direct calls, all through GOT import thunks | [B] nine `BL` targets, thunk shape | static edges |
-| It contains no `SVC` and no direct string reference | [B] decoded ops/literals | static only |
-| Two of the calls pass constant `1` in `w0` | [B] `mov w0, #1` before two calls | static only |
-| The stage is associated with `oe`/`aoc`/`err`/`fs`/`pctl`/diagnostic initialization | [A] inventory set-level statement | family set only |
+| Root body: 60 bytes, 15 instructions, 9 `BL` + one final `B` tail, **no `RET`**, no `SVC`, no direct string reference | [B-old] body decode | static only |
+| Nine `BL` calls leave through GOT import thunks | [B-old] targets + thunk shape | static edges |
+| GOT slots resolve to `nndiagStartup`, `nn::os::InitializeVirtualAddressMemory`, `nn::oe::Initialize`, `nn::aoc::Initialize`, `nn::err::InitializeContextWriterApi`, `nn::fs::InitializeForApplication`, `nn::fs::SetLocalApplicationAccessLog(bool)`, `nn::pctl::Initialize`, `nn::fs::SetResultHandledByApplication(bool)` | [B-new] RELA/GOT + dynsym | derived metadata |
+| Two `fs` boolean setters receive constant `1` | [B-old] `mov w0,#1` placement + [B-new] names | static only |
+| The final `B` is a tail call whose thunk resolves to `nn::diag::InitializeApplicationAbortObserver()`; the root does not return directly | [B-new] GOT resolution | static only; callee return unproven |
+| `nn::oe::Initialize` body calls `nn::os::SdkMutexType::Lock`, `nn::apm::Initialize`, `nn::oe::InitializeApplet`, `nn::am::GetApplicationFunctions`, all defined in this module; no `SVC` and no service-name string in the bounded body | [B-new] one-level follow | static only |
 | Local `sm:`/`lm` behavior is implemented and tested | [A] `ipc.c:572`, `sm.c:30`, `lm.c:20,52`, `tests/ipc.c:235` | owned host tests |
 
-Not proven: which thunk corresponds to which family (nine edges vs six named families already shows the mapping is not
-one-to-one), whether any call opens a session, and every command/reply shape.
+Not proven: whether the tail callee returns; whether any of the nine initializers executes at startup; which of
+`apm::Initialize` / `oe::InitializeApplet` / `am::GetApplicationFunctions` opens a session; every port name, command ID,
+request/reply layout and reply consumption.
 
-## 3. First unproven indirection — stop point
+## 3. First unproven protocol — stop point
 
-The nine `BL` sites leave through GOT/import slots (`adrp`/`ldr`/`add`/`br x17`). The existing bounded report records the
-thunks but **not the dynamic relocation resolution**, so the following cannot be derived from existing evidence:
+Following the one selected initializer, `nn::oe::Initialize`, reaches four same-module calls. The first unproven protocol
+is therefore one level below it: which of those four performs a session acquisition (named-port/`sm:`), and with which
+port name and command/reply shape. The `oe::Initialize` body itself contains no `SVC` and no service-name string, so no
+port or command can be attached at this level.
 
-1. per-edge import symbol or module (hence no per-edge family assignment);
-2. whether an initializer opens `sm:`/named-port sessions, and the exact port name;
-3. command IDs, request layouts, reply layouts or reply consumption;
-4. error paths, handle ownership and rollback of any session/domain child;
-5. whether any edge executes during a real startup.
+Phase 1 stops here. No command ID, request layout or success reply is asserted; the other eight resolved initializers are
+recorded as edges only, not followed.
 
-This is the first unproven indirection, and phase 1 stops here. No command ID or service name beyond the already-published
-family set is asserted.
+## 4. Next bounded step (available statically)
 
-## 4. Concrete blocker and unblock evidence
+The next step does **not** require a phone or SDK execution yet: the four `oe` callees are defined in the same dumped
+module, so one of them (`nn::apm::Initialize` is the natural candidate) can be followed one bounded level with the same
+read-only GOT/relocation method until the first `sm:`/named-port session acquisition or a concrete missing-input stop.
 
-**Blocker (once, not repeated):** per-edge dynamic-relocation resolution for the nine thunks is absent from the existing
-reports, and no existing report contains the body of any resolved initializer. Without either, session/command/reply
-cannot be identified.
+Required output of that step: the proven callee body facts (direct `BL`/`SVC`/string edges), one port name if a string or
+`GetServiceHandle` path is proven, and the exact first point where the command/reply protocol becomes unproven. If a
+callee body turns out to be an import without a body in the available module images, record that exact missing input
+once and stop. No command may be guessed in either case.
 
-Unblock (either path, subject to the project's real-input authorization rules; no bytes or private logs published):
-
-- an existing or newly generated **static** report that maps each of the nine GOT slots to its import symbol/module and
-  gives the bounded body of one chosen initializer (direct `BL`/`SVC`/string/literal edges); or
-- an approved controlled run that captures the same per-edge identity without executing game code.
-
-After that, the next bounded step is one initializer's dataflow to the first session acquisition (`sm:`/named port) or a
-documented stop; only then can commands/replies be evidenced. Phase 2 implementation is explicitly out of scope until
-root review.
+Phase 2 implementation remains out of scope until root review.
 
 ## 5. Ownership and failure acceptance plan (contingent, not implemented)
 
@@ -92,19 +98,24 @@ The following is a plan for a future proven service. It is **not** an implementa
 - Negative acceptance: no service may be registered merely to make initialization pass; a failed stage leaves no live
   handle/session; repeated acquisition/close remains bounded.
 - Positive acceptance (future): one real startup path reaches the local endpoint and receives the proven reply — only after
-  the blocker above is closed and reviewed.
+  the next bounded step above is completed and reviewed.
 
 ## 6. Coordination and explicit unknowns
 
 - #72 (virtual core mask) and #32 (touch parity) are separate owners; this note does not touch their files or claims.
 - #8 lifecycle/rollback, #10 real-input acceptance, #16 log sink, #20 filesystem are linked only if a traced root proves
   those commands; none is claimed here.
-- Unknowns: per-edge thunk resolution; port/service names; session acquisition; command/reply layouts; reply consumption;
-  error mapping; initializer ordering and execution; whether any of the nine edges is required for startup.
+- Unknowns: whether/how the tail callee returns; which `oe` callee performs session acquisition; port/service names;
+  command/reply layouts; reply consumption; error mapping; initializer ordering and execution; whether any of the nine
+  edges is required for startup.
 - This note does not repeat the whole SDK inventory and does not claim that the family set is complete.
 
 ## 7. Reproduction boundary
 
-The private report was read only; no SDK bytes, addresses, symbol dumps, logs, saves or credentials are included here.
+The private input and existing report were read only. The [B-new] derivation used a bounded read-only script in the
+private job workspace: NSO segment decode, dynamic `RELA`/`JMPREL` parsing, `adrp`/`ldr` GOT-address computation from the
+nine thunk bodies and the tail thunk, and dynsym name lookup; no instruction was executed. Derived names/counts only; no
+SDK bytes, addresses, symbol dumps, private paths, logs, saves or credentials are included here.
+
 The repository-side facts can be checked at the cited `path:line`. No new test was added because this slice is docs-only
-and no behavior changed.
+and no behavior changed. Four green CI jobs do not prove private metadata or service semantics.
