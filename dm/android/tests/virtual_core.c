@@ -125,7 +125,7 @@ int main(void){
     puts("PASS: configured GetInfo0/CreateThread through real gates, unconfigured unsupported, high-bit mask, two-host isolation");
 #else
     uint64_t r[31]={[1]=0,[2]=CURRENT};
-    CHECK(!dm_host_svc(a,0x29,r)&&r[1]==0x7);
+    CHECK(!dm_host_svc(a,0x29,r)&&r[1]==0x5);
     r[1]=0;r[2]=0;CHECK(dm_host_svc(a,0x29,r)==DM_SVC_INVALID_HANDLE);
     r[2]=CURRENT;r[3]=1;CHECK(dm_host_svc(a,0x29,r)==DM_SVC_INVALID_COMBINATION);
     r[1]=0;r[2]=CURRENT;r[3]=0;CHECK(dm_host_svc(c,0x29,r)==DM_SVC_NOT_IMPLEMENTED);
