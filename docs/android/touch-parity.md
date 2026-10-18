@@ -175,6 +175,21 @@ These are not promoted to source-backed parity claims:
 - No feature is inferred solely from the iOS README; README claims are kept
   separate from source-backed rows.
 
+## Inventory adapter regression coverage (#101)
+
+`dm/android/tests/touch_adapter.c` now drives the frozen core inventory
+contracts through actual adapter `down/move/up/tick/pointer_hit/pointer_release`
+entry points: single/double tap (`USE` exactly once; late or other-position
+singles and the compare `ZL`), long press (`LONG_PRESS` once, long-then-drag
+suppresses it), cancel (no action, stale UP rejected, same ID reusable), drag
+pickup/drop `A` pulses, drag-out discard `Y`, drag-back `A` at the origin,
+panel/scene change cancel, stash double-tap `Y`, stacked-cell `STACK_TAKE` and
+stack drag `SHOP_DROP`. This is offline adapter evidence only: there is still no
+item hit/model, cursor overlay, host drop query, storage or trade result,
+provider, HUD or device claim. Identify (`ident_seq`) and drop-position classes
+that require host `dm_ui_*` answers are not exposed through the adapter and are
+not fabricated.
+
 ## What remains unknown
 
 - Whether every source-backed Apple gesture has an exact game-visible equivalent
