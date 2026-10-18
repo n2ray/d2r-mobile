@@ -9,6 +9,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME
+#define VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME "VK_KHR_portability_subset"
+#endif
 
 #define DM_VK_VALIDATION_LAYER "VK_LAYER_KHRONOS_validation"
 
@@ -107,12 +110,16 @@ VkResult dm_vk_create_present(const dm_vk_present_options *options, dm_vk *out) 
 #endif
     int portability = dm_instance_extension_present(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
     if (portability) instance_extensions[instance_extension_count++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+    VkResult result = vkEnumerateInstanceVersion(&vk.api_version);
+    if (result != VK_SUCCESS) vk.api_version = VK_API_VERSION_1_0;
+    uint32_t requested_api = VK_API_VERSION_1_1;
+    if (vk.api_version < requested_api) requested_api = vk.api_version;
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pApplicationName = "D2R present Vulkan foundation", .apiVersion = VK_API_VERSION_1_1};
+        .pApplicationName = "D2R present Vulkan foundation", .apiVersion = requested_api};
     VkInstanceCreateInfo create = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
         .flags = portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
         .enabledExtensionCount = instance_extension_count, .ppEnabledExtensionNames = instance_extensions};
-    VkResult result = vkCreateInstance(&create, NULL, &vk.instance);
+    result = vkCreateInstance(&create, NULL, &vk.instance);
     if (result != VK_SUCCESS) return result;
 
     if (options->create_surface) {
@@ -173,13 +180,17 @@ VkResult dm_vk_create_present(const dm_vk_present_options *options, dm_vk *out) 
     vk.driver_api_version = vk.properties.apiVersion;
     vk.driver_version = vk.properties.driverVersion;
     vkGetPhysicalDeviceMemoryProperties(vk.physical, &vk.memory);
-    const char *device_extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    const char *device_extensions[2];
+    uint32_t device_extension_count = 0;
+    device_extensions[device_extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    int portability_subset = dm_device_extension_present(vk.physical, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+    if (portability_subset) device_extensions[device_extension_count++] = VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME;
     float priority = 1;
     VkDeviceQueueCreateInfo queue = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         .queueFamilyIndex = vk.family, .queueCount = 1, .pQueuePriorities = &priority};
     VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue,
-        .enabledExtensionCount = 1, .ppEnabledExtensionNames = &device_extension};
+        .enabledExtensionCount = device_extension_count, .ppEnabledExtensionNames = device_extensions};
     result = vkCreateDevice(vk.physical, &device, NULL, &vk.device);
     if (result != VK_SUCCESS) { dm_vk_destroy(&vk); return result; }
     vkGetDeviceQueue(vk.device, vk.family, 0, &vk.queue);

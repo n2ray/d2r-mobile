@@ -17,7 +17,8 @@ typedef struct {
 
 - `window` 是借用的平台窗口，不持有、不释放；上下文不保存它。
 - Android 上 `create_surface == NULL` 时使用本实例的 `vkCreateAndroidSurfaceKHR`；host 测试可注入工厂 seam，工厂必须使用传入的同一实例。
-- 成功时 `surface` 由 `dm_vk` 拥有，`dm_vk_destroy()` 按 `device → command pool → device → surface → instance` 的逆序清理；失败输出保持全零。
+- 成功时 `surface` 由 `dm_vk` 拥有，`dm_vk_destroy()` 按 `wait idle → command pool → device → surface → instance` 的逆序清理；失败输出保持全零。
+- 设备若声明 `VK_KHR_portability_subset`，创建 logical device 时必须与 swapchain 一起启用；未声明的 Android-like 设备不启用。请求 API 版本取 `min(1.1, loader 报告的版本)` 并写入 `dm_vk.api_version`。
 
 ## 选择与扩展
 
