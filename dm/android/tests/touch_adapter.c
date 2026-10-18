@@ -1002,7 +1002,9 @@ static void inventory_drag_release_and_context_change(fixture *f) {
     CHECK(dm_android_touch_pointer_release(f->touch, 52, 3));
     CHECK(dm_android_touch_up(f->touch, 52, 51030000000));
     s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);
-    CHECK(dm_android_touch_tick(f->touch, 51060000000));
+    CHECK(dm_android_touch_tick(f->touch, 51060000000));   /* +30 ms: discard hold is 0.15 s */
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);
+    CHECK(dm_android_touch_tick(f->touch, 51300000000));   /* past the hold */
     s = read_pad(f); CHECK(s.buttons == 0);
     CHECK(!dm_android_touch_take_action(f->touch, &a));
     /* Drag back to a blank panel spot: drop back with A at the origin. */
@@ -1013,7 +1015,7 @@ static void inventory_drag_release_and_context_change(fixture *f) {
     CHECK(dm_android_touch_move(f->touch, 53, 360, 220, 52020000000));
     CHECK(dm_android_touch_pointer_release(f->touch, 53, 0));
     CHECK(dm_android_touch_up(f->touch, 53, 52030000000));
-    s = read_pad(f); CHECK(s.buttons == DM_BTN_A);   /* back at origin */
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_A);   /* drop-back A (pad only; cursor position not observed) */
     CHECK(dm_android_touch_tick(f->touch, 52060000000));
     CHECK(!dm_android_touch_take_action(f->touch, &a));
     /* A panel/scene change cancels the owned pointer; stale input is rejected. */
@@ -1038,7 +1040,9 @@ static void inventory_drag_release_and_context_change(fixture *f) {
     CHECK(dm_android_touch_pointer_hit(f->touch, 55, 1));
     CHECK(dm_android_touch_up(f->touch, 55, 54030000000));
     s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);
-    CHECK(dm_android_touch_tick(f->touch, 54100000000));
+    CHECK(dm_android_touch_tick(f->touch, 54100000000));   /* +70 ms: upstream hold is 0.6 s */
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);
+    CHECK(dm_android_touch_tick(f->touch, 55000000000));   /* past the hold */
     s = read_pad(f); CHECK(s.buttons == 0);
     CHECK(!dm_android_touch_take_action(f->touch, &a));
     /* Stacked cell: double tap takes one (STACK_TAKE), no USE/key. */
@@ -1060,6 +1064,73 @@ static void inventory_drag_release_and_context_change(fixture *f) {
     CHECK(dm_android_touch_take_action(f->touch, &a));
     CHECK(a.kind == DM_ANDROID_ACTION_SHOP_DROP && a.sequence == 1);
     CHECK(!dm_android_touch_take_action(f->touch, &a));
+    s = read_pad(f); CHECK(s.buttons == 0);
+}
+
+static void inventory_double_tap_item(fixture *f, int32_t id, float x, float y, int64_t t) {
+    CHECK(dm_android_touch_down(f->touch, id, x, y, t));
+    CHECK(dm_android_touch_pointer_hit(f->touch, id, 1));
+    CHECK(dm_android_touch_up(f->touch, id, t + 10000000));
+    CHECK(dm_android_touch_down(f->touch, id, x, y, t + 100000000));
+    CHECK(dm_android_touch_pointer_hit(f->touch, id, 1));
+    CHECK(dm_android_touch_up(f->touch, id, t + 200000000));
+}
+
+/* Non-zero pulse holds (stash double tap -> 0.6 s Y) must survive repeated
+   reads and ticks until the upstream duration expires. The standalone adapter
+   starts the clock on first read; a delayed first read still gets the full
+   hold. Cancel/focus/pause/resize/context changes clear held and queued state. */
+static void inventory_timed_hold_consumption(fixture *f) {
+    dm_npad_state s;
+    CHECK(dm_android_touch_set_game_context(f->touch, 1, 1, 30, 1, 1, 1));
+    /* Delayed first read: ticks before consumption cannot expire the hold. */
+    inventory_double_tap_item(f, 61, 300, 180, 61000000000);
+    CHECK(dm_android_touch_tick(f->touch, 62000000000));
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);   /* starts the 0.6 s hold here */
+    CHECK(dm_android_touch_tick(f->touch, 62100000000));
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);   /* +0.1 s: still held */
+    CHECK(dm_android_touch_tick(f->touch, 62700000000));
+    s = read_pad(f); CHECK(s.buttons == 0);          /* +0.7 s: expired */
+    /* Two queued same-button timed holds keep their order and edges. */
+    inventory_double_tap_item(f, 62, 300, 180, 63000000000);
+    inventory_double_tap_item(f, 62, 300, 180, 63300000000);
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);   /* first hold starts */
+    CHECK(dm_android_touch_tick(f->touch, 64200000000));
+    s = read_pad(f); CHECK(s.buttons == 0);          /* release before the next same-button hold */
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);   /* second hold starts at the read */
+    CHECK(dm_android_touch_tick(f->touch, 64900000000));
+    s = read_pad(f); CHECK(s.buttons == 0);
+    /* Early repeated reads do not release before the deadline. */
+    inventory_double_tap_item(f, 63, 300, 180, 65000000000);
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);
+    CHECK(dm_android_touch_tick(f->touch, 65500000000));
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);   /* +0.3 s from first read */
+    CHECK(dm_android_touch_tick(f->touch, 66200000000));
+    s = read_pad(f); CHECK(s.buttons == 0);          /* +1.0 s: expired */
+    /* Held Y is cleared by cancel-all before its deadline. */
+    inventory_double_tap_item(f, 64, 300, 180, 66500000000);
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);
+    CHECK(dm_android_touch_cancel_all(f->touch, 66800000000));
+    s = read_pad(f); CHECK(s.buttons == 0);
+    /* Focus, pause, resize and context changes clear held state too. */
+    inventory_double_tap_item(f, 65, 300, 180, 67000000000);
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);
+    CHECK(dm_android_touch_focus_lost(f->touch, 67300000000));
+    s = read_pad(f); CHECK(s.buttons == 0);
+    CHECK(dm_android_touch_resume(f->touch, 67400000000));
+    inventory_double_tap_item(f, 66, 300, 180, 67600000000);
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);
+    CHECK(dm_android_touch_pause(f->touch, 67900000000));
+    s = read_pad(f); CHECK(s.buttons == 0);
+    CHECK(dm_android_touch_resume(f->touch, 68000000000));
+    inventory_double_tap_item(f, 67, 300, 180, 68200000000);
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);
+    CHECK(dm_android_touch_resize(f->touch, 667, 375, 68500000000));
+    s = read_pad(f); CHECK(s.buttons == 0);
+    inventory_double_tap_item(f, 68, 300, 180, 68800000000);
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_Y);
+    CHECK(dm_android_touch_set_game_context(f->touch, 1, 1, 31, 2, 2, 2));
     s = read_pad(f); CHECK(s.buttons == 0);
 }
 
@@ -1100,6 +1171,7 @@ int main(void) {
     CASE(portal_context_repeated_changes_no_slot_leak);
     CASE(inventory_tap_double_long_and_cancel);
     CASE(inventory_drag_release_and_context_change);
+    CASE(inventory_timed_hold_consumption);
     printf("PASS %d/%d cases; %d/%d checks\n", cases, cases, checks, checks);
     return 0;
 }

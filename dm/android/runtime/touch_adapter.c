@@ -16,6 +16,9 @@ struct dm_android_touch {
     struct {
         uint64_t buttons;
         int32_t rx, ry;
+        double hold_s;
+        int hold_started;
+        int64_t hold_until_ns;
     } pulses[DM_ANDROID_TOUCH_PULSE_CAPACITY];
     int pulse_head;
     int pulse_count;
@@ -129,7 +132,21 @@ static void sync_pointer_slots(dm_android_touch *touch) {
     }
 }
 
+static void expire_timed_pulse(dm_android_touch *touch) {
+    if (touch->pulse_count == 0) return;
+    int head = touch->pulse_head;
+    if (touch->pulses[head].hold_s <= 0 || !touch->pulses[head].hold_started) return;
+    if (touch->last_ns < touch->pulses[head].hold_until_ns) return;
+    uint64_t buttons = touch->pulses[head].buttons;
+    touch->pulse_head = (head + 1) % DM_ANDROID_TOUCH_PULSE_CAPACITY;
+    --touch->pulse_count;
+    publish_core(touch);
+    if (touch->pulse_count > 0 && touch->pulses[touch->pulse_head].buttons == buttons)
+        touch->release_waiting = 1;   /* neutral read before a same-button successor */
+}
+
 static void publish(dm_android_touch *touch) {
+    expire_timed_pulse(touch);
     sync_pointer_slots(touch);
     portal_sync(touch);
     dm_tc_state *s = &touch->state;
@@ -139,6 +156,9 @@ static void publish(dm_android_touch *touch) {
         touch->pulses[tail].buttons = s->buttons;
         touch->pulses[tail].rx = s->pulse_rx;
         touch->pulses[tail].ry = s->pulse_ry;
+        touch->pulses[tail].hold_s = s->pulse_hold_s;
+        touch->pulses[tail].hold_started = 0;
+        touch->pulses[tail].hold_until_ns = 0;
         ++touch->pulse_count;
         uint64_t epoch = s->pulse_epoch;
         (void)dm_tc_pulse_end(s, epoch);
@@ -532,6 +552,27 @@ dm_npad_state dm_android_touch_read(dm_android_touch *touch) {
     int head = touch->pulse_head;
     uint64_t buttons = touch->pulses[head].buttons;
     int32_t rx = touch->pulses[head].rx, ry = touch->pulses[head].ry;
+    if (touch->pulses[head].hold_s > 0) {
+        /* Standalone consumption boundary: the hold starts at the first read,
+           using the last accepted timestamp, so a delayed consumer still gets
+           the full upstream duration. Ticks before this read cannot expire it. */
+        if (!touch->pulses[head].hold_started) {
+            touch->pulses[head].hold_started = 1;
+            touch->pulses[head].hold_until_ns =
+                touch->last_ns + (int64_t)llround(touch->pulses[head].hold_s * 1e9);
+        }
+        if (touch->last_ns < touch->pulses[head].hold_until_ns) {
+            publish_entry(touch, buttons, rx, ry);   /* still held across reads */
+            return dm_android_pad_read(touch->pad);
+        }
+        touch->pulse_head = (head + 1) % DM_ANDROID_TOUCH_PULSE_CAPACITY;
+        --touch->pulse_count;
+        publish_core(touch);
+        out = dm_android_pad_read(touch->pad);
+        if (touch->pulse_count > 0 && touch->pulses[touch->pulse_head].buttons == buttons)
+            touch->release_waiting = 1;
+        return out;
+    }
     touch->pulse_head = (head + 1) % DM_ANDROID_TOUCH_PULSE_CAPACITY;
     --touch->pulse_count;
     publish_entry(touch, buttons, rx, ry);

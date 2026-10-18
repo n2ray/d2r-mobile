@@ -182,9 +182,13 @@ contracts through actual adapter `down/move/up/tick/pointer_hit/pointer_release`
 entry points: single/double tap (`USE` exactly once; late or other-position
 singles and the compare `ZL`), long press (`LONG_PRESS` once, long-then-drag
 suppresses it), cancel (no action, stale UP rejected, same ID reusable), drag
-pickup/drop `A` pulses, drag-out discard `Y`, drag-back `A` at the origin,
-panel/scene change cancel, stash double-tap `Y`, stacked-cell `STACK_TAKE` and
-stack drag `SHOP_DROP`. This is offline adapter evidence only: there is still no
+pickup/drop `A` pulses, drag-out discard `Y`, drag-back `A` (pad only; cursor
+position is not observed), panel/scene change cancel, stash double-tap `Y`,
+stacked-cell `STACK_TAKE` and stack drag `SHOP_DROP`. Non-zero core holds
+(`0.6 s` stash `Y`, `0.15 s` discard `Y`) stay pressed across repeated reads and
+ticks until the standalone first-read hold clock expires; this is an adapter
+consumption boundary, not a guest/cursor-delivery acknowledgement. This is
+offline adapter evidence only: there is still no
 item hit/model, cursor overlay, host drop query, storage or trade result,
 provider, HUD or device claim. Identify (`ident_seq`) and drop-position classes
 that require host `dm_ui_*` answers are not exposed through the adapter and are
