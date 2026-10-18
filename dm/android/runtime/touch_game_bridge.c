@@ -10,6 +10,11 @@ struct dm_touch_game_bridge {
     dm_tgp_snapshot snapshot;
     int available;
     int reason;
+    uint64_t invalidations;
+    int have_context;
+    int last_navigation;
+    uint32_t last_panel_bits;
+    uint64_t last_scene_epoch, last_world_epoch, last_ui_identity, last_object_generation;
     uint64_t acked;
     uint64_t rejected;
 };
@@ -56,6 +61,7 @@ static int valid_hit(const dm_touch_game_bridge *bridge, const dm_tgp_hit *hit) 
 static void mark_unavailable(dm_touch_game_bridge *bridge, int reason) {
     bridge->available = 0;
     bridge->reason = reason;
+    bridge->invalidations++;
     (void)dm_android_touch_set_game_available(bridge->touch, 0);
 }
 
@@ -98,6 +104,14 @@ int dm_touch_game_bridge_refresh(dm_touch_game_bridge *bridge, uint64_t now_ns) 
     }
     uint32_t panel_bits = snapshot.panel_bits | (snapshot.dead ? 4u : 0u);
     int navigation = snapshot.scene != DM_TGP_SCENE_GAME;
+    int context_changed = bridge->have_context &&
+        (navigation != bridge->last_navigation ||
+         panel_bits != bridge->last_panel_bits ||
+         snapshot.scene_epoch != bridge->last_scene_epoch ||
+         snapshot.world_epoch != bridge->last_world_epoch ||
+         snapshot.ui_identity != bridge->last_ui_identity ||
+         snapshot.object_generation != bridge->last_object_generation);
+    if (context_changed) bridge->invalidations++;
     if (!dm_android_touch_set_game_available(bridge->touch, 1) ||
         !dm_android_touch_set_game_context(bridge->touch, navigation, panel_bits,
                                            snapshot.scene_epoch, snapshot.world_epoch,
@@ -106,6 +120,13 @@ int dm_touch_game_bridge_refresh(dm_touch_game_bridge *bridge, uint64_t now_ns) 
         mark_unavailable(bridge, DM_TGB_REASON_SCENE);
         return 0;
     }
+    bridge->have_context = 1;
+    bridge->last_navigation = navigation;
+    bridge->last_panel_bits = panel_bits;
+    bridge->last_scene_epoch = snapshot.scene_epoch;
+    bridge->last_world_epoch = snapshot.world_epoch;
+    bridge->last_ui_identity = snapshot.ui_identity;
+    bridge->last_object_generation = snapshot.object_generation;
     bridge->snapshot = snapshot;
     bridge->available = 1;
     bridge->reason = DM_TGB_REASON_OK;
@@ -225,6 +246,10 @@ void dm_touch_game_bridge_destroy(dm_touch_game_bridge *bridge) {
 
 int dm_touch_game_bridge_available(const dm_touch_game_bridge *bridge) {
     return bridge ? bridge->available : 0;
+}
+
+uint64_t dm_touch_game_bridge_invalidation_epoch(const dm_touch_game_bridge *bridge) {
+    return bridge ? bridge->invalidations : 0;
 }
 
 int dm_touch_game_bridge_last_reason(const dm_touch_game_bridge *bridge) {

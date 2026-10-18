@@ -42,6 +42,7 @@ int dm_touch_game_bridge_pointer_release(dm_touch_game_bridge *bridge, int32_t p
 int dm_touch_game_bridge_tick(dm_touch_game_bridge *bridge, uint64_t now_ns);
 
 int dm_touch_game_bridge_available(const dm_touch_game_bridge *bridge);
+uint64_t dm_touch_game_bridge_invalidation_epoch(const dm_touch_game_bridge *bridge);
 int dm_touch_game_bridge_last_reason(const dm_touch_game_bridge *bridge);
 uint64_t dm_touch_game_bridge_acked_actions(const dm_touch_game_bridge *bridge);
 uint64_t dm_touch_game_bridge_rejected_actions(const dm_touch_game_bridge *bridge);

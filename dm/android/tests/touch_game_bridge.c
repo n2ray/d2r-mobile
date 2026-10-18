@@ -137,6 +137,86 @@ static void reset_fixture(fixture *f) {
     f->action_result = 1;
 }
 
+static void transition_case(int which, uint64_t value) {
+    fixture f;
+    reset_fixture(&f);
+    dm_tgp_provider p = provider(&f);
+    dm_touch_bridge *bridge = dm_touch_bridge_create(667, 375, 1.0f);
+    CHECK(bridge != NULL);
+    CHECK(dm_touch_bridge_attach_game(bridge, &p));
+    float wx, wy;
+    world_point(&wx, &wy);
+    dm_touch_event down = event_at(DM_TOUCH_ACTION_DOWN, wx, wy, 2000000000);
+    f.now = 2000000000;
+    CHECK(dm_touch_bridge_event(bridge, &down));
+    if (which == 0) f.scene_epoch = value;
+    else if (which == 1) f.world_epoch = value;
+    else if (which == 2) f.ui_identity = value;
+    else if (which == 3) { f.object_generation = value; f.hit_object_generation = value; }
+    else if (which == 4) f.scene = DM_TGP_SCENE_MENU;
+    dm_touch_event move = down;
+    move.action = DM_TOUCH_ACTION_MOVE;
+    move.time_ns = 2000000100;
+    f.now = 2000000100;
+    CHECK(!dm_touch_bridge_event(bridge, &move));
+    CHECK(dm_touch_bridge_snapshot(bridge).buttons == 0);
+    dm_touch_event again = down;
+    again.time_ns = 2000000200;
+    f.now = 2000000200;
+    CHECK(dm_touch_bridge_event(bridge, &again));
+    CHECK(dm_touch_bridge_cancel_all(bridge, 2000000300));
+    dm_touch_bridge_destroy(bridge, NULL);
+}
+
+static void provider_loss_case(void) {
+    fixture f;
+    reset_fixture(&f);
+    dm_tgp_provider p = provider(&f);
+    dm_touch_bridge *bridge = dm_touch_bridge_create(667, 375, 1.0f);
+    CHECK(bridge != NULL);
+    CHECK(dm_touch_bridge_attach_game(bridge, &p));
+    float wx, wy;
+    world_point(&wx, &wy);
+    dm_touch_event down = event_at(DM_TOUCH_ACTION_DOWN, wx, wy, 2100000000);
+    f.now = 2100000000;
+    CHECK(dm_touch_bridge_event(bridge, &down));
+    f.available = 0;
+    f.now = 2100000100;
+    CHECK(dm_touch_bridge_tick(bridge, 2100000100));
+    CHECK(dm_touch_bridge_snapshot(bridge).buttons == 0);
+    f.available = 1;
+    f.now = 2100000200;
+    dm_touch_event old_up = event_at(DM_TOUCH_ACTION_UP, wx, wy, 2100000200);
+    CHECK(!dm_touch_bridge_event(bridge, &old_up));
+    dm_touch_event again = down;
+    again.time_ns = 2100000300;
+    f.now = 2100000300;
+    CHECK(dm_touch_bridge_event(bridge, &again));
+    CHECK(dm_touch_bridge_cancel_all(bridge, 2100000400));
+    dm_touch_bridge_destroy(bridge, NULL);
+}
+
+static void replace_failure_case(void) {
+    fixture f;
+    reset_fixture(&f);
+    dm_tgp_provider p = provider(&f);
+    dm_touch_bridge *bridge = dm_touch_bridge_create(667, 375, 1.0f);
+    CHECK(bridge != NULL);
+    CHECK(dm_touch_bridge_attach_game(bridge, &p));
+    float wx, wy;
+    world_point(&wx, &wy);
+    dm_touch_event down = event_at(DM_TOUCH_ACTION_DOWN, wx, wy, 2200000000);
+    f.now = 2200000000;
+    CHECK(dm_touch_bridge_event(bridge, &down));
+    dm_tgp_provider bad = provider(&f);
+    bad.module_id = 0;
+    CHECK(!dm_touch_bridge_attach_game(bridge, &bad));
+    CHECK(dm_touch_bridge_snapshot(bridge).buttons == 0);
+    dm_touch_event old_up = event_at(DM_TOUCH_ACTION_UP, wx, wy, 2200000100);
+    CHECK(!dm_touch_bridge_event(bridge, &old_up));
+    dm_touch_bridge_destroy(bridge, NULL);
+}
+
 int main(void) {
     fixture f;
     reset_fixture(&f);
@@ -311,6 +391,14 @@ int main(void) {
     CHECK(!dm_touch_bridge_event(world, &up));
     CHECK(dm_touch_bridge_snapshot(world).buttons == 0);
     dm_touch_bridge_destroy(world, NULL);
+
+    provider_loss_case();
+    transition_case(0, 7);
+    transition_case(1, 7);
+    transition_case(2, 7);
+    transition_case(3, 99);
+    transition_case(4, 0);
+    replace_failure_case();
 
     dm_touch_bridge_destroy(bridge, NULL);
     printf("PASS touch game bridge: %d checks\n", checks);
