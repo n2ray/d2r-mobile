@@ -56,6 +56,14 @@ def main() -> int:
     if source.count(good_anchor) != 1:
         print("fail closed: endpoint mutation anchor is missing or ambiguous", file=sys.stderr)
         return 1
+    composing_anchor = """        int before = beforeLength;
+        if (before > 0) {"""
+    composing_bad = """        int before = beforeLength;
+        if (before > 0) {
+            composing.setLength(0);"""
+    if source.count(composing_anchor) != 1:
+        print("fail closed: composing mutation anchor is missing or ambiguous", file=sys.stderr)
+        return 1
     with tempfile.TemporaryDirectory(prefix="dm-ime-mutation.") as td:
         work = Path(td)
         status, code, output = run(args.javac, args.java, jar, app, test, work, "control")
@@ -75,6 +83,22 @@ def main() -> int:
             print(output, file=sys.stderr)
             return 1
         print("mutant endpoint-surrogate-extension: rejected as intended")
+
+        composing_dir = work / "composing-src"
+        composing_dir.mkdir()
+        composing_mutant = composing_dir / "DmInputConnection.java"
+        composing_mutant.write_text(source.replace(composing_anchor, composing_bad, 1), encoding="utf-8")
+        status, code, output = run(args.javac, args.java, jar, composing_mutant, test, work,
+                                   "composing-mutant")
+        if status != "ran":
+            print("FAIL: composing mutation did not compile", file=sys.stderr)
+            print(output, file=sys.stderr)
+            return 1
+        if code == 0 or "FAIL" not in output:
+            print("FAIL: composing mutation passed or failed outside assertions", file=sys.stderr)
+            print(output, file=sys.stderr)
+            return 1
+        print("mutant composing-deletion: rejected as intended")
     return 0
 
 

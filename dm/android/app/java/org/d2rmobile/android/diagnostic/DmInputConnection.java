@@ -289,10 +289,6 @@ public final class DmInputConnection implements InputConnection {
         StringBuilder removed = new StringBuilder();
         int before = beforeLength;
         if (before > 0) {
-            int composingRemoved = removeTrailing(composing, before, codePoints);
-            before -= composingRemoved;
-        }
-        if (before > 0) {
             int start = deleteStartBefore(before, codePoints);
             if (start < cursor) {
                 removed.append(committed, start, cursor);
@@ -343,29 +339,6 @@ public final class DmInputConnection implements InputConnection {
             }
         }
         return end;
-    }
-
-    private static int removeTrailing(StringBuilder text, int length, boolean codePoints) {
-        if (length <= 0 || text.length() == 0) return 0;
-        int start;
-        if (codePoints) {
-            int available = Character.codePointCount(text, 0, text.length());
-            start = Character.offsetByCodePoints(text, text.length(), -Math.min(length, available));
-        } else {
-            long startLong = (long) text.length() - length;
-            start = (int) Math.max(0L, startLong);
-            if (start > 0 && start < text.length()
-                    && Character.isLowSurrogate(text.charAt(start))
-                    && Character.isHighSurrogate(text.charAt(start - 1))) {
-                start--;
-            }
-        }
-        int oldLength = text.length();
-        int removed = codePoints
-                ? Character.codePointCount(text, start, oldLength)
-                : oldLength - start;
-        text.delete(start, oldLength);
-        return removed;
     }
 
     private static int cursorPosition(int start, int insertedLength, int newCursorPosition,

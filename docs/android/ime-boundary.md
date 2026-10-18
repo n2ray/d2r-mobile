@@ -30,10 +30,13 @@ NativeActivity APK.
   including pending composing text. Over-limit or malformed UTF-16 input is
   rejected atomically: committed text and pending composing text are unchanged.
 - Deletion uses UTF-16 code units for `deleteSurroundingText()` and Unicode code
-  points for `deleteSurroundingTextInCodePoints()`. Endpoint rounding never
-  splits a surrogate pair; mixed composing/committed code-point deletion uses
-  consistent code-point counts; large positive lengths use overflow-safe
-  clamping. The sink receives the exact removed committed text.
+  points for `deleteSurroundingTextInCodePoints()`. Following Android
+  `BaseInputConnection`, surrounding deletion excludes the composing span: it
+  deletes only committed text before/after the insertion cursor, never removes
+  or commits pending composing text. Endpoint rounding never splits a surrogate
+  pair; large positive lengths use overflow-safe clamping. The sink receives
+  only the exact removed committed text; composing can still be committed by
+  `commitText()` or `finishComposingText()` afterwards.
 - `submit()` and editor actions `DONE`/`GO`/`SEND`/`SEARCH` emit submit once;
   `cancel()` emits cancel once. `sendKeyEvent()` and other unsupported optional
   operations return `false` rather than synthesizing keys.
@@ -48,10 +51,10 @@ NativeActivity APK.
 commit, Chinese composing/commit, emoji/surrogate deletion, length bound,
 malformed UTF-16, cursor-inside-pair rejection, huge deletion counts, mixed
 composing/committed code points, submit/cancel and stale/closed-session cases.
-`mutation.py` reintroduces the reviewed surrogate endpoint bug and requires that
-real-class test to fail. Neither uses a phone, adb, game, JNI or Android runtime
-execution. Override `ANDROID_JAR`, `ANDROID_SDK_ROOT`, `JAVAC` or `JAVA` for
-another host SDK/JDK.
+`mutation.py` reintroduces the reviewed surrogate endpoint bug and a
+composition-deletion regression, and requires the real-class test to fail for
+both. Neither uses a phone, adb, game, JNI or Android runtime execution. Override
+`ANDROID_JAR`, `ANDROID_SDK_ROOT`, `JAVAC` or `JAVA` for another host SDK/JDK.
 
 Packaging into the diagnostic APK is a later integration step after the pending
 Java packaging work is accepted. This boundary alone is not App/keyboard/device

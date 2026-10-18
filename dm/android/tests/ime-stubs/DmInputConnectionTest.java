@@ -151,13 +151,59 @@ public final class DmInputConnectionTest {
     }
 
     private static void testCodePointComposingUnits() {
+        // Android BaseInputConnection excludes the composing span when choosing
+        // surrounding deletion boundaries. A + composing 你, delete one UTF-16
+        // unit before the cursor must delete A and retain 你.
         Recorder sink = new Recorder();
         DmInputConnection c = new DmInputConnection(sink);
-        check(c.commitText("A", 1), "mixed baseline accepted");
-        check(c.setComposingText("😀", 1), "emoji composing accepted");
-        check(c.deleteSurroundingTextInCodePoints(2, 0), "mixed codepoint delete accepted");
-        check("".equals(before(c)), "two codepoints remove composing emoji and committed A");
-        check(sink.deletes.size() == 1 && "A".equals(sink.deletes.get(0)), "only committed A deletion reported");
+        check(c.commitText("A", 1), "composing baseline accepted");
+        check(c.setComposingText("你", 1), "composing accepted");
+        check(c.deleteSurroundingText(1, 0), "before-unit delete accepted");
+        check("你".equals(before(c)), "before-unit delete retains composing");
+        check(sink.deletes.size() == 1 && "A".equals(sink.deletes.get(0)), "before-unit emits only committed A");
+        check(sink.commits.size() == 1, "before-unit does not commit composing");
+        check(c.finishComposingText(), "finish after surrounding delete accepted");
+        check("你".equals(before(c)) && sink.commits.size() == 2, "finish commits retained composing once");
+
+        // Codepoint deletion of a committed prefix must not consume composing.
+        Recorder codepoints = new Recorder();
+        DmInputConnection p = new DmInputConnection(codepoints);
+        check(p.commitText("A", 1), "codepoint baseline accepted");
+        check(p.setComposingText("😀", 1), "emoji composing accepted");
+        check(p.deleteSurroundingTextInCodePoints(2, 0), "prefix codepoint delete accepted");
+        check("😀".equals(before(p)), "prefix codepoint delete retains composing");
+        check(codepoints.deletes.size() == 1 && "A".equals(codepoints.deletes.get(0)),
+                "prefix codepoint emits only committed A");
+
+        // Nonempty committed suffix: delete after the cursor, not composing.
+        Recorder suffix = new Recorder();
+        DmInputConnection s = new DmInputConnection(suffix);
+        check(s.commitText("AB", 0), "suffix baseline accepted");
+        check(s.setComposingText("你", 1), "suffix composing accepted");
+        check(s.deleteSurroundingText(0, 1), "suffix unit delete accepted");
+        check("你".equals(before(s)) && "B".equals(after(s)), "suffix delete retains composing and B");
+        check(suffix.deletes.size() == 1 && "A".equals(suffix.deletes.get(0)), "suffix delete emits only A");
+        check(s.finishComposingText(), "suffix finish accepted");
+        check("你".equals(before(s)) && "B".equals(after(s)), "suffix finish commits composing before retained suffix");
+
+        // Codepoint suffix with an emoji on the deleted side.
+        Recorder emojiSuffix = new Recorder();
+        DmInputConnection e = new DmInputConnection(emojiSuffix);
+        check(e.commitText("A😀B", 0), "emoji suffix baseline accepted");
+        check(e.setComposingText("你", 1), "emoji suffix composing accepted");
+        check(e.deleteSurroundingTextInCodePoints(0, 2), "emoji suffix codepoint delete accepted");
+        check("你".equals(before(e)) && "B".equals(after(e)), "emoji suffix retains composing and B");
+        check(emojiSuffix.deletes.size() == 1 && "A😀".equals(emojiSuffix.deletes.get(0)),
+                "emoji suffix emits exact committed prefix");
+
+        // A huge before length is bounded to committed text and leaves composing.
+        Recorder huge = new Recorder();
+        DmInputConnection h = new DmInputConnection(huge);
+        check(h.commitText("A", 1), "huge composing baseline accepted");
+        check(h.setComposingText("你", 1), "huge composing accepted");
+        check(h.deleteSurroundingText(Integer.MAX_VALUE, 0), "huge before delete accepted");
+        check("你".equals(before(h)), "huge before delete retains composing");
+        check(huge.deletes.size() == 1 && "A".equals(huge.deletes.get(0)), "huge before emits only A");
     }
 
     private static void testSubmitCancelAndStaleSession() {
