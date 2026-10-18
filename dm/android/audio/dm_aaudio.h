@@ -91,7 +91,9 @@ int dm_audio_stop(dm_audio *audio);
 uint32_t dm_audio_write(dm_audio *audio, const int16_t *samples, uint32_t frames);
 void dm_audio_get_stats(const dm_audio *audio, dm_audio_stats *stats);
 // 停止 → 等已进入回调退出 → close/free；从回调内调用返回 -EBUSY，不重入 close。
+// close 失败保留 stream，串行 retry 可再次 close；close 成功但 stop/wait 未证明时保留 CLOSED，retry 只做最终释放。
 // stop -> retire the active callback -> close/free; callback-context calls return -EBUSY.
+// A failed close retains the stream for a serialized retry; close success with unproven stop/wait retains CLOSED and retry only final-releases.
 int dm_audio_destroy(dm_audio *audio);
 
 #ifdef DM_AUDIO_TEST

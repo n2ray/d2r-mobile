@@ -17,12 +17,21 @@ struct dm_audio {
     _Atomic uint64_t written, dropped, underrun_frames, underrun_events, callbacks;
     _Atomic int closing, disconnected, callback_active;
     _Atomic uintptr_t callback_thread;
+    _Atomic int teardown; // ACTIVE / DESTROYING / CLOSE_FAILED / CLOSED
+    int stop_ok, wait_ok;
     pthread_mutex_t lifecycle;
     int started;
 #ifdef DM_AUDIO_TEST
     dm_audio_test_callback_hook test_hook;
     void *test_hook_user;
 #endif
+};
+
+enum {
+    DM_TEARDOWN_ACTIVE = 0,
+    DM_TEARDOWN_DESTROYING,
+    DM_TEARDOWN_CLOSE_FAILED,
+    DM_TEARDOWN_CLOSED,
 };
 
 #ifdef __ANDROID__
@@ -67,8 +76,8 @@ static dm_audio_callback_result data_callback(dm_aaudio_stream *stream, void *us
     atomic_store_explicit(&a->callback_thread, (uintptr_t)pthread_self(), memory_order_relaxed);
     atomic_fetch_add_explicit(&a->callback_active, 1, memory_order_acq_rel);
     if (atomic_load_explicit(&a->closing, memory_order_acquire)) {
-        atomic_fetch_sub_explicit(&a->callback_active, 1, memory_order_acq_rel);
         atomic_store_explicit(&a->callback_thread, 0, memory_order_relaxed);
+        atomic_fetch_sub_explicit(&a->callback_active, 1, memory_order_acq_rel);
         return DM_AUDIO_CALLBACK_STOP;
     }
     atomic_fetch_add_explicit(&a->callbacks, 1, memory_order_relaxed);
@@ -88,8 +97,8 @@ static dm_audio_callback_result data_callback(dm_aaudio_stream *stream, void *us
         atomic_fetch_add_explicit(&a->underrun_events, 1, memory_order_relaxed);
     }
     atomic_store_explicit(&a->tail, tail + take, memory_order_release);
-    atomic_fetch_sub_explicit(&a->callback_active, 1, memory_order_acq_rel);
     atomic_store_explicit(&a->callback_thread, 0, memory_order_relaxed);
+    atomic_fetch_sub_explicit(&a->callback_active, 1, memory_order_acq_rel);
     return DM_AUDIO_CALLBACK_CONTINUE;
 }
 
@@ -106,6 +115,7 @@ int dm_audio_create(const dm_audio_options *options, dm_audio **out) {
     const dm_audio_api *api = options->api ? options->api : dm_audio_default_api();
     if (!api) return -ENOTSUP;
     if (!api->create_builder || !api->delete_builder || !api->open || !api->close ||
+        !api->set_format || !api->set_channel_count || !api->set_sample_rate ||
         !api->set_data_callback || !api->set_error_callback ||
         !api->request_start || !api->request_pause || !api->request_stop || !api->get_format ||
         !api->get_channel_count || !api->get_sample_rate || !api->get_state || !api->wait_for_state_change)
@@ -197,35 +207,74 @@ void dm_audio_get_stats(const dm_audio *a, dm_audio_stats *stats) {
     }
 }
 
+static void dm_audio_free(dm_audio *a) {
+    pthread_mutex_destroy(&a->lifecycle);
+    free(a->ring);
+    free(a);
+}
+
 int dm_audio_destroy(dm_audio *a) {
     if (!a) return 0;
     pthread_mutex_lock(&a->lifecycle);
-    if (atomic_load_explicit(&a->closing, memory_order_acquire)) { pthread_mutex_unlock(&a->lifecycle); return -EBUSY; }
     if (atomic_load_explicit(&a->callback_thread, memory_order_relaxed) == (uintptr_t)pthread_self()) {
-        pthread_mutex_unlock(&a->lifecycle); return -EBUSY;
+        pthread_mutex_unlock(&a->lifecycle);
+        return -EBUSY;
     }
-    atomic_store_explicit(&a->closing, 1, memory_order_release);
-    pthread_mutex_unlock(&a->lifecycle);
-    dm_audio_result stop = a->api->request_stop(a->stream);
-    int32_t current = a->api->get_state(a->stream);
-    int32_t next = current;
-    dm_audio_result wait = DM_AUDIO_OK;
-    if (current != DM_AUDIO_STATE_STOPPED)
-        wait = a->api->wait_for_state_change(a->stream, current, &next, 100000000);
+    int state = atomic_load_explicit(&a->teardown, memory_order_acquire);
+    if (state == DM_TEARDOWN_DESTROYING) {
+        pthread_mutex_unlock(&a->lifecycle);
+        return -EBUSY;
+    }
+    if (state == DM_TEARDOWN_CLOSED) {
+        // 上次 close 已成功，只是 stop/wait 未证明；流已关闭，重试只做最终释放。
+        // Close already succeeded; retry only completes final release, never closes twice.
+        atomic_store_explicit(&a->teardown, DM_TEARDOWN_DESTROYING, memory_order_release);
+        pthread_mutex_unlock(&a->lifecycle);
+        dm_audio_free(a);
+        return 0;
+    }
+    if (state == DM_TEARDOWN_CLOSE_FAILED) {
+        // close 失败后流仍由本对象拥有；串行重试可再次 close，不永久锁死。
+        // A failed close retained the stream; a serialized retry may close it again.
+        atomic_store_explicit(&a->teardown, DM_TEARDOWN_DESTROYING, memory_order_release);
+        pthread_mutex_unlock(&a->lifecycle);
+    } else {
+        atomic_store_explicit(&a->closing, 1, memory_order_release);
+        atomic_store_explicit(&a->teardown, DM_TEARDOWN_DESTROYING, memory_order_release);
+        pthread_mutex_unlock(&a->lifecycle);
+    }
+
+    if (!a->stop_ok) {
+        dm_audio_result stop = a->api->request_stop(a->stream);
+        a->stop_ok = (stop == DM_AUDIO_OK);
+    }
+    if (!a->wait_ok) {
+        int32_t current = a->api->get_state(a->stream);
+        int32_t next = current;
+        dm_audio_result wait = DM_AUDIO_OK;
+        if (current != DM_AUDIO_STATE_STOPPED)
+            wait = a->api->wait_for_state_change(a->stream, current, &next, 100000000);
+        a->wait_ok = (wait == DM_AUDIO_OK && next == DM_AUDIO_STATE_STOPPED);
+    }
     // AAudio 文档：requestStop 后不再开始新数据回调；先等已进入的回调退出，再 close。
     // AAudio docs: no new data callback starts after requestStop; retire the active callback before close.
     while (atomic_load_explicit(&a->callback_active, memory_order_acquire) != 0) sched_yield();
     dm_audio_result close = a->api->close(a->stream);
     if (close == DM_AUDIO_OK) a->stream = NULL;
+    // callback 的最后一次对象访问必须在 active-- 之前；此处 active==0 才是真正可释放证明。
+    // The callback's last object access precedes active--; active==0 is the release proof.
     while (atomic_load_explicit(&a->callback_active, memory_order_acquire) != 0) sched_yield();
-    if (stop != DM_AUDIO_OK || wait != DM_AUDIO_OK || next != DM_AUDIO_STATE_STOPPED ||
-        close != DM_AUDIO_OK) {
-        // 证明失败时不释放队列/控制块；保留对象供调用者诊断，绝不假装安全关闭。
+    if (close != DM_AUDIO_OK) {
+        atomic_store_explicit(&a->teardown, DM_TEARDOWN_CLOSE_FAILED, memory_order_release);
         return -EIO;
     }
-    pthread_mutex_destroy(&a->lifecycle);
-    free(a->ring);
-    free(a);
+    if (!a->stop_ok || !a->wait_ok) {
+        // close 已成功，无 NULL 解引用、无二次 close；保留到下一次串行 retry 做真实最终释放。
+        // Close succeeded; retain until a serialized retry performs the real final release.
+        atomic_store_explicit(&a->teardown, DM_TEARDOWN_CLOSED, memory_order_release);
+        return -EIO;
+    }
+    dm_audio_free(a);
     return 0;
 }
 

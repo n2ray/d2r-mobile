@@ -126,6 +126,16 @@ int main(void) {
 
     reset(); CHECK(dm_audio_create(&(dm_audio_options)DM_AUDIO_OPTIONS_INIT, &a) == -EINVAL);
 
+    // Every unconditionally used setter must be validated before any call/alloc.
+    for (int missing = 0; missing < 3; missing++) {
+        dm_audio_api incomplete = api;
+        if (missing == 0) incomplete.set_format = NULL;
+        if (missing == 1) incomplete.set_channel_count = NULL;
+        if (missing == 2) incomplete.set_sample_rate = NULL;
+        dm_audio_options miss = options(4); miss.api = &incomplete; a = (dm_audio *)0x1;
+        CHECK(dm_audio_create(&miss, &a) == -EINVAL && a == NULL);
+    }
+
     reset(); dm_audio_options o = options(4);
     CHECK(dm_audio_create(&o, &a) == 0 && a);
     CHECK(g_cb != NULL && g_cb_user == a && g_delete_builder_calls == 1);
@@ -184,6 +194,31 @@ int main(void) {
     CHECK(dm_audio_write(a, frames, 1) == 0);
     CHECK(dm_audio_start(a) == -ENOTCONN);
     CHECK(dm_audio_destroy(a) == 0);
+
+    // A close that rejects once retains ownership; a serialized retry must close again and free.
+    reset(); o = options(4); a = NULL; CHECK(dm_audio_create(&o, &a) == 0);
+    g_close_fail = 1;
+    CHECK(dm_audio_destroy(a) == -EIO);
+    CHECK(g_close_calls == 1);
+    g_close_fail = 0;
+    CHECK(dm_audio_destroy(a) == 0);
+    CHECK(g_close_calls == 2);
+
+    // Stop failure + successful close: report failure once, then final-release without double close.
+    reset(); g_stop_fail = 1; o = options(4); a = NULL; CHECK(dm_audio_create(&o, &a) == 0);
+    CHECK(dm_audio_destroy(a) == -EIO);
+    CHECK(g_close_calls == 1);
+    g_stop_fail = 0;
+    CHECK(dm_audio_destroy(a) == 0);
+    CHECK(g_close_calls == 1);
+
+    // Wait failure + successful close: same truthful retained CLOSED state, no NULL close.
+    reset(); g_wait_fail = 1; o = options(4); a = NULL; CHECK(dm_audio_create(&o, &a) == 0);
+    CHECK(dm_audio_destroy(a) == -EIO);
+    CHECK(g_close_calls == 1);
+    g_wait_fail = 0;
+    CHECK(dm_audio_destroy(a) == 0);
+    CHECK(g_close_calls == 1);
 
     // Callback returns before destroy in this synchronous case.
     reset(); g_cb = NULL; o = options(4); a = NULL; CHECK(dm_audio_create(&o, &a) == 0);
