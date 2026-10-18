@@ -334,14 +334,22 @@ personal paths, keystore/signing material, game assets or user text. The write
 is atomic and the build removes any previous sidecar before generating the new
 one, so a failed provenance step cannot leave a complete-looking sidecar.
 
-`dm/android/app/provenance.py verify` checks the APK size/SHA-256 and each
-recorded entry digest, rejecting modified or missing APKs/entries. Offline tests
-use owned temporary zip fixtures for clean/dirty source, modified APK/entry,
-missing/malformed inputs, unknown cache fields and duplicate entries; they do
-not execute the APK packaging script or access a keystore. The diagnostic APK is
-not a playable build and no device/game acceptance is claimed. The real
-`build.sh` provenance integration was not executed in this round because the
-task forbids packaging and keystore access.
+`dm/android/app/provenance.py verify` checks the APK size/SHA-256, each
+recorded entry digest, and the required v1 provenance identity/consistency
+fields: full source commit and matching short form, boolean dirty plus matching
+state, `diagnostic_only` exactly true, required APK/build types and an explicit
+`test_evidence` schema (unknown uses a null reference; passed/failed requires a
+reference). Missing, wrong-type, contradictory or non-object sidecars are
+rejected. This is schema/consistency validation, not authentication of source
+or test assertions. Offline tests use owned temporary zip fixtures for
+clean/dirty source, modified APK/entry, missing/malformed inputs, required-field
+mutations, unknown cache fields and duplicate entries; they do not execute the
+APK packaging script or access a keystore. A real owned replacement-failure test
+points the CLI at a directory target and verifies the temporary sidecar is
+removed; validation failures leave an existing known sidecar untouched. The
+diagnostic APK is not a playable build and no device/game acceptance is claimed.
+The real `build.sh` provenance integration was not executed in this round
+because the task forbids packaging and keystore access.
 
 ## Invalid touch reason diagnostics (#128)
 

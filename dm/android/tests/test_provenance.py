@@ -100,6 +100,8 @@ class ProvenanceTests(unittest.TestCase):
         self.assertTrue(data["source"]["dirty"])
         self.assertEqual(data["source"]["dirty_state"], "dirty")
         self.assertEqual(data["source"]["commit"], "0123456789abcdef0123456789abcdef01234567")
+        verified = run("verify", "--apk", str(self.apk), "--sidecar", str(self.sidecar))
+        self.assertEqual(verified.returncode, 0, verified.stderr)
 
     def test_modified_apk_rejected(self) -> None:
         self.assertEqual(self.write().returncode, 0)
@@ -157,6 +159,56 @@ class ProvenanceTests(unittest.TestCase):
         bad.write_text("{not-json")
         self.assertNotEqual(run("verify", "--apk", str(self.apk),
                                 "--sidecar", str(bad)).returncode, 0)
+
+    def test_required_provenance_identity_fields_rejected(self) -> None:
+        cases = []
+        def missing_source(data):
+            data.pop("source")
+        def missing_evidence(data):
+            data.pop("test_evidence")
+        def not_diagnostic(data):
+            data["diagnostic_only"] = False
+        def bad_short(data):
+            data["source"]["commit_short"] = "000000000000"
+        def dirty_contradiction(data):
+            data["source"]["dirty"] = True
+            data["source"]["dirty_state"] = "clean"
+        def explicit_without_reference(data):
+            data["test_evidence"]["status"] = "passed"
+            data["test_evidence"]["reference"] = None
+        def bad_build_type(data):
+            data["build"]["abi"] = []
+        cases = [missing_source, missing_evidence, not_diagnostic, bad_short,
+                 dirty_contradiction, explicit_without_reference, bad_build_type]
+        for mutate in cases:
+            self.assertEqual(self.write().returncode, 0)
+            data = json.loads(self.sidecar.read_text())
+            mutate(data)
+            self.sidecar.write_text(json.dumps(data))
+            verified = run("verify", "--apk", str(self.apk), "--sidecar", str(self.sidecar))
+            self.assertNotEqual(verified.returncode, 0, mutate.__name__)
+
+    def test_non_object_root_rejected(self) -> None:
+        self.sidecar.write_text("[]")
+        verified = run("verify", "--apk", str(self.apk), "--sidecar", str(self.sidecar))
+        self.assertNotEqual(verified.returncode, 0)
+        self.assertIn("root is not an object", verified.stderr)
+
+    def test_atomic_replace_failure_leaves_no_complete_output(self) -> None:
+        output_dir = self.root / "published"
+        output_dir.mkdir()
+        result = self.write(output=output_dir)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("atomically publish", result.stderr)
+        self.assertTrue(output_dir.is_dir())
+        self.assertEqual(list(self.root.glob(".published.*")), [])  # temp removed
+
+    def test_failed_validation_preserves_known_old_output(self) -> None:
+        self.assertEqual(self.write().returncode, 0)
+        before = self.sidecar.read_bytes()
+        result = self.write(apk=self.root / "missing.apk")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.sidecar.read_bytes(), before)
 
     def test_unknown_cache_fields_are_explicit(self) -> None:
         result = self.write(cache=self.root / "no-cache")

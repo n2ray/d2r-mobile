@@ -198,12 +198,80 @@ def write_sidecar(args: argparse.Namespace) -> None:
             os.fsync(stream.fileno())
         os.replace(temporary, output)
         temporary = None
+    except OSError as exc:
+        raise ProvenanceError("cannot atomically publish sidecar") from exc
     finally:
         if temporary is not None:
             try:
                 os.unlink(temporary)
             except FileNotFoundError:
                 pass
+
+
+def is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def validate_sidecar_facts(data: object) -> dict[str, object]:
+    if not isinstance(data, dict):
+        raise ProvenanceError("sidecar root is not an object")
+    if data.get("schema") != SCHEMA or data.get("kind") != "diagnostic-apk":
+        raise ProvenanceError("sidecar schema/kind is not diagnostic provenance")
+    if data.get("diagnostic_only") is not True:
+        raise ProvenanceError("sidecar diagnostic_only must be exactly true")
+    source = data.get("source")
+    if not isinstance(source, dict):
+        raise ProvenanceError("sidecar source facts are missing")
+    commit = source.get("commit")
+    if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
+        raise ProvenanceError("sidecar source commit is missing or malformed")
+    if source.get("commit_short") != commit[:12]:
+        raise ProvenanceError("sidecar source commit_short does not match commit")
+    if not isinstance(source.get("dirty"), bool):
+        raise ProvenanceError("sidecar source dirty must be boolean")
+    expected_state = "dirty" if source["dirty"] else "clean"
+    if source.get("dirty_state") != expected_state:
+        raise ProvenanceError("sidecar source dirty_state contradicts dirty")
+    apk = data.get("apk")
+    if not isinstance(apk, dict):
+        raise ProvenanceError("sidecar APK facts are missing")
+    if not isinstance(apk.get("file"), str) or not apk["file"] or \
+            Path(apk["file"]).name != apk["file"]:
+        raise ProvenanceError("sidecar APK file must be a bare filename")
+    if not is_int(apk.get("size")) or apk["size"] <= 0:
+        raise ProvenanceError("sidecar APK size is missing or malformed")
+    if not isinstance(apk.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", apk["sha256"]):
+        raise ProvenanceError("sidecar APK sha256 is missing or malformed")
+    if not is_int(apk.get("entry_count")) or apk["entry_count"] <= 0:
+        raise ProvenanceError("sidecar APK entry_count is missing or malformed")
+    entries = data.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise ProvenanceError("sidecar entries are missing or malformed")
+    build = data.get("build")
+    if not isinstance(build, dict):
+        raise ProvenanceError("sidecar build facts are missing")
+    abi = build.get("abi")
+    if not isinstance(abi, str) or not (abi == "unknown" or re.fullmatch(r"[A-Za-z0-9_-]+", abi)):
+        raise ProvenanceError("sidecar ABI is missing or malformed")
+    for key in ("platform_api", "min_sdk", "target_sdk"):
+        value = build.get(key)
+        if value != "unknown" and (not is_int(value) or value <= 0):
+            raise ProvenanceError(f"sidecar build {key} is missing or malformed")
+    for key in ("build_tools", "cmake_build_type"):
+        if not isinstance(build.get(key), str) or not build[key]:
+            raise ProvenanceError(f"sidecar build {key} is missing or malformed")
+    evidence = data.get("test_evidence")
+    if not isinstance(evidence, dict):
+        raise ProvenanceError("sidecar test_evidence is missing")
+    status = evidence.get("status")
+    reference = evidence.get("reference")
+    if status not in ("unknown", "passed", "failed"):
+        raise ProvenanceError("sidecar test_evidence status is malformed")
+    if status == "unknown" and reference is not None:
+        raise ProvenanceError("unknown test evidence must not carry a reference")
+    if status != "unknown" and (not isinstance(reference, str) or not reference.strip()):
+        raise ProvenanceError("explicit test evidence requires a reference")
+    return data
 
 
 def verify_sidecar(args: argparse.Namespace) -> None:
@@ -215,20 +283,18 @@ def verify_sidecar(args: argparse.Namespace) -> None:
         data = json.loads(sidecar_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ProvenanceError("sidecar is not valid JSON") from exc
-    if data.get("schema") != SCHEMA or data.get("kind") != "diagnostic-apk":
-        raise ProvenanceError("sidecar schema/kind is not diagnostic provenance")
-    apk_fact = data.get("apk")
-    entries = data.get("entries")
-    build = data.get("build")
-    if not isinstance(apk_fact, dict) or not isinstance(entries, list) or not isinstance(build, dict):
-        raise ProvenanceError("sidecar is missing APK/entry/build facts")
-    if apk_fact.get("file") != apk.name:
+    data = validate_sidecar_facts(data)
+    apk_fact = data["apk"]
+    entries = data["entries"]
+    build = data["build"]
+    assert isinstance(apk_fact, dict) and isinstance(entries, list) and isinstance(build, dict)
+    if apk_fact["file"] != apk.name:
         raise ProvenanceError("sidecar APK filename does not match")
-    if apk_fact.get("size") != apk.stat().st_size:
+    if apk_fact["size"] != apk.stat().st_size:
         raise ProvenanceError("sidecar APK size does not match")
-    if apk_fact.get("sha256") != sha256_file(apk):
+    if apk_fact["sha256"] != sha256_file(apk):
         raise ProvenanceError("sidecar APK SHA-256 does not match")
-    abi = build.get("abi", "unknown")
+    abi = build["abi"]
     if not isinstance(abi, str):
         raise ProvenanceError("sidecar ABI is malformed")
     selected = select_entries(apk, abi)
@@ -240,6 +306,10 @@ def verify_sidecar(args: argparse.Namespace) -> None:
         name = entry["path"]
         if name.startswith("/") or ".." in name.split("/"):
             raise ProvenanceError("sidecar entry path is unsafe")
+        if not is_int(entry.get("size")) or entry["size"] < 0:
+            raise ProvenanceError(f"sidecar entry size is malformed: {name}")
+        if not isinstance(entry.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]):
+            raise ProvenanceError(f"sidecar entry sha256 is malformed: {name}")
         if name in by_name:
             raise ProvenanceError("sidecar has duplicate entry paths")
         by_name[name] = entry
@@ -248,6 +318,8 @@ def verify_sidecar(args: argparse.Namespace) -> None:
             raise ProvenanceError(f"sidecar is missing required entry: {name}")
     with zipfile.ZipFile(apk) as archive:
         names = set(archive.namelist())
+        if apk_fact["entry_count"] != len(names):
+            raise ProvenanceError("sidecar APK entry_count does not match")
         for name, entry in by_name.items():
             if name not in names:
                 raise ProvenanceError(f"APK is missing sidecar entry: {name}")
