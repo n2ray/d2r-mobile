@@ -1016,6 +1016,124 @@ static void provider_use_zero_id_rejected(void) {
     dm_touch_bridge_destroy(b, NULL);
 }
 
+static void provider_use_reused_id_and_many_single_ids(void) {
+    provider_fixture f;
+    provider_reset(&f);
+    f.scene = DM_TGP_SCENE_PANEL;
+    f.hit_kind = DM_TGP_HIT_ITEM;
+    f.item_id = 0x801;
+    f.item_address = 0x20020;
+    f.item_size = 32;
+    dm_tgp_provider p = provider_from(&f);
+    dm_android_pad *pad = dm_android_pad_create();
+    dm_android_touch *t = dm_android_touch_create(pad, 667, 375);
+    dm_touch_game_bridge *g = dm_touch_game_bridge_create(t, &p);
+    CHECK(pad && t && g);
+    f.now = 15000000000;
+    CHECK(dm_touch_game_bridge_refresh(g, 15000000000));
+    CHECK(dm_android_touch_down(t, 61, 300, 180, 15000000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 61, 300, 180, 15000000000));
+    CHECK(dm_android_touch_up(t, 61, 15010000000));
+    CHECK(dm_android_touch_down(t, 61, 300, 180, 15020000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 61, 300, 180, 15020000000));
+    CHECK(dm_android_touch_up(t, 61, 15030000000));    /* USE A pending */
+    /* Reused ID hits B at the same coordinates before tick: never dispatch B. */
+    f.item_id = 0x802;
+    f.item_address = 0x20040;
+    f.now = 15040000000;
+    CHECK(dm_android_touch_down(t, 61, 300, 180, 15040000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 61, 300, 180, 15040000000));
+    CHECK(dm_touch_game_bridge_tick(g, 15040000000));
+    CHECK(f.actions == 0);                              /* stale A rejected; B not retargeted */
+    CHECK(dm_android_touch_up(t, 61, 15050000000));
+    dm_touch_game_bridge_destroy(g);
+    dm_android_touch_destroy(t);
+    dm_android_pad_destroy(pad);
+    /* More than 16 single IDs through the outer path: completed targets are
+       reclaimed, then a new valid double tap still dispatches the current item. */
+    f.item_id = 0x803;
+    f.item_address = 0x20060;
+    dm_touch_bridge *b = dm_touch_bridge_create(667, 375, 2.0f);
+    CHECK(b != NULL);
+    CHECK(dm_touch_bridge_attach_game(b, &p));
+    for (int i = 0; i < 20; ++i) {
+        float x = (i & 1) ? 500 : 300;   /* alternate position: single taps */
+        int64_t n = 15100000000 + (int64_t)i * 450000000;
+        f.now = (uint64_t)n;
+        tap(b, 80 + i, x, 180, n);
+    }
+    f.now = 16000000000;
+    down(b, 100, 300, 180, 16000000000);
+    f.now = 16010000000;
+    up(b, 100, 300, 180, 16010000000);
+    f.now = 16020000000;
+    down(b, 100, 300, 180, 16020000000);
+    f.now = 16030000000;
+    up(b, 100, 300, 180, 16030000000);
+    CHECK(f.actions == 1 && f.last_object_id == 0x803);
+    dm_touch_bridge_destroy(b, NULL);
+}
+
+static void provider_use_two_pending_ambiguous_and_cancel_reuse(void) {
+    provider_fixture f;
+    provider_reset(&f);
+    f.scene = DM_TGP_SCENE_PANEL;
+    f.hit_kind = DM_TGP_HIT_ITEM;
+    f.item_id = 0x901;
+    f.item_address = 0x20020;
+    f.item_size = 32;
+    f.item_id_b = 0x902;
+    f.item_address_b = 0x20040;
+    f.item_size_b = 32;
+    f.item_split_x = 400;
+    dm_tgp_provider p = provider_from(&f);
+    dm_android_pad *pad = dm_android_pad_create();
+    dm_android_touch *t = dm_android_touch_create(pad, 667, 375);
+    dm_touch_game_bridge *g = dm_touch_game_bridge_create(t, &p);
+    CHECK(pad && t && g);
+    f.now = 16000000000;
+    CHECK(dm_touch_game_bridge_refresh(g, 16000000000));
+    /* Two USE actions pending before a tick: explicitly ambiguous, reject both. */
+    CHECK(dm_android_touch_down(t, 110, 300, 180, 16000000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 110, 300, 180, 16000000000));
+    CHECK(dm_android_touch_up(t, 110, 16010000000));
+    CHECK(dm_android_touch_down(t, 110, 300, 180, 16020000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 110, 300, 180, 16020000000));
+    CHECK(dm_android_touch_up(t, 110, 16030000000));   /* USE A pending */
+    CHECK(dm_android_touch_down(t, 111, 500, 180, 16040000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 111, 500, 180, 16040000000));
+    CHECK(dm_android_touch_up(t, 111, 16050000000));
+    CHECK(dm_android_touch_down(t, 111, 500, 180, 16060000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 111, 500, 180, 16060000000));
+    CHECK(dm_android_touch_up(t, 111, 16070000000));   /* second USE before tick */
+    CHECK(dm_touch_game_bridge_tick(g, 16070000000));
+    CHECK(f.actions == 0 && dm_touch_game_bridge_acked_actions(g) == 0);
+    CHECK(dm_touch_game_bridge_rejected_actions(g) >= 2);
+    /* Cancel then reuse the same ID for B: only the new B is dispatched. */
+    f.now = 16100000000;
+    CHECK(dm_touch_game_bridge_refresh(g, 16100000000));
+    CHECK(dm_android_touch_down(t, 112, 300, 180, 16100000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 112, 300, 180, 16100000000));
+    CHECK(dm_android_touch_up(t, 112, 16110000000));
+    CHECK(dm_android_touch_down(t, 112, 300, 180, 16120000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 112, 300, 180, 16120000000));
+    CHECK(dm_android_touch_up(t, 112, 16130000000));   /* USE A pending */
+    CHECK(dm_android_touch_cancel_all(t, 16140000000));
+    f.now = 16200000000;
+    CHECK(dm_touch_game_bridge_refresh(g, 16200000000));
+    CHECK(dm_android_touch_down(t, 112, 500, 180, 16200000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 112, 500, 180, 16200000000));
+    CHECK(dm_android_touch_up(t, 112, 16210000000));
+    CHECK(dm_android_touch_down(t, 112, 500, 180, 16220000000));
+    CHECK(dm_touch_game_bridge_pointer_down(g, 112, 500, 180, 16220000000));
+    CHECK(dm_android_touch_up(t, 112, 16230000000));   /* new B double tap */
+    CHECK(dm_touch_game_bridge_tick(g, 16230000000));
+    CHECK(f.actions == 1 && f.last_object_id == 0x902);
+    dm_touch_game_bridge_destroy(g);
+    dm_android_touch_destroy(t);
+    dm_android_pad_destroy(pad);
+}
+
 int main(void) {
     CASE(density_and_noncontiguous_ids);
     CASE(action_index_multifinger);
@@ -1043,6 +1161,8 @@ int main(void) {
     CASE(provider_use_replacement_and_invalidations);
     CASE(provider_use_interleaved_hits_do_not_retarget);
     CASE(provider_use_zero_id_rejected);
+    CASE(provider_use_reused_id_and_many_single_ids);
+    CASE(provider_use_two_pending_ambiguous_and_cancel_reuse);
     printf("PASS touch bridge: %d checks\n", checks);
     return 0;
 }

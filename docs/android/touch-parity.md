@@ -201,13 +201,17 @@ not fabricated.
 Only `USE` is enabled for an attached provider; IDENTIFY, LONG_PRESS,
 STACK_TAKE and SHOP_DROP remain explicitly rejected. On a valid item pointer
 down the game bridge retains the exact item (`object_id`, object generation,
-scene epoch, address, size) with its pointer ID and down coordinates. On a
-`USE` action it resolves that source pointer, rechecks the current snapshot
+scene epoch, address, size) with an immutable per-down gesture token and its
+down coordinates. On a `USE` action it resolves that token (a later DOWN or
+reused pointer id cannot overwrite it), rechecks the current snapshot
 module/generation/scene and provider address range, then re-hits the retained
 coordinates and requires the same nonzero identity before dispatching the
 retained `object_id`. A same-coordinate replacement, changed cohort/generation,
 scene/world/UI/panel change, stale snapshot, cancel or interleaved hit is
 rejected and cleared, never retried or acknowledged with a guessed/zero ID.
+Two unread USEs are explicitly ambiguous and both rejected, not collapsed or
+retargeted. Completed non-pending targets are reclaimed; the bounded target
+table never silently drops an old target to admit a new one.
 The provider callback acknowledgement is owned-callback evidence only, not
 game inventory success; no real provider memory or protocol is implemented.
 

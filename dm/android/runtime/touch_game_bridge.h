@@ -40,9 +40,9 @@ int dm_touch_game_bridge_pointer_release(dm_touch_game_bridge *bridge, int32_t p
 // Refresh and consume core action sequences. Actions are acknowledged only by
 // provider->action returning 1; blocked actions count as rejected, never acked.
 // Only USE is enabled for object actions: it is dispatched with the item
-// identity retained at the source pointer's item down and revalidated against
-// the current module/object cohort/scene/range plus a fresh hit at the retained
-// coordinates. Other object actions remain rejected.
+// identity retained at the source down under an immutable gesture token and
+// revalidated against the current module/object cohort/scene/range plus a fresh
+// hit at the retained coordinates. Other object actions remain rejected.
 int dm_touch_game_bridge_tick(dm_touch_game_bridge *bridge, uint64_t now_ns);
 
 int dm_touch_game_bridge_available(const dm_touch_game_bridge *bridge);

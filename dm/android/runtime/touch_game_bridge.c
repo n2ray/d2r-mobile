@@ -7,6 +7,7 @@
 #define DM_TGB_TARGETS 16
 
 typedef struct {
+    uint64_t token;
     int32_t pointer_id;
     int valid;
     float x, y;
@@ -72,29 +73,33 @@ static void target_clear_all(dm_touch_game_bridge *bridge) {
     memset(bridge->targets, 0, sizeof(bridge->targets));
 }
 
-static void target_clear(dm_touch_game_bridge *bridge, int32_t pointer_id) {
-    for (int i = 0; i < DM_TGB_TARGETS; ++i)
-        if (bridge->targets[i].valid && bridge->targets[i].pointer_id == pointer_id) {
+static void target_prune(dm_touch_game_bridge *bridge) {
+    uint64_t pending = 0;
+    int has_pending = dm_android_touch_pending_use_token(bridge->touch, &pending);
+    for (int i = 0; i < DM_TGB_TARGETS; ++i) {
+        if (!bridge->targets[i].valid) continue;
+        if (has_pending && bridge->targets[i].token == pending) continue;
+        if (!dm_android_touch_token_active(bridge->touch, bridge->targets[i].token))
             bridge->targets[i].valid = 0;
-            return;
-        }
+    }
 }
 
-static dm_tgb_target *target_find(dm_touch_game_bridge *bridge, int32_t pointer_id) {
+static dm_tgb_target *target_find(dm_touch_game_bridge *bridge, uint64_t token) {
     for (int i = 0; i < DM_TGB_TARGETS; ++i)
-        if (bridge->targets[i].valid && bridge->targets[i].pointer_id == pointer_id)
+        if (bridge->targets[i].valid && bridge->targets[i].token == token)
             return &bridge->targets[i];
     return NULL;
 }
 
-static int target_store(dm_touch_game_bridge *bridge, int32_t pointer_id,
+static int target_store(dm_touch_game_bridge *bridge, uint64_t token, int32_t pointer_id,
                         float x, float y, const dm_tgp_hit *hit) {
-    dm_tgb_target *slot = target_find(bridge, pointer_id);
+    dm_tgb_target *slot = target_find(bridge, token);
     if (!slot) {
         for (int i = 0; i < DM_TGB_TARGETS; ++i)
             if (!bridge->targets[i].valid) { slot = &bridge->targets[i]; break; }
     }
     if (!slot) return 0;
+    slot->token = token;
     slot->pointer_id = pointer_id;
     slot->valid = 1;
     slot->x = x;
@@ -207,16 +212,22 @@ int dm_touch_game_bridge_pointer_down(dm_touch_game_bridge *bridge, int32_t poin
     if (!bridge || !isfinite(x) || !isfinite(y)) return 0;
     if (!dm_touch_game_bridge_refresh(bridge, now_ns)) return 0;
     dm_tgp_hit hit;
+    uint64_t token = 0;
     memset(&hit, 0, sizeof(hit));
-    target_clear(bridge, pointer_id);
+    if (!dm_android_touch_pointer_token(bridge->touch, pointer_id, &token)) return 0;
+    target_prune(bridge);
     if (!bridge->provider.hit ||
         !bridge->provider.hit(bridge->provider.context, x, y, &hit) ||
         !valid_hit(bridge, &hit)) {
         bridge->reason = DM_TGB_REASON_HIT;
         return 0;
     }
-    if (hit.kind == DM_TGP_HIT_ITEM)
-        (void)target_store(bridge, pointer_id, x, y, &hit);
+    if (hit.kind == DM_TGP_HIT_ITEM) {
+        if (!target_store(bridge, token, pointer_id, x, y, &hit)) {
+            bridge->reason = DM_TGB_REASON_RANGE;   /* bounded target table full */
+            return 0;
+        }
+    }
     return dm_android_touch_pointer_hit(bridge->touch, pointer_id, hit.kind);
 }
 
@@ -266,7 +277,8 @@ int dm_touch_game_bridge_tick(dm_touch_game_bridge *bridge, uint64_t now_ns) {
     dm_android_touch_action action;
     while (dm_android_touch_take_action(bridge->touch, &action)) {
         if (action.kind == DM_ANDROID_ACTION_USE) {
-            dm_tgb_target *target = target_find(bridge, action.source_pointer);
+            dm_tgb_target *target = action.source_token ?
+                target_find(bridge, action.source_token) : NULL;
             dm_tgp_hit current;
             memset(&current, 0, sizeof(current));
             if (!target || target->hit.object_id == 0 ||
@@ -319,6 +331,7 @@ int dm_touch_game_bridge_tick(dm_touch_game_bridge *bridge, uint64_t now_ns) {
         }
         bridge->acked++;
     }
+    target_prune(bridge);
     return 1;
 }
 
