@@ -1,6 +1,6 @@
 # Vulkan 底座在 Android 链接系统 loader，开发机通过已安装 Vulkan SDK 验证；着色器由宿主 glslc 构建。
 # Link Android's system loader, verify on hosts with an installed Vulkan SDK; compile the synthetic shader using host glslc.
-add_library(dm_android_vk STATIC vk_host.c vk_memory.c vk_compute.c vk_clear.c vk_shader.c vk_draw.c vk_texture.c vk_sampler.c vk_shader_reflect.c)
+add_library(dm_android_vk STATIC vk_host.c vk_memory.c vk_compute.c vk_clear.c vk_shader.c vk_draw.c vk_texture.c vk_texture_mips.c vk_sampler.c vk_shader_reflect.c)
 target_link_libraries(dm_android_vk PUBLIC dm_android_tex)
 target_link_libraries(dm_android_vk PRIVATE dm_nso_dependencies)   # 复用已固定的 MbedTLS SHA-256 | reuse pinned MbedTLS SHA-256
 target_include_directories(dm_android_vk PRIVATE ${dm_mbedtls_SOURCE_DIR}/include)
@@ -202,20 +202,30 @@ target_compile_options(dm_vulkan_sampler_nvnmap_test PRIVATE -Wall -Wextra -Werr
 target_compile_definitions(dm_vulkan_sampler_nvnmap_test PRIVATE
     vkCreateSampler=dm_test_vkCreateSampler vkDestroySampler=dm_test_vkDestroySampler)
 
+# #13 多级纹理/LOD 像素证明 | #13 multi-mip texture and LOD pixel proof
+add_executable(dm_vulkan_sampler_mips_test ../tests/vulkan_sampler_mips.c vk_sampler.c vk_texture_mips.c)
+target_link_libraries(dm_vulkan_sampler_mips_test PRIVATE dm_android_vk)
+target_compile_options(dm_vulkan_sampler_mips_test PRIVATE -Wall -Wextra -Werror)
+add_dependencies(dm_vulkan_sampler_mips_test dm_vk_sampler_shaders dm_vk_shaders)
+
 if(ANDROID)
     target_link_options(dm_vulkan_sampler_test PRIVATE "-Wl,-z,max-page-size=16384")
     target_link_options(dm_vulkan_sampler_createfail_test PRIVATE "-Wl,-z,max-page-size=16384")
+    target_link_options(dm_vulkan_sampler_mips_test PRIVATE "-Wl,-z,max-page-size=16384")
 else()
     add_test(NAME vulkan_sampler COMMAND dm_vulkan_sampler_test ${vertex} ${sample_frag})
     add_test(NAME vulkan_sampler_createfail COMMAND dm_vulkan_sampler_createfail_test)
     add_test(NAME vulkan_sampler_nvnmap COMMAND dm_vulkan_sampler_nvnmap_test)
+    add_test(NAME vulkan_sampler_mips COMMAND dm_vulkan_sampler_mips_test ${vertex} ${sample_frag})
     set_tests_properties(vulkan_sampler PROPERTIES TIMEOUT 60)
     set_tests_properties(vulkan_sampler_createfail PROPERTIES TIMEOUT 60)
     set_tests_properties(vulkan_sampler_nvnmap PROPERTIES TIMEOUT 60)
+    set_tests_properties(vulkan_sampler_mips PROPERTIES TIMEOUT 60)
     if(APPLE AND DM_MOLTENVK_ICD)
         set_tests_properties(vulkan_sampler PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
         set_tests_properties(vulkan_sampler_createfail PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
         set_tests_properties(vulkan_sampler_nvnmap PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
+        set_tests_properties(vulkan_sampler_mips PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
     endif()
 endif()
 
