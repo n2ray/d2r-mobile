@@ -5,6 +5,9 @@
 # 用法：dmsh_build.py <Switch 包目录> <输出缓存目录> [键…]（不给键 = 全部）；产物实际写进 <输出缓存目录>/b-<链版本>/（IOSOUT 同），链版本见 dmsh_chain.py   环境：XLATE=翻译工具路径，DMSH_CAS=内容寻址缓存目录（缺省为输出缓存目录/cas），J=并发
 # 程序本体内嵌的图形着色器（映射表 main.rodata@偏移 行）从 MAIN（Switch main NSO，缺省 3.3.94012 Update/ExeFS/main）解出；解 NSO 要 lz4，用 dm 的 venv python 跑
 # 产物：<键>_b.metallib、<键>_b.json（回放反射，含驱动段 c0 / c2 的运行时读取偏移 drv_reads）、<键>_b.metal（MSL）
+# 环境 DMSH_CONTRACT=1：显式开启产物闸门（dmsh_contract_gate.py）：翻译器出的 .spv/.res.json 在编译与发布前按 dmsh_spirv_contract 校验，
+# 不符的键不发布、已发布产物保留，构建退出码 1；缓存命中必须带同一闸门版本的验证记录，否则重出。缺省关闭（老流程不变）。
+# Env DMSH_CONTRACT=1: opt-in artifact gate (dmsh_contract_gate.py): the translator's .spv/.res.json is validated against dmsh_spirv_contract before compiling and publishing; a rejected key is not published, already-published outputs are kept, and the build exits 1; a cache hit must carry a validation record from the same gate version, otherwise it is rebuilt. Off by default (old flow unchanged).
 # 环境 IOSOUT=目录：同一份 MSL 经 dm/ios/tools/ios_metal.compile 同时出 iphoneos metallib + 反射（chain_metal 记 iOS 编译口径）
 # 末尾汇总：成功 / 失败数与原因分布；驱动段读取的偏移分布（落在回放层能填的范围外的单列）
 # Route B offline build: original Switch shaders → SPIR-V (dmsh_xlate, the Ryujinx translator) → spirv-cross MSL → metallib + replay reflection JSON.
@@ -20,10 +23,14 @@ DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # 工�
 HOME = os.path.expanduser('~')
 dm_dir, out = sys.argv[1:3]; want = set(sys.argv[3:]); cache_root = out
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import dmsh_chain, dmsh_fetch, dmsh_facts   # 翻译链版本：先核工具与锁文件，产物进 b-<V>/ | translation chain version: verify the tools against the lock file first; build output goes into b-<V>/
+import dmsh_contract_gate as gate   # 仅 DMSH_CONTRACT=1 时启用 | only used when DMSH_CONTRACT=1
 _bad = dmsh_chain.check_tools()
 if _bad: sys.exit('\n'.join('【红】翻译链工具与锁文件不符：' + b for b in _bad) + '\n（换了工具就 dmsh_chain.py --update-lock 并入仓；只是没重编翻译器就重编）')
 CHAIN = dmsh_chain.version(); out = os.path.join(out, 'b-' + CHAIN)
 if f'"{CHAIN}"' not in open(dmsh_chain.HEADER).read(): sys.exit(f'【红】nvn/dmsh_chain.h 不是当前翻译链版本 {CHAIN}：先跑 dmsh_chain.py --header（否则宿主找不到这批库）')
+CONTRACT_ON = os.environ.get('DMSH_CONTRACT', '0') == '1'   # 显式 opt-in：只影响本进程 | explicit opt-in: affects this process only
+GATE = gate.contract_id() if CONTRACT_ON else ''
+CONTRACT_FAILS = []
 XLATE = os.environ.get('XLATE', f'{DM_ROOT}/build/gfx/dmsh_xlate/dmsh_xlate')
 FACTS = dmsh_facts.load()
 if not FACTS: sys.exit('【红】没有作答表 nvn/shader_facts.tsv（随仓库；维护者用 dmsh_facts.py --freeze 重出）')
@@ -121,14 +128,25 @@ def restore_cache(key, digest):
 def cache_lookup(key, digest, rule_fp, code_fp):
     with CAS_LOCKS_GUARD: lock = CAS_LOCKS.setdefault(('shader', key), threading.Lock())
     with lock:
-        if restore_cache(key, digest): PRE_STATS['hit'] += 1; return True, '命中'
+        if CONTRACT_ON:   # 命中前先判验证记录：没有同一闸门记录的条目重出，不放行 | judge the validation record first; entries without it are rebuilt
+            ok, why = gate.record_usable(cache_meta_path(key), GATE)
+            if not ok:
+                PRE_STATS['miss'] += 1; PRE_STATS['契约闸门：缓存不可复用'] += 1
+                return False, '契约闸门：缓存不可复用（' + why + '）'
+        if restore_cache(key, digest):
+            if CONTRACT_ON:   # 恢复后复核已发布反射；损坏/串键的条目按不可复用重出 | re-check the published reflection; corrupt mixes are rebuilt
+                ok, why = gate.published_usable(os.path.join(out, key + '_b.json'), key, CHAIN)
+                if not ok:
+                    PRE_STATS['miss'] += 1; PRE_STATS['契约闸门：缓存不可复用'] += 1
+                    return False, '契约闸门：缓存不可复用（' + why + '）'
+            PRE_STATS['hit'] += 1; return True, '命中'
         old = json.load(open(cache_meta_path(key))) if os.path.exists(cache_meta_path(key)) else None
         if old and old.get('code_fp') != code_fp: reason = '代码指纹变化：全部重出'
         elif old and old.get('rule_fp') != rule_fp: reason = '规则变'
         else: reason = '新键'
         PRE_STATS['miss'] += 1; PRE_STATS[reason] += 1; return False, reason
 
-def publish_cache(key, digest, rule_fp, code_fp):
+def publish_cache(key, digest, rule_fp, code_fp, verified=None):
     found = cache_outputs(key, digest)
     if not found: return
     root, files = found
@@ -140,7 +158,9 @@ def publish_cache(key, digest, rule_fp, code_fp):
                 src = os.path.join(out if label == 'mac' else IOSOUT, name)
                 value = json.load(open(src)); value.pop('fetch', None)
                 atomic_json(os.path.join(d, name), value)
-    atomic_json(cache_meta_path(key), {'digest': digest, 'rule_fp': rule_fp, 'code_fp': code_fp})
+    meta = {'digest': digest, 'rule_fp': rule_fp, 'code_fp': code_fp}
+    if verified: meta = gate.stamp(meta, verified)   # 发布元数据记下闸门版本，命中复用前按它判 | record the gate version so hits can be judged by it
+    atomic_json(cache_meta_path(key), meta)
 
 BF_STATS = collections.Counter()
 
@@ -450,21 +470,31 @@ for r in xr:
     for ln in r.stderr.splitlines():
         m = re.match(r'【红】(\w+)：(.*)', ln)
         if m: xerr[m.group(1)] = m.group(2)[:160]
+def local3(key):   # 作答表里的线程组大小（缺省/形状不对就不比对） | threadgroup size from the answer table (absent/odd shape -> no comparison)
+    v = jobs[key].get('local') or ()
+    return tuple(v) if isinstance(v, (list, tuple)) and len(v) == 3 else None
+
+
 def fin(key):
     if key in cache_hits:
         refl = json.load(open(os.path.join(out, key + '_b.json')))
         src = open(os.path.join(out, key + '_b.metal')).read() if refl['stage'] == 'ps' else ''
         return key, 'ok', '', fetch_finish(key, src, refl)
     if key in xerr or not os.path.exists(os.path.join(w, key + '.spv')): return key, '翻译失败', xerr.get(key, '无 spv'), None
+    if CONTRACT_ON:   # 编译/发布之前：成对存在且过契约，否则本键不发布、旧产物不动 | before compiling/publishing: pair must exist and pass, else no publish and old outputs stay
+        ok, why = gate.validate_pair(key, os.path.join(w, key + '.spv'), os.path.join(w, key + '.res.json'), local3(key))
+        if not ok:
+            CONTRACT_FAILS.append((key, why))
+            return key, '契约不符', why[:160], None
     result = (key,) + finish(key, w, jobs[key], c1s[key])
-    if result[1] == 'ok': publish_cache(key, digests[key], rule_fps[key], CODE_FP)
+    if result[1] == 'ok': publish_cache(key, digests[key], rule_fps[key], CODE_FP, GATE if CONTRACT_ON else None)
     return result
 with cf.ThreadPoolExecutor(NJ) as ex: res = list(ex.map(fin, keys))
 shutil.rmtree(w, ignore_errors=True)
 st = collections.Counter(r[1] for r in res)
 print(f'着色器 {len(res)}：成功 {st["ok"]}，' + '，'.join(f'{k} {v}' for k, v in st.items() if k != 'ok'))
 print(f'前置缓存：命中 {PRE_STATS["hit"]}，重出 {PRE_STATS["miss"]}')
-for reason in ('新键', '规则变', '代码指纹变化：全部重出'):
+for reason in ('新键', '规则变', '代码指纹变化：全部重出', '契约闸门：缓存不可复用'):
     if PRE_STATS[reason]: print(f'  {reason} {PRE_STATS[reason]}')
 print(f'变体缓存：生成 {BF_STATS["generated"]}，命中 {BF_STATS["hit"]}，重出 {BF_STATS["miss"]}，编译 {BF_STATS["compile"]}')
 for lvl in [k for k in st if k != 'ok']:
@@ -481,3 +511,7 @@ for e, n in collections.Counter(f"{b['kind']} {b['msl_name'][:28]}" for x in nor
 nt = collections.Counter(nn.split('（')[0] for x in ok for nn in x['notes'])
 for e, n in nt.most_common(8): print(f'  查询无 PC 作答 {n:5d}  {e}')
 json.dump([{'key': r[0], 'st': r[1], 'err': r[2]} for r in res], open(os.path.join(out, '_b_build.json'), 'w'), ensure_ascii=False)
+if CONTRACT_ON and CONTRACT_FAILS:   # 契约不符 → 非 0，键级原因稳定可查 | contract breach -> non-zero with stable per-key reasons
+    for key, why in CONTRACT_FAILS: print(f'【红】契约 {key}：{why}')
+    print(f'契约闸门 {GATE}：{len(CONTRACT_FAILS)}/{len(keys)} 个键未发布（已发布产物保持不动）')
+    sys.exit(1)
