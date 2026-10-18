@@ -38,9 +38,16 @@ VkResult dm_vk_texture_upload(dm_vk *vk, const nvn_texdesc *desc,
         layers > limits->maxImageArrayLayers) return VK_ERROR_FORMAT_NOT_SUPPORTED;
     VkFormatProperties features;
     vkGetPhysicalDeviceFormatProperties(vk->physical, VK_FORMAT_R8G8B8A8_UNORM, &features);
-    VkFormatFeatureFlags needed = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    VkFormatFeatureFlags needed = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
     if ((features.optimalTilingFeatures & needed) != needed) return VK_ERROR_FORMAT_NOT_SUPPORTED;
-    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    // 读回走 vkCmdCopyImageToBuffer，源映像必须带 TRANSFER_SRC（VUID-vkCmdCopyImageToBuffer-srcImage-00186）；
+    // 能力查询用同一整掩码，缺任何一位都按不支持如实拒绝。
+    // Readback goes through vkCmdCopyImageToBuffer, so the source image must carry TRANSFER_SRC
+    // (VUID-vkCmdCopyImageToBuffer-srcImage-00186); the capability query uses the same full mask and reports
+    // unsupported truthfully when any bit is missing.
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+        VK_IMAGE_USAGE_SAMPLED_BIT;
     VkImageFormatProperties supported;
     VkResult result = vkGetPhysicalDeviceImageFormatProperties(vk->physical, VK_FORMAT_R8G8B8A8_UNORM,
         VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, usage, 0, &supported);

@@ -91,8 +91,9 @@ target_link_libraries(dm_vulkan_texture_failures_test PRIVATE dm_android_vk)
 target_compile_options(dm_vulkan_texture_failures_test PRIVATE -Wall -Wextra -Werror)
 foreach(symbol vkGetPhysicalDeviceFormatProperties vkGetPhysicalDeviceImageFormatProperties vkCreateImage
     vkGetImageMemoryRequirements vkAllocateMemory vkBindImageMemory vkCreateBuffer vkGetBufferMemoryRequirements
-    vkBindBufferMemory vkMapMemory vkFlushMappedMemoryRanges vkCreateImageView vkAllocateCommandBuffers vkBeginCommandBuffer
-    vkCmdPipelineBarrier vkCmdCopyBufferToImage vkEndCommandBuffer vkCreateFence vkQueueSubmit vkWaitForFences
+    vkBindBufferMemory vkMapMemory vkFlushMappedMemoryRanges vkInvalidateMappedMemoryRanges vkCreateImageView
+    vkAllocateCommandBuffers vkBeginCommandBuffer
+    vkCmdPipelineBarrier vkCmdCopyBufferToImage vkCmdCopyImageToBuffer vkEndCommandBuffer vkCreateFence vkQueueSubmit vkWaitForFences
     vkDeviceWaitIdle vkDestroyFence vkFreeCommandBuffers vkDestroyImageView vkDestroyImage vkDestroyBuffer vkUnmapMemory vkFreeMemory)
     target_compile_definitions(dm_vulkan_texture_failures_test PRIVATE ${symbol}=dm_test_${symbol})
 endforeach()
