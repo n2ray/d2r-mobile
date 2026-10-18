@@ -128,6 +128,8 @@ int main(int argc, char **argv) {
     bad = draw; bad.vertices = nonfinite; check_reject(&vk, &bad, &target, __LINE__);
     memcpy(nonfinite, verts, sizeof nonfinite); nonfinite[1].uv[0] = 1.25f;
     bad = draw; bad.vertices = nonfinite; check_reject(&vk, &bad, &target, __LINE__);
+    memcpy(nonfinite, verts, sizeof nonfinite); nonfinite[2].uv[1] = INFINITY;
+    bad = draw; bad.vertices = nonfinite; check_reject(&vk, &bad, &target, __LINE__);
     uint16_t bad_index[6] = {0, 1, 2, 0, 2, 4};
     bad = draw; bad.indices = bad_index; check_reject(&vk, &bad, &target, __LINE__);
     bad = draw; target.capacity = 10; check_reject(&vk, &bad, &target, __LINE__);
