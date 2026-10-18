@@ -27,11 +27,14 @@ Base: accepted `main` `8a18a23` (includes #76 and the corrected #73 note).
 - Address dataflow uses correct operand fields (`Rd = w & 31`, `Rn = (w >> 5) & 31` for ADD/LDR), matches ADRP on the
   source register used, and clears tracked registers after a call. Printable `adrp`+`add` targets are recorded as
   string/REF candidates; unsupported chains stay unknown.
-- Owned synthetic microchecks (`selftest_analyzer.py`, 10 vectors, all pass) cover: ADRP x17 / LDR x0 / BR x0 decoding,
-  lazy add!=disp shape, LDR base-register mismatch, BR-register mismatch, ADD-register mismatch, BLR/BR word
-  recognition, and 1026-sym0 / 1027 / 1025 relocation classification. These vectors would fail the previous tracer.
-- Limits: per-function extent only; 1200-instruction cap; indirect calls stop the path. Absence inside scanned bodies is
-  not global absence, and an unresolved edge is a stop, not a proof of no edge.
+- Owned synthetic microchecks (`selftest_analyzer.py`, 13 checks, all pass): 10 instruction-level vectors (ADRP x17 /
+  LDR x0 / BR x0 decoding, lazy add!=disp shape, LDR base-register mismatch, BR-register mismatch, ADD-register
+  mismatch, BLR/BR word recognition, 1026-sym0 / 1027 / 1025 relocation classification) plus 3 trace-level integration
+  checks: distinct `ADD x1,x0,#imm` finds the literal, `MOVZ x0,#0` write-kill blocks the stale ADRP literal, and a
+  `BL` call-clobber blocks it. These vectors would fail the previous tracer.
+- Limits: per-function extent only; visited-instruction cap (1200); indirect calls stop the path. Absence inside scanned
+  bodies is not global absence, and an unresolved edge is a stop, not a proof of no edge. Published counts are
+  **visited instructions**, never symbol extent size; unvisited instructions remain unknown.
 - No other SDK family was enumerated.
 
 ## 2. Selected path and what is proven
@@ -40,18 +43,20 @@ Base: accepted `main` `8a18a23` (includes #76 and the corrected #73 note).
 |---|---|
 | `nninitInitializeSdkModule` | 9 `BL` + one final `B`; no `RET`; resolves to the nine initializers recorded in the corrected #73 note (oe, aoc, err, fs×3, pctl, os VAM, diag startup) |
 | `nn::oe::Initialize` | direct calls `os::SdkMutexType::Lock`, `apm::Initialize`, `oe::InitializeApplet`; body ends in a tail branch (no `RET`); no `SVC`, no indirect call in the scanned body |
-| `nn::apm::Initialize` (selected candidate) | 35-instruction CFG over the 236-byte body: only `os::LockMutex` / `os::UnlockMutex`; no `SVC`, no string, no session/CMIF call; returns. It is **not** a service path. |
-| `nn::oe::InitializeApplet` | direct calls to `am::InitializeApplicationInterfaces`, `am::GetCommonStateGetter`, `am::GetSelfController`, `os::AttachReadableHandleToSystemEvent`, `oe::SetupGpuErrorHandler`, `os::WaitSystemEvent`, os mutex; no indirect call inside this body |
-| `nn::am::InitializeApplicationInterfaces` | reachable service-name literal **`appletOE`** via `adrp`+`add`; `am::InitializeCommonInterfaces(proxy)`; diag `AbortImpl`; process-handle helpers; one `BL` through a JUMP_SLOT (1026) with symbol index 0 (**unresolved**); **four `BLR x8` indirect calls** |
-| `nn::am::InitializeCommonInterfaces(IStackableAppletProxy*)` | full 1436-byte symbol scanned (359 instructions): mutex operations and diag `AbortImpl`, plus **seven `BLR x8` indirect calls**; no direct `SVC`, `GetServiceHandle`, `ConnectToNamedPort` or CMIF request/reply call |
+| `nn::apm::Initialize` (selected candidate) | 35 instructions visited of a 236-byte extent: only `os::LockMutex` / `os::UnlockMutex`; no `SVC`, no string, no session/CMIF call; returns. It is **not** a service path. |
+| `nn::oe::InitializeApplet` | direct calls to `am::InitializeApplicationInterfaces`, `am::GetCommonStateGetter`, `am::GetSelfController`, `os::AttachReadableHandleToSystemEvent`, `oe::SetupGpuErrorHandler`, `os::WaitSystemEvent`, os mutex; no indirect call in the visited set |
+| `nn::am::InitializeApplicationInterfaces` | reachable service-name literal **`appletOE`** via `adrp`+`add`; `am::InitializeCommonInterfaces(proxy)`; diag `AbortImpl`; process-handle helpers; one `BL` through a JUMP_SLOT (1026) with symbol index 0 (**unresolved**); **four `BLR x8` indirect calls**; 137 instructions visited of a 776-byte extent, cap not hit |
+| `nn::am::InitializeCommonInterfaces(IStackableAppletProxy*)` | 1436-byte symbol extent, **184 instructions visited** (cap not hit): mutex operations and diag `AbortImpl`, plus **seven `BLR x8` indirect calls**; no direct `SVC`, `GetServiceHandle`, `ConnectToNamedPort` or CMIF request/reply call in the visited set |
 
 ## 3. First unsupported indirection — stop point
 
-The corrected trace reaches a service-name literal (`appletOE`) in `am::InitializeApplicationInterfaces`, but the
-actual service acquisition is not a direct call in the scanned bodies. The first frontier is the `BLR x8` virtual
-dispatch on the `IStackableAppletProxy` interface (seven sites in `InitializeCommonInterfaces`, four in
+The corrected trace reaches a service-name literal (`appletOE`) as a static address candidate in
+`am::InitializeApplicationInterfaces` (it is not an executed service acquisition and not proof of one). The actual
+service acquisition is not a direct call in the visited bodies. The first frontier is the `BLR x8` virtual dispatch on
+the `IStackableAppletProxy` interface (seven sites in `InitializeCommonInterfaces`, four in
 `InitializeApplicationInterfaces`) together with the unresolved symbol-index-0 JUMP_SLOT. The receiver/vtable provenance
-of `x8` is not established by the scanned bodies, and the symbol-0 slot has no name or defined target under this method.
+of `x8` is not established by the visited instructions, and the symbol-0 slot has no name or defined target under this
+method.
 
 No port-to-command mapping, command number, request layout, reply layout or reply consumer is proven. The earlier claim
 that these bodies contain no virtual calls or service strings was an artifact of the previous tracer (dropped
