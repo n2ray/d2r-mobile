@@ -18,15 +18,43 @@ void dm_wsi_report_init(dm_wsi_report *report, int wsi_mode, uint64_t now_ns) {
     report->config.format = -1;
     report->config.present_mode = -1;
     report->config.maintenance1 = -1;
+    report->last_stage = DM_WSI_STAGE_UNKNOWN;
+    report->last_code = 0;
     report->started_ns = now_ns;
     report->last_rate_ns = now_ns;
     report->last_status = DM_WSI_IDLE;
 }
 
-void dm_wsi_report_request(dm_wsi_report *report, uint32_t width, uint32_t height) {
+// 失败后先前的成功协商不再是当前事实：清除 extent/format/present/images/maintenance，并置 stale。
+// After a failure an earlier success is no longer the current fact: clear the negotiated fields and mark stale.
+static void clear_negotiated(dm_wsi_report *report) {
+    report->config.extent_width = 0;
+    report->config.extent_height = 0;
+    report->config.format = -1;
+    report->config.present_mode = -1;
+    report->config.image_count = 0;
+    report->config.maintenance1 = -1;
+    report->config.stale = 1;
+}
+
+void dm_wsi_report_attempt(dm_wsi_report *report, uint32_t width, uint32_t height) {
     if (!report) return;
+    // 每次真实尝试都更新请求尺寸；同一未结束尝试不重复计数。| Every real attempt updates the request; one open attempt counts once.
     report->config.requested_width = width;
     report->config.requested_height = height;
+    if (!report->attempt_open) {
+        report->open_attempts++;
+        if (report->open_failures) report->retries++;   // 失败后的再次尝试是明确的 retry | retry after a failure
+    }
+    report->attempt_open = 1;
+    report->attempt_failed = 0;
+    report->dirty = 1;
+}
+
+void dm_wsi_report_mark_terminal(dm_wsi_report *report) {
+    if (!report) return;
+    report->snapshot_pending = 1;
+    report->dirty = 1;
 }
 
 void dm_wsi_report_negotiated(dm_wsi_report *report, uint32_t width, uint32_t height,
@@ -38,7 +66,36 @@ void dm_wsi_report_negotiated(dm_wsi_report *report, uint32_t width, uint32_t he
     report->config.present_mode = present_mode;
     report->config.image_count = image_count;
     report->config.maintenance1 = maintenance1;
+    report->config.stale = 0;
+    report->attempt_open = 0;
+    report->attempt_failed = 0;
     report->dirty = 1;
+}
+
+int dm_wsi_report_failure(dm_wsi_report *report, dm_wsi_stage stage, int code, int unsupported) {
+    if (!report) return 0;
+    if (report->attempt_failed) return 0;   // 每次尝试只记一次失败 | one failure record per attempt
+    if (!report->attempt_open) report->open_attempts++;   // 桥在 wsi_open 之前失败也要留下尝试记录
+    report->attempt_open = 0;
+    report->attempt_failed = 1;
+    report->open_failures++;
+    if (unsupported) report->unsupported++;
+    else report->errors++;
+    report->last_stage = (int)stage;
+    report->has_code = code != DM_WSI_CODE_UNKNOWN;
+    report->last_code = report->has_code ? code : 0;
+    report->last_status = unsupported ? DM_WSI_UNSUPPORTED : DM_WSI_ERROR;
+    clear_negotiated(report);
+    report->snapshot_pending = 1;
+    report->dirty = 1;
+    return 1;
+}
+
+void dm_wsi_report_note_stage(dm_wsi_report *report, dm_wsi_stage stage, int code) {
+    if (!report) return;
+    report->last_stage = (int)stage;
+    report->has_code = code != DM_WSI_CODE_UNKNOWN;
+    report->last_code = report->has_code ? code : 0;
 }
 
 void dm_wsi_report_result(dm_wsi_report *report, dm_wsi_status status) {
@@ -60,14 +117,17 @@ void dm_wsi_report_result(dm_wsi_report *report, dm_wsi_status status) {
         break;
     case DM_WSI_SURFACE_LOST:
         report->surface_lost++;
+        report->snapshot_pending = 1;
         report->dirty = 1;
         break;
     case DM_WSI_ERROR:
         report->errors++;            // 失败绝不成为有效帧 | a failure never becomes a valid frame
+        report->snapshot_pending = 1;
         report->dirty = 1;
         break;
     case DM_WSI_UNSUPPORTED:
         report->unsupported++;
+        report->snapshot_pending = 1;
         report->dirty = 1;
         break;
     case DM_WSI_IDLE:
@@ -76,14 +136,33 @@ void dm_wsi_report_result(dm_wsi_report *report, dm_wsi_status status) {
     }
 }
 
-void dm_wsi_report_event(dm_wsi_report *report, dm_wsi_event event) {
-    if (!report) return;
+int dm_wsi_report_event(dm_wsi_report *report, dm_wsi_event event) {
+    if (!report) return 0;
     switch (event) {
-    case DM_WSI_EVENT_PAUSE: report->paused++; break;
-    case DM_WSI_EVENT_RESUME: report->resumed++; break;
-    case DM_WSI_EVENT_STOP: report->stops++; break;
+    case DM_WSI_EVENT_PAUSE:
+        // 重复 pause（多回调/重试）不重复计数。| A duplicate pause callback does not count twice.
+        if (report->paused_active) return 0;
+        report->paused_active = 1;
+        report->stopped_active = 0;
+        report->paused++;
+        break;
+    case DM_WSI_EVENT_RESUME:
+        // 只有真实暂停之后才存在恢复转换。| A resume only exists after a real pause.
+        if (!report->paused_active) return 0;
+        report->paused_active = 0;
+        report->resumed++;
+        break;
+    case DM_WSI_EVENT_STOP:
+        // destroy 与 lifecycle→host_stop 是同一个停机：只计一次。| destroy and lifecycle->host_stop are one stop.
+        if (report->stopped_active) return 0;
+        report->stopped_active = 1;
+        report->paused_active = 0;
+        report->stops++;
+        break;
     }
+    report->snapshot_pending = 1;
     report->dirty = 1;
+    return 1;
 }
 
 int dm_wsi_report_due(dm_wsi_report *report, uint64_t now_ns) {
@@ -102,15 +181,43 @@ int dm_wsi_report_due(dm_wsi_report *report, uint64_t now_ns) {
     return 1;
 }
 
-void dm_wsi_report_force(dm_wsi_report *report, uint64_t now_ns) {
-    if (!report) return;
+int dm_wsi_report_take_snapshot(dm_wsi_report *report, uint64_t now_ns) {
+    if (!report || !report->snapshot_pending) return 0;
+    report->snapshot_pending = 0;
     report->started = 1;
     report->last_report_ns = now_ns;
     report->dirty = 0;
+    report->snapshots++;
+    return 1;
+}
+
+void dm_wsi_report_force(dm_wsi_report *report, uint64_t now_ns) {
+    if (!report) return;
+    report->snapshot_pending = 0;
+    report->started = 1;
+    report->last_report_ns = now_ns;
+    report->dirty = 0;
+    report->snapshots++;
 }
 
 static const char *mode_name(const dm_wsi_report *report) {
     return report->config.wsi_mode ? "wsi-clear-swapchain" : "cpu-copy-indexed";
+}
+
+static const char *stage_name(int stage) {
+    switch ((dm_wsi_stage)stage) {
+    case DM_WSI_STAGE_LIFECYCLE: return "lifecycle";
+    case DM_WSI_STAGE_OPEN: return "open";
+    case DM_WSI_STAGE_INIT: return "init";
+    case DM_WSI_STAGE_SWAPCHAIN: return "swapchain";
+    case DM_WSI_STAGE_ACQUIRE: return "acquire";
+    case DM_WSI_STAGE_SUBMIT: return "submit";
+    case DM_WSI_STAGE_PRESENT: return "present";
+    case DM_WSI_STAGE_DRAIN: return "drain";
+    case DM_WSI_STAGE_TIMER: return "timer";
+    case DM_WSI_STAGE_UNKNOWN:
+    default: return "unknown";
+    }
 }
 
 static size_t append(char *out, size_t capacity, size_t used, const char *format, ...) __attribute__((format(printf, 4, 5)));
@@ -147,6 +254,22 @@ size_t dm_wsi_report_config_line(const dm_wsi_report *report, char *out, size_t 
     if (report->config.maintenance1 == 1) used = append(out, capacity, used, " maintenance1=enabled");
     else if (report->config.maintenance1 == 0) used = append(out, capacity, used, " maintenance1=disabled");
     else used = append(out, capacity, used, " maintenance1=unknown");
+    if (report->config.stale) used = append(out, capacity, used, " stale=yes(earlier-success-cleared)");
+    return used;
+}
+
+size_t dm_wsi_report_failure_line(const dm_wsi_report *report, char *out, size_t capacity) {
+    if (!out || capacity == 0) return 0;
+    out[0] = '\0';
+    if (!report) return 0;
+    size_t used = 0;
+    used = append(out, capacity, used, "wsi failure: attempts=%llu failures=%llu retries=%llu stage=%s",
+                  (unsigned long long)report->open_attempts, (unsigned long long)report->open_failures,
+                  (unsigned long long)report->retries, stage_name(report->last_stage));
+    if (report->has_code) used = append(out, capacity, used, " code=%d", report->last_code);
+    else used = append(out, capacity, used, " code=unknown");
+    used = append(out, capacity, used, " category=%s",
+                  report->last_status == DM_WSI_UNSUPPORTED ? "unsupported" : "error");
     return used;
 }
 
@@ -169,9 +292,15 @@ size_t dm_wsi_report_progress_line(dm_wsi_report *report, uint64_t now_ns, char 
     used = append(out, capacity, used, " surface_lost=%llu", (unsigned long long)report->surface_lost);
     used = append(out, capacity, used, " errors=%llu", (unsigned long long)report->errors);
     used = append(out, capacity, used, " unsupported=%llu", (unsigned long long)report->unsupported);
+    used = append(out, capacity, used, " open_attempts=%llu open_failures=%llu retries=%llu",
+                  (unsigned long long)report->open_attempts, (unsigned long long)report->open_failures,
+                  (unsigned long long)report->retries);
     used = append(out, capacity, used, " paused=%llu resumed=%llu stops=%llu",
                   (unsigned long long)report->paused, (unsigned long long)report->resumed,
                   (unsigned long long)report->stops);
-    used = append(out, capacity, used, " last_status=%d", report->last_status);
+    used = append(out, capacity, used, " last_status=%d last_stage=%s code=", report->last_status,
+                  stage_name(report->last_stage));
+    if (report->has_code) used = append(out, capacity, used, "%d", report->last_code);
+    else used = append(out, capacity, used, "unknown");
     return used;
 }

@@ -17,7 +17,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-FUNCTIONS = ["wsi_report_now", "wsi_report_progress", "wsi_report_snapshot",
+FUNCTIONS = ["wsi_report_now", "wsi_report_progress", "wsi_report_snapshot", "wsi_report_fail",
+             "host_stop",
              "window_ready", "window_resized", "window_destroyed",
              "pause_app", "resume_app", "draw_diagnostic", "frame_timer", "input_timer"]
 
@@ -95,6 +96,7 @@ typedef struct { int width, height, refs; } ANativeWindow;
 typedef struct { void *instance; } ANativeActivity;
 typedef struct { void *bits; int width, height, stride, format; } ANativeWindow_Buffer;
 typedef struct { int device; } dm_vk;
+static void dm_vk_destroy(dm_vk *vk) { if (vk) vk->device = 0; }
 typedef struct { uint32_t width, height; uint8_t *bytes; size_t capacity; } dm_vk_pixels;
 typedef struct { float position[2], uv[2]; } dm_vk_indexed_textured_vertex;
 typedef struct {
@@ -249,6 +251,19 @@ int main(void) {
     CHECK(last_touch == &B);
     fail_open = 0;
 
+    /* Report evidence on the real callback path: one attempt for this window, one honest failure,
+       requested size recorded, no invented VkResult, no queued frame, exactly one final snapshot. */
+    CHECK(s.report.open_failures == 1);
+    CHECK(s.report.errors == 1);
+    CHECK(s.report.unsupported == 0);
+    CHECK(s.report.queued_presents == 0);
+    CHECK(s.report.config.requested_width == 800 && s.report.config.requested_height == 600);
+    CHECK(s.report.config.extent_width == 0 && s.report.config.format == -1);
+    CHECK(s.report.config.stale == 1);
+    CHECK(s.report.last_stage == DM_WSI_STAGE_OPEN);
+    CHECK(s.report.has_code == 0 && s.report.last_code == 0);
+    CHECK(s.report.snapshots == 1);
+
     /* Successfully reopen active B with an armed frame timer. Stale A
        callbacks must leave B's timer, size and touch geometry untouched. */
     window_ready(&activity, &B);
@@ -312,6 +327,12 @@ int main(void) {
     pause_app(&activity);
     CHECK(s.frame_fd == -1);
     CHECK(start_calls == 0);
+    /* Duplicate pause callbacks during the same paused period are not counted again. */
+    uint64_t paused_once = s.report.paused;
+    uint64_t snapshots_once = s.report.snapshots;
+    pause_app(&activity);
+    CHECK(s.report.paused == paused_once);
+    CHECK(s.report.snapshots == snapshots_once);
     s.resumed = 1;
     s.wsi.error = DM_WSI_ERROR;
     resume_app(&activity);
@@ -367,6 +388,14 @@ int main(void) {
 
     fail_close = 0;
     window_destroyed(&activity, &B);
+    /* One shutdown: destroy and the lifecycle host stop are the same stop, counted once, one snapshot. */
+    s.wsi.enabled = 1;
+    int snapshots_before_stop = (int)s.report.snapshots;
+    CHECK(host_stop(&s) == 0);
+    CHECK(s.report.stops == 1);
+    CHECK(host_stop(&s) == 0);
+    CHECK(s.report.stops == 1);
+    CHECK(s.report.snapshots == snapshots_before_stop + 1);
     dm_wsi_stop(&s.wsi);
     dm_app_lifecycle_stop(s.lifecycle);
     dm_app_lifecycle_destroy(s.lifecycle);

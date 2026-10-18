@@ -31,7 +31,7 @@ static void test_config_lines(void) {
     CHECK(strstr(line, "maintenance1=unknown") != NULL);
     CHECK(strstr(line, "requested=unknown") != NULL);
 
-    dm_wsi_report_request(&r, 1440, 3200);
+    dm_wsi_report_attempt(&r, 1440, 3200);
     dm_wsi_report_negotiated(&r, 1440, 3200, 37, 2, 4, 1);
     dm_wsi_report_config_line(&r, line, sizeof line);
     CHECK(strstr(line, "requested=1440x3200") != NULL);
@@ -145,12 +145,103 @@ static void test_capacity_truncation(void) {
     CHECK(small[sizeof small - 1] == '\0');
 }
 
+static void test_attempts_and_failures(void) {
+    dm_wsi_report r;
+    dm_wsi_report_init(&r, 1, 0);
+    dm_wsi_report_attempt(&r, 1440, 3200);
+    dm_wsi_report_negotiated(&r, 1440, 3200, 37, 2, 4, 1);
+    CHECK(r.open_attempts == 1);
+    CHECK(r.open_failures == 0);
+    CHECK(r.config.stale == 0);
+    CHECK(r.config.extent_width == 1440);
+
+    // 一次失败：保留阶段与原始码，清除先前的成功协商，并欠一个快照。
+    // A failure keeps the stage/code, clears the earlier success and owes one snapshot.
+    dm_wsi_report_attempt(&r, 1280, 720);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_SWAPCHAIN, -9, 0) == 1);
+    CHECK(r.open_failures == 1);
+    CHECK(r.errors == 1);
+    CHECK(r.unsupported == 0);
+    CHECK(r.queued_presents == 0);              // 打开失败不是帧 | a failed open is never a frame
+    CHECK(r.last_stage == DM_WSI_STAGE_SWAPCHAIN);
+    CHECK(r.has_code == 1 && r.last_code == -9);
+    CHECK(r.config.stale == 1);
+    CHECK(r.config.extent_width == 0 && r.config.format == -1 && r.config.maintenance1 == -1);
+    CHECK(r.config.requested_width == 1280 && r.config.requested_height == 720);
+    // 同一尝试重复到达的失败不重复计数。| A repeated failure for the same attempt is not counted twice.
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_PRESENT, -3, 0) == 0);
+    CHECK(r.open_failures == 1 && r.errors == 1);
+    CHECK(r.last_stage == DM_WSI_STAGE_SWAPCHAIN);   // 保持第一次真实阶段 | the first real stage is kept
+
+    // 能力缺失：没有 VkResult 可报，保持 unknown 而不是编造。| Missing capability: unknown, never invented.
+    dm_wsi_report_attempt(&r, 800, 600);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_INIT, DM_WSI_CODE_UNKNOWN, 1) == 1);
+    CHECK(r.unsupported == 1);
+    CHECK(r.has_code == 0 && r.last_code == 0);
+    CHECK(r.retries == 1);                       // 第二次尝试明确记为 retry | the second attempt is a named retry
+    char line[512];
+    dm_wsi_report_failure_line(&r, line, sizeof line);
+    CHECK(strstr(line, "stage=init") != NULL);
+    CHECK(strstr(line, "code=unknown") != NULL);
+    CHECK(strstr(line, "category=unsupported") != NULL);
+    CHECK(strstr(line, "retries=1") != NULL);
+
+    // 成功重新协商清除 stale。| A successful renegotiation clears stale.
+    dm_wsi_report_attempt(&r, 800, 600);
+    dm_wsi_report_negotiated(&r, 800, 600, 37, 2, 3, 1);
+    CHECK(r.config.stale == 0);
+    CHECK(r.open_failures == 2 && r.open_attempts == 4);
+    CHECK(r.retries == 2);
+}
+
+static void test_exactly_once_snapshots(void) {
+    dm_wsi_report r;
+    dm_wsi_report_init(&r, 1, 0);
+    // 失败只欠一次快照，重复输出不再产生。| A failure owes one snapshot; repeats emit nothing.
+    dm_wsi_report_attempt(&r, 640, 480);
+    dm_wsi_report_failure(&r, DM_WSI_STAGE_INIT, DM_WSI_CODE_UNKNOWN, 1);
+    CHECK(dm_wsi_report_take_snapshot(&r, 1000) == 1);
+    CHECK(dm_wsi_report_take_snapshot(&r, 2000) == 0);
+    CHECK(r.snapshots == 1);
+    // 窗口丢失/停止同样是终态，各一次。| Window loss and stop are terminal, each exactly once.
+    dm_wsi_report_mark_terminal(&r);
+    CHECK(dm_wsi_report_take_snapshot(&r, 3000) == 1);
+    CHECK(dm_wsi_report_event(&r, DM_WSI_EVENT_STOP) == 1);
+    CHECK(dm_wsi_report_take_snapshot(&r, 4000) == 1);
+    CHECK(r.snapshots == 3);
+}
+
+static void test_transitions_idempotent(void) {
+    dm_wsi_report r;
+    dm_wsi_report_init(&r, 1, 0);
+    // 没有暂停就没有恢复。| No resume without a real pause.
+    CHECK(dm_wsi_report_event(&r, DM_WSI_EVENT_RESUME) == 0);
+    CHECK(r.resumed == 0);
+    CHECK(dm_wsi_report_event(&r, DM_WSI_EVENT_PAUSE) == 1);
+    CHECK(dm_wsi_report_event(&r, DM_WSI_EVENT_PAUSE) == 0);   // 重复回调 | duplicate callback
+    CHECK(r.paused == 1);
+    CHECK(dm_wsi_report_event(&r, DM_WSI_EVENT_RESUME) == 1);
+    CHECK(dm_wsi_report_event(&r, DM_WSI_EVENT_RESUME) == 0);
+    CHECK(r.resumed == 1);
+    // destroy 与 lifecycle→host_stop 是同一个停机：只计一次。
+    // destroy and lifecycle->host_stop are one shutdown: counted once.
+    CHECK(dm_wsi_report_event(&r, DM_WSI_EVENT_STOP) == 1);
+    CHECK(dm_wsi_report_event(&r, DM_WSI_EVENT_STOP) == 0);
+    CHECK(r.stops == 1);
+    // 停止后重新暂停/恢复仍是新的真实转换。| A later pause/resume is a new real transition.
+    CHECK(dm_wsi_report_event(&r, DM_WSI_EVENT_PAUSE) == 1);
+    CHECK(r.paused == 2);
+}
+
 int main(void) {
     test_config_lines();
     test_counters_never_count_failure();
     test_bounded_rate();
     test_inactive_periods();
     test_capacity_truncation();
+    test_attempts_and_failures();
+    test_exactly_once_snapshots();
+    test_transitions_idempotent();
     printf("wsi_report: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
