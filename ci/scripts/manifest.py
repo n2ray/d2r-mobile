@@ -59,7 +59,7 @@ def main():
             ndk_rev = next((line.split("=", 1)[1].strip()
                             for line in prop.read_text().splitlines()
                             if line.startswith("Pkg.Revision")), "")
-    cc = run("cc", "--version").splitlines()
+    cc = run(os.environ.get("CC", "cc"), "--version").splitlines()
     manifest = {
         "schema": "dm-ci-manifest/v1",
         "mode": args.mode,

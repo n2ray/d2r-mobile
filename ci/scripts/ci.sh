@@ -36,6 +36,12 @@ configure_args=(-S "$root/dm/android" -B "$build"
     -DFETCHCONTENT_BASE_DIR="$work/fetchcontent-$(uname -m)")
 
 if [[ "$mode" == host ]]; then
+    if command -v clang >/dev/null 2>&1; then
+        export CC=clang
+        params+=(COMPILER=clang)
+    else
+        params+=(COMPILER="${CC:-cc}")
+    fi
     configure_args+=(-DCMAKE_C_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer'
                      -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined')
     params+=(SANITIZERS=address,undefined PAGE_CHECK=none)
