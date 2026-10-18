@@ -18,6 +18,9 @@ struct dm_input_arbiter {
     int pending_neutral;
     int64_t last_time_ns;
     uint64_t neutral_sampling;
+    float width_pt;
+    float height_pt;
+    float density;
 };
 
 static int valid_device(uint32_t id, uint32_t generation) {
@@ -84,6 +87,28 @@ static int invalidate(dm_input_arbiter *arbiter) {
     return 1;
 }
 
+/* A fresh touch takeover is validated on a staged real bridge first. The
+   bridge performs complete ownership/coordinate validation; only an accepted
+   event is committed by clearing the old sources (including the real touch
+   stream) and applying the already-validated event to the production bridge.
+   A rejected event therefore leaves the prior source, layout, held gamepad
+   sample and pending boundary untouched. */
+static int take_touch(dm_input_arbiter *arbiter, const dm_touch_event *event) {
+    dm_touch_bridge *probe = dm_touch_bridge_create(arbiter->width_pt,
+                                                    arbiter->height_pt,
+                                                    arbiter->density);
+    if (!probe) return 0;
+    if (!dm_touch_bridge_event(probe, event)) {
+        dm_touch_bridge_destroy(probe, NULL);
+        return 0;
+    }
+    dm_touch_bridge_destroy(probe, NULL);
+    claim_source(arbiter, DM_INPUT_SOURCE_TOUCH);
+    if (!dm_touch_bridge_event(arbiter->touch, event)) return 0;
+    arbiter->last_time_ns = event->time_ns;
+    return 1;
+}
+
 static int touch_shape_valid(const dm_touch_event *event) {
     if (!event || event->time_ns < 0) return 0;
     if (event->action < DM_TOUCH_ACTION_DOWN ||
@@ -125,6 +150,9 @@ dm_input_arbiter *dm_input_arbiter_create(float width_pt, float height_pt,
     arbiter->source = DM_INPUT_SOURCE_NONE;
     arbiter->layout = DM_INPUT_LAYOUT_TOUCH_HUD;
     arbiter->focused = 1;
+    arbiter->width_pt = width_pt;
+    arbiter->height_pt = height_pt;
+    arbiter->density = density;
     return arbiter;
 }
 
@@ -196,12 +224,13 @@ int dm_input_arbiter_touch(dm_input_arbiter *arbiter, const dm_touch_event *even
     if (!arbiter || !event || !arbiter->focused || arbiter->paused) return 0;
     if (arbiter->source != DM_INPUT_SOURCE_TOUCH) {
         /* Only a fresh touch-down may take ownership back from gamepad. Late
-           MOVE/UP events cannot resurrect a canceled touch stream. */
+           MOVE/UP events cannot resurrect a canceled touch stream. Commit only
+           after the staged real bridge accepts the complete event. */
         if (event->action != DM_TOUCH_ACTION_DOWN &&
             event->action != DM_TOUCH_ACTION_POINTER_DOWN)
             return 0;
         if (!touch_shape_valid(event)) return 0;
-        claim_source(arbiter, DM_INPUT_SOURCE_TOUCH);
+        return take_touch(arbiter, event);
     }
     if (!dm_touch_bridge_event(arbiter->touch, event)) return 0;
     arbiter->last_time_ns = event->time_ns;

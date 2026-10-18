@@ -37,7 +37,81 @@ static dm_pad_sample gamepad_sample(uint64_t buttons, int32_t lx, int32_t ly) {
     return sample;
 }
 
+static int rejected_takeover_cases(void) {
+    dm_input_arbiter *arbiter = dm_input_arbiter_create(480, 300, 3.0f);
+    CHECK(arbiter != NULL);
+    CHECK(dm_input_arbiter_connect(arbiter, 2, 10));
+    dm_pad_sample held;
+    memset(&held, 0, sizeof held);
+    held.connected = 1;
+    held.buttons = DM_BTN_A;
+    held.lx = 20000;
+    CHECK(dm_input_arbiter_gamepad(arbiter, 2, 10, &held));
+    dm_npad_state state;
+    CHECK(dm_input_arbiter_read(arbiter, &state) && state.buttons == 0);
+    CHECK(dm_input_arbiter_read(arbiter, &state) && state.buttons == DM_BTN_A);
+
+    dm_touch_event malformed;
+    memset(&malformed, 0, sizeof malformed);
+    malformed.action = DM_TOUCH_ACTION_POINTER_DOWN;
+    malformed.action_index = 1;
+    malformed.pointer_count = 2;
+    malformed.time_ns = 1000000000;
+    malformed.points[0] = (dm_touch_point){.id = 7, .x_px = 100, .y_px = 100};
+    malformed.points[1] = (dm_touch_point){.id = 8, .x_px = 200, .y_px = 100};
+    CHECK(!dm_input_arbiter_touch(arbiter, &malformed));
+    CHECK(dm_input_arbiter_source(arbiter) == DM_INPUT_SOURCE_GAMEPAD);
+    CHECK(dm_input_arbiter_layout(arbiter) == DM_INPUT_LAYOUT_CONTROLLER);
+    CHECK(dm_input_arbiter_read(arbiter, &state));
+    CHECK(state.buttons == DM_BTN_A && state.lx == 20000);
+
+    /* A malformed multi-pointer DOWN must not steal ownership either. */
+    malformed.action = DM_TOUCH_ACTION_DOWN;
+    malformed.action_index = 0;
+    CHECK(!dm_input_arbiter_touch(arbiter, &malformed));
+    CHECK(dm_input_arbiter_source(arbiter) == DM_INPUT_SOURCE_GAMEPAD);
+    CHECK(dm_input_arbiter_read(arbiter, &state));
+    CHECK(state.buttons == DM_BTN_A && state.lx == 20000);
+
+    /* Downstream scaled-coordinate rejection occurs after shape validation and
+       inside the staged real bridge; the held gamepad sample must survive. */
+    dm_touch_event scaled;
+    memset(&scaled, 0, sizeof scaled);
+    scaled.action = DM_TOUCH_ACTION_DOWN;
+    scaled.action_index = 0;
+    scaled.pointer_count = 1;
+    scaled.time_ns = 1000000001;
+    scaled.points[0] = (dm_touch_point){.id = 9, .x_px = 1.0e38f, .y_px = 100};
+    dm_input_arbiter *small = dm_input_arbiter_create(480, 300, 1.0e-38f);
+    CHECK(small != NULL);
+    CHECK(dm_input_arbiter_connect(small, 3, 20));
+    CHECK(dm_input_arbiter_gamepad(small, 3, 20, &held));
+    CHECK(dm_input_arbiter_read(small, &state) && state.buttons == 0);
+    CHECK(dm_input_arbiter_read(small, &state) && state.buttons == DM_BTN_A);
+    CHECK(!dm_input_arbiter_touch(small, &scaled));
+    CHECK(dm_input_arbiter_source(small) == DM_INPUT_SOURCE_GAMEPAD);
+    CHECK(dm_input_arbiter_read(small, &state) && state.buttons == DM_BTN_A);
+    dm_input_arbiter_destroy(small, NULL);
+
+    /* NONE source remains NONE after malformed/non-owning takeovers. */
+    dm_input_arbiter *empty = dm_input_arbiter_create(480, 300, 3.0f);
+    CHECK(empty != NULL);
+    CHECK(!dm_input_arbiter_touch(empty, &malformed));
+    CHECK(dm_input_arbiter_source(empty) == DM_INPUT_SOURCE_NONE);
+    CHECK(dm_input_arbiter_read(empty, &state) && state.buttons == 0);
+    dm_touch_event valid = touch_event(DM_TOUCH_ACTION_DOWN, 7, 1000000002, 0);
+    CHECK(dm_input_arbiter_touch(empty, &valid));
+    CHECK(dm_input_arbiter_source(empty) == DM_INPUT_SOURCE_TOUCH);
+    CHECK(dm_input_arbiter_read(empty, &state) && state.buttons == 0);
+    CHECK(dm_input_arbiter_read(empty, &state) && state.buttons == DM_BTN_A);
+    dm_input_arbiter_destroy(empty, NULL);
+
+    dm_input_arbiter_destroy(arbiter, NULL);
+    return 0;
+}
+
 int main(void) {
+    if (rejected_takeover_cases()) return 1;
     dm_input_arbiter *arbiter = dm_input_arbiter_create(480, 300, 3.0f);
     CHECK(arbiter != NULL);
     CHECK(dm_input_arbiter_source(arbiter) == DM_INPUT_SOURCE_NONE);
