@@ -9,7 +9,8 @@
 ## 固定子集
 
 - 恰好一个 vertex stage 和一个 fragment stage。
-- 入口必须为 `main`。
+- 入口必须为 `main`，且 `OpEntryPoint` 的函数 id 必须落在 SPIR-V header bound 内，并对应本模块真实定义的 `OpFunction`；该函数必须无参数、返回 `void`、control 为 0，`OpFunction` 与 `OpTypeFunction` 的返回类型一致。
+- 类型、变量和函数定义 id 必须唯一且小于 header bound；重复/冲突定义、越界 id、缺失函数定义、函数参数以及不支持的入口形式在创建 Vulkan 对象前拒绝。
 - VS 输入恰好 `location 0: vec2 float`（position）和 `location 1: vec4 float`（color）。
 - VS 恰好一个 `gl_Position`（直接 BuiltIn 或标准 `gl_PerVertex` 输出块），并恰好一个 `vec4 float` varying 输出。
 - FS 恰好一个 `vec4 float` varying 输入，且 location 必须与 VS 输出一致；FS 恰好一个 `location 0: vec4 float` 输出。
@@ -47,7 +48,8 @@
 - 合法 plan、location/type/varying 派生和合法 sidecar；
 - compute execution model 冒充 VS；
 - 错误 `vec3` 和标量 color 类型；
-- 重复 location、缺失 location、错误入口、截断/超限模块；
+- 错误入口名、越界入口函数、in-bound 但没有 `OpFunction` 的入口、重复/冲突定义；
+- 截断/超限模块；
 - VS→FS varying 不匹配；
 - descriptor/uniform 与 push constant；
 - sidecar hash 不匹配和未知键；

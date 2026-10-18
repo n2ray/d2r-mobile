@@ -89,6 +89,58 @@ static int truncate_module(const char *src, const char *dst) {
     int ok = write_all(dst, b, size - 4);
     free(b); return ok;
 }
+// 入口函数 id 改为 header.bound+100；无 OpFunction 且越界。 | Entry function id -> header.bound+100.
+static int mutate_entry_out_of_bound(const char *src, const char *dst) {
+    uint8_t *b; size_t size;
+    if (!read_all(src, &b, &size) || size < 24 || size % 4) { free(b); return 0; }
+    uint32_t *w = (uint32_t *)(void *)b, n = (uint32_t)(size / 4), changed = 0;
+    uint32_t bound = w[3];
+    for (uint32_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffffu, wc = w[i] >> 16;
+        if (!wc || i + wc > n) break;
+        if (op == 15u && wc >= 4) { w[i + 2] = bound + 100u; changed = 1; }
+        i += wc;
+    }
+    int ok = changed && write_all(dst, b, size);
+    free(b); return ok;
+}
+// 入口函数 id 改为 in-bound 的 OpTypeVoid id；该 id 不是函数定义。 | Entry id -> in-bound type id, not a function.
+static int mutate_entry_to_type(const char *src, const char *dst) {
+    uint8_t *b; size_t size;
+    if (!read_all(src, &b, &size) || size < 24 || size % 4) { free(b); return 0; }
+    uint32_t *w = (uint32_t *)(void *)b, n = (uint32_t)(size / 4), type_id = 0, changed = 0;
+    for (uint32_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffffu, wc = w[i] >> 16;
+        if (!wc || i + wc > n) break;
+        if (op == 19u && wc >= 2) { type_id = w[i + 1]; break; }
+        i += wc;
+    }
+    if (type_id) {
+        for (uint32_t i = 5; i < n;) {
+            uint32_t op = w[i] & 0xffffu, wc = w[i] >> 16;
+            if (!wc || i + wc > n) break;
+            if (op == 15u && wc >= 4) { w[i + 2] = type_id; changed = 1; break; }
+            i += wc;
+        }
+    }
+    int ok = changed && write_all(dst, b, size);
+    free(b); return ok;
+}
+// 把 OpTypeVoid 的 result id 改成 OpFunction 的 id，制造重复/冲突定义。 | Duplicate a type/function definition id.
+static int mutate_duplicate_definition(const char *src, const char *dst) {
+    uint8_t *b; size_t size;
+    if (!read_all(src, &b, &size) || size < 24 || size % 4) { free(b); return 0; }
+    uint32_t *w = (uint32_t *)(void *)b, n = (uint32_t)(size / 4), void_word = 0, function_id = 0;
+    for (uint32_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffffu, wc = w[i] >> 16;
+        if (!wc || i + wc > n) break;
+        if (op == 19u && wc >= 2 && !void_word) void_word = i;
+        if (op == 54u && wc >= 5 && !function_id) function_id = w[i + 2];
+        i += wc;
+    }
+    int ok = void_word && function_id && (w[void_word + 1] = function_id) != 0 && write_all(dst, b, size);
+    free(b); return ok;
+}
 
 static void expect_reject(const char *vs, const char *ps, const char *meta, const char *label) {
     dm_vk_graphics_plan p; char why[DM_VK_GRAPHICS_WHY] = {0};
@@ -158,6 +210,15 @@ int main(int argc, char **argv) {
     CHECK(mutate_entry_name(argv[1], "graphics-bad-entry.spv"));
     expect_reject("graphics-bad-entry.spv", argv[2], NULL, "bad-entry");
     remove("graphics-bad-entry.spv");
+    CHECK(mutate_entry_out_of_bound(argv[1], "graphics-entry-oob.spv"));
+    expect_reject("graphics-entry-oob.spv", argv[2], NULL, "entry-out-of-bound");
+    remove("graphics-entry-oob.spv");
+    CHECK(mutate_entry_to_type(argv[1], "graphics-entry-type.spv"));
+    expect_reject("graphics-entry-type.spv", argv[2], NULL, "entry-inbound-undefined");
+    remove("graphics-entry-type.spv");
+    CHECK(mutate_duplicate_definition(argv[1], "graphics-duplicate-def.spv"));
+    expect_reject("graphics-duplicate-def.spv", argv[2], NULL, "duplicate-definition");
+    remove("graphics-duplicate-def.spv");
     CHECK(truncate_module(argv[1], "graphics-truncated.spv"));
     expect_reject("graphics-truncated.spv", argv[2], NULL, "truncated");
     remove("graphics-truncated.spv");

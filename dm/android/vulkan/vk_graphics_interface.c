@@ -11,11 +11,15 @@
 #define SPV_MAGIC 0x07230203u
 #define OP_ENTRY_POINT 15u
 #define OP_EXECUTION_MODE 16u
+#define OP_TYPE_VOID 19u
 #define OP_TYPE_INT 21u
 #define OP_TYPE_FLOAT 22u
 #define OP_TYPE_VECTOR 23u
 #define OP_TYPE_STRUCT 30u
 #define OP_TYPE_POINTER 32u
+#define OP_TYPE_FUNCTION 33u
+#define OP_FUNCTION 54u
+#define OP_FUNCTION_PARAMETER 55u
 #define OP_VARIABLE 59u
 #define OP_DECORATE 71u
 #define OP_MEMBER_DECORATE 72u
@@ -36,17 +40,23 @@
 #define MAX_DECORS 512u
 #define MAX_IFACE 64u
 #define MAX_META_BYTES 4096u
+#define MAX_DEFS 1024u
+#define MAX_FUNCTIONS 16u
 
 typedef struct { uint32_t id, kind, a, b; uint32_t members[8], member_count; } gtype;
 typedef struct { uint32_t id, type, storage; } gvar;
 typedef struct { uint32_t id, member, dec, a; } gdecor;
+typedef struct { uint32_t id, result_type, control, function_type; } gfunc;
 typedef struct { uint32_t target, mode, nargs, args[3]; } gmode;
 typedef struct {
     gtype types[MAX_TYPES]; uint32_t type_count;
     gvar vars[MAX_VARS]; uint32_t var_count;
     gdecor decors[MAX_DECORS]; uint32_t decor_count;
+    gfunc functions[MAX_FUNCTIONS]; uint32_t function_count;
+    uint32_t defined[MAX_DEFS]; uint32_t defined_count;
     gmode modes[8]; uint32_t mode_count;
     uint32_t entry_model, entry_id, entry_count;
+    uint32_t bound;
     char entry_name[64];
     uint32_t iface[MAX_IFACE], iface_count;
 } gmodule;
@@ -57,6 +67,25 @@ static void set_why(char *why, size_t cap, const char *fmt, ...) {
 }
 static gtype *gtype_find(gmodule *m, uint32_t id) {
     for (uint32_t i = 0; i < m->type_count; i++) if (m->types[i].id == id) return &m->types[i];
+    return NULL;
+}
+static int check_id(gmodule *m, uint32_t id, const char *what, char *why, size_t cap) {
+    if (!id || id >= m->bound) {
+        set_why(why, cap, "%s id %u 超出 header bound %u", what, id, m->bound);
+        return 0;
+    }
+    return 1;
+}
+static int add_definition(gmodule *m, uint32_t id, const char *what, char *why, size_t cap) {
+    if (!check_id(m, id, what, why, cap)) return 0;
+    for (uint32_t i = 0; i < m->defined_count; i++)
+        if (m->defined[i] == id) { set_why(why, cap, "%s 重复定义 id %u", what, id); return 0; }
+    if (m->defined_count >= MAX_DEFS) { set_why(why, cap, "定义数量超过 %u", MAX_DEFS); return 0; }
+    m->defined[m->defined_count++] = id;
+    return 1;
+}
+static gfunc *function_find(gmodule *m, uint32_t id) {
+    for (uint32_t i = 0; i < m->function_count; i++) if (m->functions[i].id == id) return &m->functions[i];
     return NULL;
 }
 static gdecor *decor_find(gmodule *m, uint32_t id, uint32_t dec) {
@@ -103,8 +132,11 @@ static int scan_module(const uint8_t *data, size_t size, gmodule *m, char *why, 
     if (w[0] != SPV_MAGIC) { set_why(why, cap, "SPIR-V 魔数 %#x 非法", w[0]); return 0; }
     uint32_t major = w[1] >> 16, minor = (w[1] >> 8) & 0xff;
     if (major != 1 || minor > 3) { set_why(why, cap, "SPIR-V 版本 %u.%u 超出 1.0–1.3", major, minor); return 0; }
+    uint32_t bound = w[3];
+    if (!bound || bound > (1u << 20)) { set_why(why, cap, "header bound %u 非法", bound); return 0; }
     uint32_t count = (uint32_t)(size / 4), i = 5, insts = 0, last_op = 0;
     memset(m, 0, sizeof *m);
+    m->bound = bound;
     while (i < count) {
         if (++insts > MAX_INSTRUCTIONS) { set_why(why, cap, "指令数超过 %u", MAX_INSTRUCTIONS); return 0; }
         uint32_t op = w[i] & 0xffffu, wc = w[i] >> 16;
@@ -116,6 +148,7 @@ static int scan_module(const uint8_t *data, size_t size, gmodule *m, char *why, 
         case OP_ENTRY_POINT: {
             if (m->entry_count) { set_why(why, cap, "出现多个 OpEntryPoint"); return 0; }
             if (n < 3) { set_why(why, cap, "OpEntryPoint 操作数不足"); return 0; }
+            if (!check_id(m, o[1], "entry function", why, cap)) return 0;
             m->entry_model = o[0]; m->entry_id = o[1]; m->entry_count = 1;
             uint32_t k = 0, p = 2;
             while (p < n && k + 1 < sizeof m->entry_name) {
@@ -139,6 +172,7 @@ static int scan_module(const uint8_t *data, size_t size, gmodule *m, char *why, 
                 if (ended) break;
             }
             for (; p < n; p++) {
+                if (!check_id(m, o[p], "entry interface", why, cap)) return 0;
                 if (m->iface_count >= MAX_IFACE) { set_why(why, cap, "接口变量超过 %u", MAX_IFACE); return 0; }
                 for (uint32_t k = 0; k < m->iface_count; k++)
                     if (m->iface[k] == o[p]) { set_why(why, cap, "entry interface id %u 重复", o[p]); return 0; }
@@ -148,6 +182,7 @@ static int scan_module(const uint8_t *data, size_t size, gmodule *m, char *why, 
         }
         case OP_EXECUTION_MODE:
             if (n < 2) { set_why(why, cap, "OpExecutionMode 操作数不足"); return 0; }
+            if (!check_id(m, o[0], "execution mode target", why, cap)) return 0;
             if (m->mode_count >= 8) { set_why(why, cap, "执行模式过多"); return 0; }
             {
                 gmode *md = &m->modes[m->mode_count++];
@@ -155,9 +190,16 @@ static int scan_module(const uint8_t *data, size_t size, gmodule *m, char *why, 
                 for (uint32_t k = 0; k < md->nargs; k++) md->args[k] = o[2 + k];
             }
             break;
+        case OP_TYPE_VOID:
+            if (n != 1) { set_why(why, cap, "OpTypeVoid 操作数个数非法"); return 0; }
+            if (!add_definition(m, o[0], "type", why, cap)) return 0;
+            if (m->type_count >= MAX_TYPES) { set_why(why, cap, "类型过多"); return 0; }
+            m->types[m->type_count++] = (gtype){o[0], OP_TYPE_VOID, 0, 0, {0}, 0};
+            break;
         case OP_TYPE_INT:
         case OP_TYPE_FLOAT: {
             if (op == OP_TYPE_INT ? n != 3 : n != 2) { set_why(why, cap, "类型指令操作数个数非法"); return 0; }
+            if (!add_definition(m, o[0], "type", why, cap)) return 0;
             if (m->type_count >= MAX_TYPES) { set_why(why, cap, "类型过多"); return 0; }
             gtype *t = &m->types[m->type_count++];
             memset(t, 0, sizeof *t);
@@ -166,6 +208,8 @@ static int scan_module(const uint8_t *data, size_t size, gmodule *m, char *why, 
         }
         case OP_TYPE_VECTOR: {
             if (n != 3) { set_why(why, cap, "OpTypeVector 操作数不足"); return 0; }
+            if (!add_definition(m, o[0], "type", why, cap)) return 0;
+            if (!check_id(m, o[1], "vector component type", why, cap)) return 0;
             if (m->type_count >= MAX_TYPES) { set_why(why, cap, "类型过多"); return 0; }
             gtype *t = &m->types[m->type_count++];
             memset(t, 0, sizeof *t);
@@ -174,29 +218,63 @@ static int scan_module(const uint8_t *data, size_t size, gmodule *m, char *why, 
         }
         case OP_TYPE_STRUCT:
             if (n < 1 || n - 1 > 8) { set_why(why, cap, "OpTypeStruct 成员数非法"); return 0; }
+            if (!add_definition(m, o[0], "type", why, cap)) return 0;
             if (m->type_count >= MAX_TYPES) { set_why(why, cap, "类型过多"); return 0; }
             {
                 gtype *t = &m->types[m->type_count++];
                 memset(t, 0, sizeof *t);
                 t->id = o[0]; t->kind = OP_TYPE_STRUCT; t->member_count = n - 1;
-                for (uint32_t k = 0; k < t->member_count; k++) t->members[k] = o[k + 1];
+                for (uint32_t k = 0; k < t->member_count; k++) {
+                    if (!check_id(m, o[k + 1], "struct member type", why, cap)) return 0;
+                    t->members[k] = o[k + 1];
+                }
             }
             break;
         case OP_TYPE_POINTER: {
             if (n != 3) { set_why(why, cap, "OpTypePointer 操作数不足"); return 0; }
+            if (!add_definition(m, o[0], "type", why, cap)) return 0;
+            if (!check_id(m, o[2], "pointer pointee type", why, cap)) return 0;
             if (m->type_count >= MAX_TYPES) { set_why(why, cap, "类型过多"); return 0; }
             gtype *t = &m->types[m->type_count++];
             memset(t, 0, sizeof *t);
             t->id = o[0]; t->kind = op; t->a = o[1]; t->b = o[2];
             break;
         }
+        case OP_TYPE_FUNCTION:
+            if (n < 2) { set_why(why, cap, "OpTypeFunction 操作数不足"); return 0; }
+            if (!add_definition(m, o[0], "function type", why, cap)) return 0;
+            if (!check_id(m, o[1], "function return type", why, cap)) return 0;
+            if (m->type_count >= MAX_TYPES) { set_why(why, cap, "类型过多"); return 0; }
+            {
+                gtype *t = &m->types[m->type_count++];
+                memset(t, 0, sizeof *t);
+                t->id = o[0]; t->kind = OP_TYPE_FUNCTION; t->a = o[1]; t->member_count = n - 2;
+                for (uint32_t k = 0; k < t->member_count; k++) {
+                    if (!check_id(m, o[k + 2], "function parameter type", why, cap)) return 0;
+                    t->members[k] = o[k + 2];
+                }
+            }
+            break;
+        case OP_FUNCTION:
+            if (n != 4) { set_why(why, cap, "OpFunction 操作数个数非法"); return 0; }
+            if (!add_definition(m, o[1], "function", why, cap)) return 0;
+            if (!check_id(m, o[0], "function result type", why, cap)) return 0;
+            if (!check_id(m, o[3], "function type", why, cap)) return 0;
+            if (m->function_count >= MAX_FUNCTIONS) { set_why(why, cap, "函数过多"); return 0; }
+            m->functions[m->function_count++] = (gfunc){o[1], o[0], o[2], o[3]};
+            break;
+        case OP_FUNCTION_PARAMETER:
+            set_why(why, cap, "图形入口函数不支持参数"); return 0;
         case OP_VARIABLE:
             if (n < 3) { set_why(why, cap, "OpVariable 操作数不足"); return 0; }
+            if (!add_definition(m, o[1], "variable", why, cap)) return 0;
+            if (!check_id(m, o[0], "variable type", why, cap)) return 0;
             if (m->var_count >= MAX_VARS) { set_why(why, cap, "变量过多"); return 0; }
             m->vars[m->var_count++] = (gvar){o[1], o[0], o[2]};
             break;
         case OP_DECORATE:
             if (n >= 2 && (o[1] == DEC_LOCATION || o[1] == DEC_BUILTIN || o[1] == DEC_BLOCK)) {
+                if (!check_id(m, o[0], "decoration target", why, cap)) return 0;
                 if (m->decor_count >= MAX_DECORS) { set_why(why, cap, "装饰过多"); return 0; }
                 if (o[1] != DEC_BLOCK && n < 3) { set_why(why, cap, "Location/BuiltIn 装饰缺少参数"); return 0; }
                 if (decor_find(m, o[0], o[1])) { set_why(why, cap, "重复装饰 id %u dec %u", o[0], o[1]); return 0; }
@@ -205,6 +283,7 @@ static int scan_module(const uint8_t *data, size_t size, gmodule *m, char *why, 
             break;
         case OP_MEMBER_DECORATE:
             if (n >= 4 && o[2] == DEC_BUILTIN) {
+                if (!check_id(m, o[0], "member decoration target", why, cap)) return 0;
                 if (m->decor_count >= MAX_DECORS) { set_why(why, cap, "装饰过多"); return 0; }
                 if (member_decor_find(m, o[0], o[1], o[2])) { set_why(why, cap, "重复成员装饰"); return 0; }
                 m->decors[m->decor_count++] = (gdecor){o[0], o[1], DEC_BUILTIN, o[3]};
@@ -218,11 +297,28 @@ static int scan_module(const uint8_t *data, size_t size, gmodule *m, char *why, 
     return 1;
 }
 
+// 入口必须指向本模块真实定义的、无参数、返回 void 的函数，且函数类型一致。
+// The entry must reference a real, parameterless void function defined in this module with a matching function type.
+static int check_entry_function(gmodule *m, char *why, size_t cap) {
+    if (!check_id(m, m->entry_id, "entry function", why, cap)) return 0;
+    gfunc *f = function_find(m, m->entry_id);
+    if (!f) { set_why(why, cap, "入口 %u 没有对应的 OpFunction 定义", m->entry_id); return 0; }
+    if (f->control != 0) { set_why(why, cap, "入口函数 control %u 非零", f->control); return 0; }
+    gtype *rt = gtype_find(m, f->result_type);
+    if (!rt || rt->kind != OP_TYPE_VOID) { set_why(why, cap, "入口函数返回类型不是 void"); return 0; }
+    gtype *ft = gtype_find(m, f->function_type);
+    if (!ft || ft->kind != OP_TYPE_FUNCTION) { set_why(why, cap, "入口函数类型不是 OpTypeFunction"); return 0; }
+    if (ft->a != f->result_type) { set_why(why, cap, "入口函数返回类型与 OpTypeFunction 不一致"); return 0; }
+    if (ft->member_count != 0) { set_why(why, cap, "入口函数类型带参数"); return 0; }
+    return 1;
+}
+
 // 检查每个全局输入/输出变量：必须出现在 entry interface；拒绝 descriptor/push 和其他存储类。
 // Check each global input/output variable: must be in the entry interface; reject descriptors/push and other storage classes.
 static int check_vars(gmodule *m, uint32_t expected_model, char *why, size_t cap) {
     if (m->entry_count != 1) { set_why(why, cap, "模块没有恰好一个 OpEntryPoint"); return 0; }
     if (m->entry_model != expected_model) { set_why(why, cap, "执行模型 %u 不是期望的 %u", m->entry_model, expected_model); return 0; }
+    if (!check_entry_function(m, why, cap)) return 0;
     if (strcmp(m->entry_name, "main")) { set_why(why, cap, "入口名 %s 不是 main", m->entry_name); return 0; }
     for (uint32_t i = 0; i < m->mode_count; i++) {
         if (m->modes[i].target != m->entry_id) { set_why(why, cap, "执行模式目标不是入口"); return 0; }
