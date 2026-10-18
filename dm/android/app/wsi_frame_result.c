@@ -21,7 +21,10 @@ dm_wsi_status dm_wsi_present_frame(const dm_wsi_frame_ops *ops) {
     result = ops->present(ops->ctx, &present_suboptimal);
     if (result == VK_ERROR_OUT_OF_DATE_KHR) return DM_WSI_REBUILD;
     if (result == VK_ERROR_SURFACE_LOST_KHR) return DM_WSI_SURFACE_LOST;
+    // 先判真实错误，再应用 SUBOPTIMAL 标记：否则 acquire 的 suboptimal 会把 present 的 DEVICE_LOST 掩盖成"有效帧"。
+    // Check real errors before applying suboptimal flags, otherwise an acquire suboptimal masks a present device loss
+    // as a valid frame.
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) return DM_WSI_ERROR;
     if (result == VK_SUBOPTIMAL_KHR || present_suboptimal || acquire_suboptimal) return DM_WSI_SUBOPTIMAL;
-    if (result != VK_SUCCESS) return DM_WSI_ERROR;
     return DM_WSI_OK;
 }

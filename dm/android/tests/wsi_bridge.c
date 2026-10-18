@@ -34,6 +34,8 @@ typedef struct {
     int seq_len;
     int close_result;           // 排空结果注入 | injected drain result
     int opens, closes, frames;
+    int frame_queue[8], frame_queue_count, frame_queue_index;
+    int call_count;
     uint32_t open_width, open_height;
     void *open_window;
     dm_app_lifecycle *lifecycle;
@@ -68,18 +70,23 @@ static void fake_release(void *ctx, void *surface) {
 }
 static int wsi_open(void *ctx, void *window, uint32_t width, uint32_t height) {
     fixture *f = ctx;
-    f->opens++;
+    f->opens++; f->call_count++;
     f->open_window = window; f->open_width = width; f->open_height = height;
     push(f, EV_WSI_OPEN);
     return 0;
 }
 static int wsi_close(void *ctx) {
     fixture *f = ctx;
-    f->closes++;
+    f->closes++; f->call_count++;
     push(f, EV_DRAIN_OK);
     return f->close_result;
 }
-static int wsi_frame(void *ctx) { fixture *f = ctx; f->frames++; return DM_WSI_OK; }
+static int wsi_frame(void *ctx) {
+    fixture *f = ctx;
+    f->frames++; f->call_count++;
+    if (f->frame_queue_index < f->frame_queue_count) return f->frame_queue[f->frame_queue_index++];
+    return DM_WSI_OK;
+}
 static fixture *trace_fixture = NULL;
 static void wsi_trace(void *ctx, const char *event) {
     // 桥的 lifecycle.ctx 是真实控制器，追踪用单独的 fixture 指针。
@@ -166,7 +173,7 @@ static void test_resize_path(void) {
     CHECK(f.open_width == 640 && f.open_height == 360);
     // 真实 resize 回调路径：返回 REBUILD 并在下一 tick 用新尺寸重建。
     // Real resize callback path: REBUILD, then the next tick recreates with the new extent.
-    CHECK(dm_wsi_bridge_window_resized(&bridge, 1280, 720) == DM_WSI_REBUILD);
+    CHECK(dm_wsi_bridge_window_resized(&bridge, (void *)0x1000, 1280, 720) == DM_WSI_REBUILD);
     CHECK(index_of(&f, EV_RESIZE) >= 0);
     CHECK(dm_wsi_tick(&wsi) == DM_WSI_OK);
     CHECK(f.opens == 2 && f.open_width == 1280 && f.open_height == 720);
@@ -187,11 +194,84 @@ static void test_stale_and_open_failure(void) {
     dm_app_lifecycle_stop(lc); dm_app_lifecycle_destroy(lc);
 }
 
+static void test_stale_identity_matrix(void) {
+    fixture f; dm_app_lifecycle *lc; dm_wsi wsi; dm_wsi_bridge bridge;
+    setup(&f, &lc, &wsi, &bridge);
+    CHECK(dm_wsi_bridge_window_ready(&bridge, (void *)0x1000, 640, 360) == 1);
+    CHECK(dm_wsi_bridge_window_ready(&bridge, (void *)0x2000, 640, 360) == 1);
+    const int opens = f.opens, closes = f.closes, releases = f.releases;
+    // 陈旧 destroy(A) 在 B 被接受后：不拥有、不关闭、不释放、不影响 B。
+    // Stale destroy(A) after B is accepted: not owned, no close, no release, B untouched.
+    CHECK(dm_wsi_bridge_owns_window(&bridge, (void *)0x1000) == 0);
+    CHECK(dm_wsi_bridge_owns_window(&bridge, (void *)0x2000) == 1);
+    CHECK(dm_wsi_bridge_window_destroyed(&bridge, (void *)0x1000) == 0);
+    CHECK(f.closes == closes && f.releases == releases);
+    CHECK(bridge.window == (void *)0x2000);
+    // 陈旧 resize(A) 不得改到 B：返回 IDLE 且不排程重建、不重新打开。
+    // Stale resize(A) must not touch B: IDLE, no rebuild scheduled, no reopen.
+    CHECK(dm_wsi_bridge_window_resized(&bridge, (void *)0x1000, 999, 555) == DM_WSI_IDLE);
+    CHECK(f.opens == opens && wsi.width == 640 && wsi.height == 360);
+    CHECK(dm_wsi_bridge_window_resized(&bridge, (void *)0x2000, 1280, 720) == DM_WSI_REBUILD);
+    CHECK(wsi.width == 1280 && wsi.height == 720);
+    dm_app_lifecycle_stop(lc); dm_app_lifecycle_destroy(lc);
+}
+
+static void test_dispatch_eligibility(void) {
+    fixture f; dm_app_lifecycle *lc; dm_wsi wsi; dm_wsi_bridge bridge;
+    setup(&f, &lc, &wsi, &bridge);
+    dm_wsi_timer_action action = DM_WSI_TIMER_KEEP;
+    // 未就绪/未恢复：不 tick、STOP。| Windowless and pre-resume: no tick, STOP.
+    CHECK(dm_wsi_bridge_dispatch(&bridge, 1, &action) == DM_WSI_IDLE && action == DM_WSI_TIMER_STOP);
+    CHECK(f.frames == 0);
+    CHECK(dm_wsi_bridge_window_ready(&bridge, (void *)0x1000, 640, 360) == 1);
+    action = DM_WSI_TIMER_KEEP;
+    CHECK(dm_wsi_bridge_dispatch(&bridge, 0, &action) == DM_WSI_IDLE && action == DM_WSI_TIMER_STOP);
+    CHECK(f.frames == 0);
+    // 恢复后正常出帧并要求保持定时器。| After resume it frames and keeps the timer.
+    action = DM_WSI_TIMER_STOP;
+    CHECK(dm_wsi_bridge_dispatch(&bridge, 1, &action) == DM_WSI_OK && action == DM_WSI_TIMER_KEEP);
+    CHECK(f.frames == 1);
+    // 暂停：STOP 且不 tick。| Paused: STOP and no tick.
+    dm_wsi_pause(&wsi);
+    action = DM_WSI_TIMER_KEEP;
+    CHECK(dm_wsi_bridge_dispatch(&bridge, 1, &action) == DM_WSI_IDLE && action == DM_WSI_TIMER_STOP);
+    CHECK(f.frames == 1);
+    dm_wsi_resume(&wsi);
+    // Surface 丢失：tick 后进入等待态并 STOP；后续 tick 不再进设备。
+    // Surface lost: the tick enters the awaiting state and STOPs; later ticks do no device work.
+    f.frame_queue[0] = DM_WSI_SURFACE_LOST;
+    f.frame_queue_count = 1;
+    action = DM_WSI_TIMER_KEEP;
+    CHECK(dm_wsi_bridge_dispatch(&bridge, 1, &action) == DM_WSI_SURFACE_LOST && action == DM_WSI_TIMER_STOP);
+    const int calls = f.call_count;
+    action = DM_WSI_TIMER_KEEP;
+    CHECK(dm_wsi_bridge_dispatch(&bridge, 1, &action) == DM_WSI_IDLE && action == DM_WSI_TIMER_STOP);
+    CHECK(f.call_count == calls);
+    // 粘性错误：永不 tick、永远 STOP。| Sticky error: never ticks, always STOP.
+    fixture g; dm_app_lifecycle *lc2; dm_wsi wsi2; dm_wsi_bridge bridge2;
+    setup(&g, &lc2, &wsi2, &bridge2);
+    CHECK(dm_wsi_bridge_window_ready(&bridge2, (void *)0x1000, 640, 360) == 1);
+    g.frame_queue[0] = DM_WSI_ERROR;
+    g.frame_queue_count = 1;
+    action = DM_WSI_TIMER_KEEP;
+    CHECK(dm_wsi_bridge_dispatch(&bridge2, 1, &action) == DM_WSI_ERROR && action == DM_WSI_TIMER_STOP);
+    const int g_calls = g.call_count;
+    for (int i = 0; i < 3; i++) {
+        action = DM_WSI_TIMER_KEEP;
+        CHECK(dm_wsi_bridge_dispatch(&bridge2, 1, &action) == DM_WSI_ERROR && action == DM_WSI_TIMER_STOP);
+    }
+    CHECK(g.call_count == g_calls);   // 错误后零设备调用 | zero device calls after the error
+    dm_app_lifecycle_stop(lc); dm_app_lifecycle_destroy(lc);
+    dm_app_lifecycle_stop(lc2); dm_app_lifecycle_destroy(lc2);
+}
+
 int main(void) {
     test_replacement_order();
     test_destroy_order_and_failure();
     test_resize_path();
     test_stale_and_open_failure();
+    test_stale_identity_matrix();
+    test_dispatch_eligibility();
     printf("wsi_bridge: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

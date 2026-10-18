@@ -40,6 +40,18 @@ static dm_wsi_status run(stub *s) {
 }
 
 int main(void) {
+    // acquire suboptimal + present DEVICE_LOST：真实错误优先，不得被 suboptimal 标记掩盖成有效帧。
+    // Acquire suboptimal with a present device loss: the real error wins; the flag must not mask it as a valid frame.
+    stub sub_then_lost = {.acquire_result = VK_SUCCESS, .acquire_suboptimal = 1,
+                          .submit_result = VK_SUCCESS, .present_result = VK_ERROR_DEVICE_LOST};
+    CHECK(run(&sub_then_lost) == DM_WSI_ERROR);
+    CHECK(sub_then_lost.submits == 1 && sub_then_lost.presents == 1);
+
+    // acquire suboptimal + present OUT_OF_DATE：仍是重建，不是有效帧。| Still a rebuild, not a valid frame.
+    stub sub_then_ood = {.acquire_result = VK_SUCCESS, .acquire_suboptimal = 1,
+                         .submit_result = VK_SUCCESS, .present_result = VK_ERROR_OUT_OF_DATE_KHR};
+    CHECK(run(&sub_then_ood) == DM_WSI_REBUILD);
+
     // 正常帧。| Normal frame.
     stub ok = {.acquire_result = VK_SUCCESS, .submit_result = VK_SUCCESS, .present_result = VK_SUCCESS};
     CHECK(run(&ok) == DM_WSI_OK);

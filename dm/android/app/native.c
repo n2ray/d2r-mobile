@@ -414,9 +414,11 @@ static int frame_timer(int fd,int events,void*data){
         LOG("wsi frame timer read failed: %d; frames stop",errno);
         stop_frame_timer(s);return 0;
     }
-    dm_wsi_status status=dm_wsi_tick(&s->wsi);
-    if(status==DM_WSI_ERROR||status==DM_WSI_UNSUPPORTED||status==DM_WSI_SURFACE_LOST){
-        // 终态/等待替换：停止定时器，不留空转唤醒。| Terminal or awaiting states stop the timer, leaving no idle wakeups.
+    dm_wsi_timer_action action=DM_WSI_TIMER_STOP;
+    dm_wsi_status status=dm_wsi_bridge_dispatch(&s->wsi_bridge,s->resumed,&action);
+    if(action==DM_WSI_TIMER_STOP){
+        // 每个 tick 的结果都在 dispatch 里判定：终态/等待/无效状态停表，不留持续唤醒。
+        // Every tick result is decided in dispatch: terminal/awaiting/ineligible states stop the timer, leaving no wakeups.
         LOG("wsi frames stop: status=%d frames=%u losses=%u",(int)status,s->wsi.frames,s->wsi.losses);
         stop_frame_timer(s);
     }
@@ -553,9 +555,13 @@ static void window_ready(ANativeActivity*a,ANativeWindow*window){
         s->window=window;
         touch_resize_window(s,window);
         update_touch_state(s);
-        if(!s->resumed)return;   /* 未恢复不出帧 | no frames before resume */
-        if(!start_frame_timer(s)){LOG("wsi frames unavailable: frame timer start failed; no frame claimed");return;}
-        dm_wsi_tick(&s->wsi);
+        // 唯一调度入口：未恢复/暂停/等待替换/失败都不出帧且停表。
+        // The single scheduling entry: not-resumed, paused, awaiting a surface or failed states produce no frames and stop the timer.
+        dm_wsi_timer_action action=DM_WSI_TIMER_STOP;
+        dm_wsi_status status=dm_wsi_bridge_dispatch(&s->wsi_bridge,s->resumed,&action);
+        if(status==DM_WSI_ERROR||status==DM_WSI_UNSUPPORTED)LOG("wsi not schedulable: status=%d; frames stop",(int)status);
+        if(action==DM_WSI_TIMER_STOP){stop_frame_timer(s);return;}
+        if(s->frame_fd<0&&!start_frame_timer(s)){LOG("wsi frames unavailable: frame timer start failed; no frame claimed");return;}
         return;
     }
     if(!dm_app_lifecycle_surface_created(s->lifecycle,window)){
@@ -571,23 +577,30 @@ static void window_ready(ANativeActivity*a,ANativeWindow*window){
 }
 static void window_resized(ANativeActivity*a,ANativeWindow*window){
     app_state*s=a->instance;if(!s||!window)return;
+    if(!s->wsi.enabled){touch_resize_window(s,window);update_touch_state(s);return;}
+    // 身份校验先于任何副作用（含触摸视图与定时器）：陈旧窗口的 resize 不得影响当前渲染器。
+    // Identity first, before any side effect (touch view and timer included): a stale resize must not touch the current renderer.
+    if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale resize ignored");return;}
     touch_resize_window(s,window);
-    if(!s->wsi.enabled){update_touch_state(s);return;}
     int width=ANativeWindow_getWidth(window),height=ANativeWindow_getHeight(window);
     if(width<=0||height<=0){LOG("wsi resize: window has no extent");return;}
-    // 真实 resize 回调必须走 dm_wsi_resize 并触发重建，不能只更新报告尺寸。
-    // The real resize callback must go through dm_wsi_resize and trigger a rebuild, never a report-only refresh.
-    dm_wsi_status status=dm_wsi_bridge_window_resized(&s->wsi_bridge,(uint32_t)width,(uint32_t)height);
-    if(status==DM_WSI_ERROR){LOG("wsi resize rejected: status=%d; frames stop",(int)status);stop_frame_timer(s);return;}
-    if(!s->resumed)return;
-    if(!start_frame_timer(s)){LOG("wsi frames unavailable after resize: timer start failed");return;}
-    dm_wsi_tick(&s->wsi);
+    dm_wsi_status resized=dm_wsi_bridge_window_resized(&s->wsi_bridge,window,(uint32_t)width,(uint32_t)height);
+    dm_wsi_timer_action action=DM_WSI_TIMER_STOP;
+    dm_wsi_status status=resized;
+    if(resized!=DM_WSI_ERROR)status=dm_wsi_bridge_dispatch(&s->wsi_bridge,s->resumed,&action);
+    if(resized==DM_WSI_ERROR||status==DM_WSI_ERROR||status==DM_WSI_UNSUPPORTED){
+        LOG("wsi resize/rebuild failed: status=%d; frames stop",(int)status);
+        action=DM_WSI_TIMER_STOP;
+    }
+    if(action==DM_WSI_TIMER_STOP){stop_frame_timer(s);return;}
+    if(s->frame_fd<0&&!start_frame_timer(s)){LOG("wsi frames unavailable after resize: timer start failed; no frame claimed");return;}
 }
 static void window_destroyed(ANativeActivity*a,ANativeWindow*window){
     app_state*s=a->instance;if(!s||!s->lifecycle)return;
     if(s->wsi.enabled){
+        // 身份校验先于停表等一切副作用。| Identity check before every side effect, the timer included.
+        if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}
         stop_frame_timer(s);
-        if(s->wsi_bridge.window!=window||!s->wsi_bridge.accepted){LOG("wsi stale window destroy ignored");return;}
         // 只有排空被证明成功后才让生命周期释放真实 ANativeWindow 引用。
         // The lifecycle releases the real ANativeWindow reference only after a proven drain.
         if(!dm_wsi_bridge_window_destroyed(&s->wsi_bridge,window)){
@@ -634,7 +647,14 @@ static void pause_app(ANativeActivity*a){app_state*s=a->instance;if(!s||!s->life
 static void resume_app(ANativeActivity*a){app_state*s=a->instance;if(!s||!s->lifecycle)return;
     if(!dm_app_lifecycle_resume(s->lifecycle)){LOG("resume rejected: state=%s",dm_app_lifecycle_state_name(dm_app_lifecycle_state(s->lifecycle)));return;}
     s->resumed=1;update_touch_state(s);
-    if(s->wsi.enabled){dm_wsi_resume(&s->wsi);if(s->window)start_frame_timer(s);}}
+    if(s->wsi.enabled){
+        dm_wsi_resume(&s->wsi);
+        dm_wsi_timer_action action=DM_WSI_TIMER_STOP;
+        dm_wsi_status status=dm_wsi_bridge_dispatch(&s->wsi_bridge,s->resumed,&action);
+        if(status==DM_WSI_ERROR||status==DM_WSI_UNSUPPORTED)LOG("wsi resume not schedulable: status=%d",(int)status);
+        if(action==DM_WSI_TIMER_STOP)stop_frame_timer(s);
+        else if(s->frame_fd<0&&!start_frame_timer(s))LOG("wsi frames unavailable after resume: timer start failed; no frame claimed");
+    }}
 static void focus_changed(ANativeActivity*a,int focused){app_state*s=a->instance;if(!s)return;
     s->focused=focused?1:0;update_touch_state(s);
     if(!focused){int64_t now=monotonic_ns();touch_cancel(s,"focus_lost",now<0?0:now);}
