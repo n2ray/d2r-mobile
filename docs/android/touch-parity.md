@@ -298,11 +298,23 @@ dirty state, so a later frame cannot show a stuck press; resize re-observes the
 new layout extent. Full game HUD art, bindings, cooldown/mana and device
 acceptance remain out of scope.
 
+The CPU seam lives in `runtime/touch_hud_overlay.c` and is platform-neutral; the
+NativeActivity wrapper only adapts the locked RGBA buffer. It validates
+dimensions, stride and capacity before writing, leaves row padding untouched,
+clips finite centres in double space before any integer conversion (so a finite
+1e30 joystick coordinate cannot trigger float-cast overflow), and returns 0
+without writing on invalid input. The dirty scheduler coalesces repeated marks,
+retains a pending retry after a failed draw, and drops work only for a permanent
+format/extent suppression; lifecycle-not-ready callbacks do not draw.
+
 The host seam test drives actual bridge MotionEvents through observation,
-conversion and owned Vulkan pixels; it verifies pressed/joystick geometry,
-cancel/resize clearing, pending pulse/action survival and unchanged input
-conversion sentinels. Android ARM64 cross-builds the diagnostic shared library
-and the live seam test.
+conversion and owned Vulkan pixels; the CPU seam test drives the same actual
+events through conversion and the production CPU overlay, including stride
+padding, alpha, density 2/3, cancel/resize, the 1e30 clipping regression,
+invalid no-write and scheduler retry/coalescing/lifecycle behaviour. A stale
+pressed pixel remains visibly different after cancel, so a no-op overlay is
+detected. Android ARM64 cross-builds the diagnostic shared library, CPU seam and
+live seam test.
 
 ## What remains unknown
 
