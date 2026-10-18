@@ -22,10 +22,29 @@ public class AudioManager {
     public AudioFocusRequest abandonedRequest;
     public int requestCalls;
     public int abandonCalls;
+    public boolean earlyCallbackOnRequest;   // requestAudioFocus 内从另一线程回调 | callback from another thread
+    public int earlyFocusChange = AUDIOFOCUS_GAIN;
+    public Runnable duringRequest;           // 测试注入：模拟请求进行中的并发操作 | inject concurrent action
 
     public int requestAudioFocus(AudioFocusRequest request) {
         requestCalls++;
         lastRequest = request;
+        if (duringRequest != null) duringRequest.run();
+        if (earlyCallbackOnRequest) {
+            Thread thread = new Thread(() ->
+                    request.getOnAudioFocusChangeListener().onAudioFocusChange(earlyFocusChange));
+            thread.start();
+            try {
+                thread.join();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(interrupted);
+            }
+        }
+        // 真实平台不会在没有 opt-in 的情况下延迟授予。| A real platform does not delay without the opt-in.
+        if (nextResult == AUDIOFOCUS_REQUEST_DELAYED && !request.getAcceptsDelayedFocusGain()) {
+            return AUDIOFOCUS_REQUEST_FAILED;
+        }
         return nextResult;
     }
 

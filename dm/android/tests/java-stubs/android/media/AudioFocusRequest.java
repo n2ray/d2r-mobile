@@ -6,24 +6,28 @@ public class AudioFocusRequest {
     private final int focusGain;
     private final AudioAttributes attributes;
     private final boolean pauseWhenDucked;
+    private final boolean acceptsDelayed;
     private final AudioManager.OnAudioFocusChangeListener listener;
 
     private AudioFocusRequest(Builder b) {
         this.focusGain = b.focusGain;
         this.attributes = b.attributes;
         this.pauseWhenDucked = b.pauseWhenDucked;
+        this.acceptsDelayed = b.acceptsDelayed;
         this.listener = b.listener;
     }
 
     public int getFocusGain() { return focusGain; }
     public AudioAttributes getAudioAttributes() { return attributes; }
     public boolean willPauseWhenDucked() { return pauseWhenDucked; }
+    public boolean getAcceptsDelayedFocusGain() { return acceptsDelayed; }
     public AudioManager.OnAudioFocusChangeListener getOnAudioFocusChangeListener() { return listener; }
 
     public static final class Builder {
         private final int focusGain;
         private AudioAttributes attributes;
         private boolean pauseWhenDucked;
+        private boolean acceptsDelayed;
         private AudioManager.OnAudioFocusChangeListener listener;
 
         public Builder(int focusGain) { this.focusGain = focusGain; }
@@ -35,6 +39,11 @@ public class AudioFocusRequest {
 
         public Builder setWillPauseWhenDucked(boolean pauseWhenDucked) {
             this.pauseWhenDucked = pauseWhenDucked;
+            return this;
+        }
+
+        public Builder setAcceptsDelayedFocusGain(boolean acceptsDelayed) {
+            this.acceptsDelayed = acceptsDelayed;
             return this;
         }
 
