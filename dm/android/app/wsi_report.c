@@ -42,7 +42,7 @@ void dm_wsi_report_attempt(dm_wsi_report *report, uint32_t width, uint32_t heigh
     // 观察者保证每次真实打开只调用一次；因此这里总是计一次尝试，并更新请求尺寸。
     // The observer guarantees one call per real open, so every call counts one attempt and updates the request.
     report->open_attempts++;
-    if (report->open_failures) report->retries++;   // 失败后的再次尝试是明确的 retry | retry after a failure
+    if (report->open_retry_pending) report->retries++;   // 失败后的再次尝试是明确的 retry | retry after a failure
     report->config.requested_width = width;
     report->config.requested_height = height;
     report->attempt_open = 1;
@@ -66,6 +66,7 @@ void dm_wsi_report_negotiated(dm_wsi_report *report, uint32_t width, uint32_t he
     report->config.image_count = image_count;
     report->config.maintenance1 = maintenance1;
     report->config.stale = 0;
+    report->open_retry_pending = 0;
     report->attempt_open = 0;
     report->attempt_failed = 0;
     report->dirty = 1;
@@ -73,14 +74,27 @@ void dm_wsi_report_negotiated(dm_wsi_report *report, uint32_t width, uint32_t he
 
 int dm_wsi_report_failure(dm_wsi_report *report, dm_wsi_stage stage, int code, int unsupported, int open_failure) {
     if (!report) return 0;
-    // 同一次失败穿过多个回调层只记一次；出现新的成功帧/下一次真实打开后才允许新的失败。
-    // One failure seen through several callback layers is recorded once; a new successful frame or the next real
-    // open starts a new episode.
-    if (report->attempt_failed) return 0;
+    // Generic callback fallbacks and repeated observations do not count twice.
+    // A different concrete stage/code (e.g. drain after a failed present) remains observable.
+    if (report->attempt_failed) {
+        if (stage == DM_WSI_STAGE_UNKNOWN ||
+            (stage == DM_WSI_STAGE_OPEN && code == DM_WSI_CODE_UNKNOWN)) return 0;
+        if ((int)stage == report->last_stage) {
+            if (code == DM_WSI_CODE_UNKNOWN) return 0;
+            if (!report->has_code) {
+                report->last_code = code;
+                report->has_code = 1;
+                report->dirty = 1;
+                return 0;
+            }
+            if (code == report->last_code) return 0;
+        }
+    }
     report->attempt_failed = 1;
     if (open_failure) {
         report->attempt_open = 0;
         report->open_failures++;
+        report->open_retry_pending = 1;
         clear_negotiated(report);
     }
     if (unsupported) report->unsupported++;

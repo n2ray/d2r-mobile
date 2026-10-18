@@ -169,7 +169,7 @@ static void test_attempts_and_failures(void) {
     CHECK(r.config.extent_width == 0 && r.config.format == -1 && r.config.maintenance1 == -1);
     CHECK(r.config.requested_width == 1280 && r.config.requested_height == 720);
     // 同一尝试重复到达的失败不重复计数。| A repeated failure for the same attempt is not counted twice.
-    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_PRESENT, -3, 0, 0) == 0);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_OPEN, DM_WSI_CODE_UNKNOWN, 0, 0) == 0);
     CHECK(r.open_failures == 1 && r.errors == 1);
     CHECK(r.last_stage == DM_WSI_STAGE_SWAPCHAIN);   // 保持第一次真实阶段 | the first real stage is kept
 
@@ -278,6 +278,7 @@ static void test_attempts_only_at_real_open(void) {
     CHECK(r.open_failures == 0 && r.retries == 0);
 
     // 定时器/排空失败不伪造打开尝试。| A timer or drain failure never fabricates an open attempt.
+    dm_wsi_report_note_stage(&r, DM_WSI_STAGE_TIMER, -11);
     dm_wsi_report_result(&r, DM_WSI_ERROR);
     CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_TIMER, -11, 0, 0) == 0);   // 同一段失败 | same episode
     CHECK(r.open_attempts == 2 && r.open_failures == 0);
@@ -297,7 +298,37 @@ static void test_attempts_only_at_real_open(void) {
     CHECK(r.open_attempts == 4);
 }
 
+static void test_distinct_failures_without_recovery(void) {
+    dm_wsi_report r;
+    dm_wsi_report_init(&r, 1, 0);
+    dm_wsi_report_note_stage(&r, DM_WSI_STAGE_PRESENT, -4);
+    dm_wsi_report_result(&r, DM_WSI_ERROR);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_UNKNOWN, DM_WSI_CODE_UNKNOWN, 0, 0) == 0);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_DRAIN, -13, 0, 0) == 1);
+    CHECK(r.errors == 2 && r.last_stage == DM_WSI_STAGE_DRAIN && r.last_code == -13);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_DRAIN, DM_WSI_CODE_UNKNOWN, 0, 0) == 0);
+    CHECK(r.has_code && r.last_code == -13);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_TIMER, 5, 0, 0) == 1);
+    CHECK(r.errors == 3 && r.last_stage == DM_WSI_STAGE_TIMER && r.last_code == 5);
+    CHECK(dm_wsi_report_failure(&r, DM_WSI_STAGE_TIMER, 5, 0, 0) == 0);
+    CHECK(r.open_attempts == 0 && r.open_failures == 0);
+}
+
+static void test_recovered_open_is_not_retry(void) {
+    dm_wsi_report r;
+    dm_wsi_report_init(&r, 1, 0);
+    dm_wsi_report_attempt(&r, 640, 480);
+    dm_wsi_report_failure(&r, DM_WSI_STAGE_INIT, -3, 0, 1);
+    dm_wsi_report_attempt(&r, 640, 480);
+    dm_wsi_report_negotiated(&r, 640, 480, 37, 2, 3, 1);
+    CHECK(r.retries == 1);
+    dm_wsi_report_attempt(&r, 1280, 720);
+    CHECK(r.retries == 1 && r.open_attempts == 3);
+}
+
 int main(void) {
+    test_distinct_failures_without_recovery();
+    test_recovered_open_is_not_retry();
     test_config_lines();
     test_counters_never_count_failure();
     test_bounded_rate();

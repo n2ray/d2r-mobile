@@ -68,6 +68,7 @@ typedef struct {
     int last_code;              // 原始 VkResult/系统码；has_code=0 时未知（DM_WSI_CODE_UNKNOWN），不推断
                                 // raw code; unknown (DM_WSI_CODE_UNKNOWN) when has_code=0, never inferred
     int has_code;
+    int open_retry_pending;     // only failed opens make the next open a retry; success clears it
     int attempt_open;           // 一次尝试正在进行 | an attempt is in flight
     int attempt_failed;         // 本次尝试已记过失败，避免重复计数 | failure already recorded for this attempt
     int paused_active;
