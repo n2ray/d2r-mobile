@@ -6,6 +6,31 @@ English: [README.md](README.md)
 
 启动时读取合成产物、重绑定宿主门、映射 RX/R/RW 页面，尝试在实际 App 进程中完成原生客体 TLS 往返；日志标签为 `D2R-Diagnostic`。窗口建立后执行已测试的 Vulkan 片段坐标图案，读回并复制到 Android 原生窗口。这是单帧工程诊断，不是优化后的游戏呈现器。暂停／恢复记录日志，低内存时释放 GPU 上下文，重绘时重建。不包含后台渲染循环、游戏资源导入、存档、游戏操作或音频。
 
+## 生命周期所有权
+
+`app/lifecycle.c` 是 NativeActivity 使用的生产生命周期控制器。状态为
+`created -> starting -> loading -> owned-diagnostic`，另有 `paused`、
+`stopping`、`stopped` 和 `failed`。诊断后端明确标记为
+`owned-diagnostic`；`running` 保留给已准入的真实游戏后端，本 App 不会进入。
+加载失败会显示为 `failed`，只执行一次宿主清理；必须停止并重新启动后才能再次
+尝试。控制器持有一个已 acquire 的 `ANativeWindow` 引用，而不是回调期间可失效
+的借用指针；窗口替换先释放旧引用，停止可重复调用，异步工作未完成时停止保持
+`stopping`，直到工作结束后再清理。控制器只在 Android Activity/控制线程上使用。
+
+## 输入交付缺口（#32）
+
+当前输入 looper 只处理 Android Back 键，没有把 `MotionEvent` 触点交给 r2d
+核心。下一片必须在同一输入／核心线程创建唯一的 `dm_android_pad` 和
+`dm_android_touch`，把 `MotionEvent` pointer ID 当作不透明 ID，使用非负
+`CLOCK_MONOTONIC` 纳秒时间戳，并按 view density 把物理像素转换为逻辑点后调用
+`dm_android_touch_down/move/up/cancel`。消费端必须调用
+`dm_android_touch_read`（不得直接读 `dm_android_pad_read`）以取得有序队列视图。
+
+适配器的 16 槽脉冲环有界。环满导致变更事件被拒绝时，App 必须在输入线程排空
+读取后重试，不能静默丢弃；即使环满，`ACTION_UP`/`ACTION_CANCEL` 也必须在同一
+线程完成（无法排队时回退 `cancel_all`，避免指针卡住）。该接线不属于生命周期
+切片，#32 仍保持开放。
+
 ## 构建
 
 ```sh

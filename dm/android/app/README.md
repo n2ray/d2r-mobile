@@ -6,6 +6,42 @@ This NativeActivity development app bundles **only owned synthetic fixtures**. I
 
 At startup it reads a synthetic artifact, rebinds gates, maps RX/R/RW pages and attempts a native guest-TLS round trip in the actual app process. Log tag: `D2R-Diagnostic`. When a window exists it draws the tested Vulkan fragment-coordinate pattern, reads it back and copies it into an Android native window. This is a one-frame engineering diagnostic, not an optimized game presenter. Pause/resume are logged; low memory releases the GPU context, and redraw recreates it. No background rendering loop, game resource importer, saves, game controls or audio is implemented here.
 
+## Lifecycle ownership
+
+`app/lifecycle.c` is the production NativeActivity lifecycle controller. Its
+states are `created -> starting -> loading -> owned-diagnostic`, with `paused`,
+`stopping`, `stopped` and `failed` transitions. The diagnostic backend is
+explicitly labelled `owned-diagnostic`; `running` is reserved for an admitted
+game backend and is never entered by this app. A load failure is visible as
+`failed`, performs one host cleanup, and requires a stopped/restarted controller
+before another start.
+
+The controller owns one acquired `ANativeWindow` reference, not a
+callback-scoped borrowed pointer. `onNativeWindowCreated` acquires and
+`onNativeWindowDestroyed`/stop releases it; replacement releases the old
+reference before acquiring the new one. Engine cleanup is called once, stop is
+idempotent, and a stop requested while asynchronous work is pending remains in
+`stopping` until `work_end` completes it. The controller is single-threaded on
+the Android activity/control thread.
+
+## Input delivery gap (issue #32)
+
+The current input looper handles only the Android Back key. It does not deliver
+`MotionEvent` touches to the r2d core. The next input slice must create one
+`dm_android_pad` and one `dm_android_touch` on the same input/core thread, map
+`MotionEvent` pointer IDs as opaque IDs, stamp non-negative `CLOCK_MONOTONIC`
+nanoseconds, and convert physical pixels to logical points using the view
+density before calling `dm_android_touch_down/move/up/cancel`. The consumer must
+call `dm_android_touch_read` (never `dm_android_pad_read`) for the ordered
+queued-pulse view.
+
+The adapter's 16-pulse ring is bounded. If a mutating event is rejected because
+the ring is full, the app must drain reads on the input thread and retry; it must
+not silently ignore the event, and `ACTION_UP`/`ACTION_CANCEL` must be resolved
+on that thread even when the ring is full (fall back to `cancel_all` if a release
+cannot be queued). This wiring is not part of the lifecycle slice and remains
+open in #32.
+
 ## Build
 
 ```sh
