@@ -17,13 +17,21 @@ and were copied for this slice; only derived symbol names/counts appear here.
 - Conservative contiguous-block slice around the first `BLR xN`: ADRP/ADD/LDR/MOV register tracking with correct
   `Rd = w & 31` / `Rn = (w >> 5) & 31`; any unsupported instruction, call, or branch boundary invalidates all tracked
   address state. Stack-base loads are recorded as `stack` descriptors, never resolved into object identity.
-- Relocations: `1026` with a defined symbol record is a local target; `1026` with symbol index 0 remains unresolved;
-  `1027` is a relative addend; other types are unsupported. Long-mangled names are read with a bounded 4096-byte string
-  window (the earlier 128-byte window misclassified a long lambda symbol as nameless); the window is still bounds-checked.
-- Owned microchecks (`provenance_slice.py --selftest`, 5 checks, all pass): global-slot load classification, parameter
-  move leaves unknown, unsupported `EOR` write invalidates, call clobber invalidates, branch boundary invalidates.
+- Relocations: `1026` with a defined symbol record is a local target; a genuine raw `r_info` symbol index 0 is
+  unresolved; a nonzero index whose name is missing/truncated is `name unavailable` (never index 0); an undefined symbol
+  is `IMPORT_UNDEFINED`; `1027` is a relative addend; other types are unsupported. The raw index is retained in the
+  private method.
+- Long mangled names use a bounded 4096-byte window; the earlier 128-byte window truncated a 281-byte name and
+  misclassified that slot as nameless/index-0. That attribution is retracted for the apm helper slot in this note and in
+  `sdk-service-path-oe-apm.md`; other unresolved slots keep their unknown status.
+- Owned microchecks (`provenance_slice.py --selftest`, 11 checks, all pass): global-slot load, parameter move,
+  unsupported `EOR` write, call clobber, branch boundary, actual index-0, nonzero truncated name (not index-0), 281-byte
+  long name, nonzero undefined import, 1027 relative, 1025 unsupported.
 - Limits: one contiguous block; no interprocedural write proof; unvisited code remains unknown; ABI-derived vtable
   ordering is labelled as such, not as observed execution.
+- **Automated vs manual:** the automated slice for this block yields `x8 = load_unknown` and `x0 = unknown` (conservative
+  invalidation at the null check/unsupported instruction). The stack-address call, stack load and `[[x0]+8]` chain below
+  are **manual adjacent observations** of the same block, not automated descriptor proof.
 
 ## 2. Observed chain of the BLR
 
@@ -35,19 +43,22 @@ sits in a later contiguous block:
 3. `x8 = [x0]` (object vptr), then `x8 = [x8 + 8]` (vtable slot);
 4. `BLR x8`.
 
-With the corrected string bound, the GOT slot of the call in step 1 resolves to a **defined local** symbol whose name is
-the lambda of
+With the corrected string bound, the GOT slot of the call in step 1 is a `1026` entry with a **nonzero raw symbol index and
+a 281-byte name** that resolves to a **defined local** symbol: the lambda of
 `nn::sf::SimpleAllInOneHipcClientManager<3>::InitializeShimLibraryHolder<nn::apm::IManager, ...>::operator()(SharedPointer<nn::apm::IManager>)`.
-This is the only candidate producer of the object pointer in the block, and it ties the receiver to the
-`nn::apm::IManager` shim-holder initialization path. It is **not** proven that this call writes the stack out-param; that
-write is an ABI/dataflow assumption, so the receiver identity is a bounded candidate, not a fact.
+The earlier 128-byte window truncated this name and produced the now-retracted "nameless/index-0" label. This call is the
+only candidate producer of the object pointer in the block (manual adjacent observation; the automated descriptor stays
+`load_unknown`), and it ties the receiver to the `nn::apm::IManager` shim-holder initialization path. It is **not**
+proven that this call writes the stack out-param; that write is an ABI/dataflow assumption, so the receiver identity is a
+bounded candidate, not a fact.
 
 The static vtable `_ZTV...ObjectImplFactory...CmifProxy<nn::apm::IManager>...ObjectE` (104 bytes) contains, in order:
 offset-to-top `0`, typeinfo, `AddReference`, `Release`, `GetProxyInfo`, `GetInterfaceTypeInfo`, `_nn_sf_sync_OpenSession`,
-`_nn_sf_sync_GetPerformanceMode`. Under the Itanium C++ ABI vtable layout (public spec, `[ABI]`, not a repository fact),
-the object vptr points to the address point after offset-to-top/typeinfo, so `[vptr + 8]` is the **second** virtual
-entry, i.e. `Release`, not `OpenSession`. The mapping is therefore consistent with releasing an apm `IManager` shim
-object; it is not an `OpenSession` call in this path.
+`_nn_sf_sync_GetPerformanceMode`. **Conditional candidate:** if the receiver really is this `CmifProxy` object *and* the
+Itanium C++ ABI address-point convention applies
+([primary spec §2.5.2](https://itanium-cxx-abi.github.io/cxx-abi/abi.html#vtable)), then `[vptr + 8]` is the second virtual
+entry, i.e. a candidate `Release`. The actual target remains unknown because both preconditions are unproven; this note
+does **not** conclude that the call is or is not `OpenSession`/a service acquisition.
 
 ## 3. The `apm` literal
 
@@ -58,9 +69,10 @@ kept only as a static address candidate; no port name and no service endpoint is
 ## 4. Stop point / blocker
 
 First unproven boundary: the stack out-param write that would make the shim object the BLR receiver, and the exact vptr
-convention of the apm `IManager` object. Without one of those, neither `OpenSession` nor any command/reply is attached to
-this path. `_nn_sf_sync_OpenSession` exists as a static vtable entry and a proxy method symbol, but it is not the target
-of this `BLR x8` under the ABI mapping; no command ID, request layout or reply consumer is proven.
+convention of the apm `IManager` object. Without both, neither `OpenSession` nor any command/reply is attached to this
+path, and the conditional `Release` mapping is not promoted to a fact. `_nn_sf_sync_OpenSession` exists as a static
+vtable entry and proxy method symbol; whether this path reaches it remains unknown. No command ID, request layout or
+reply consumer is proven.
 
 Next static evidence that would help: a bounded write-set proof for the step-1 call's out-param (or a trace of the
 `InitializeShimLibraryHolder` body showing it stores the holder), or an object-layout/vptr convention for
