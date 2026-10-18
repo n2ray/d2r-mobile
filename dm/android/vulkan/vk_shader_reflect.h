@@ -41,10 +41,18 @@ typedef struct {
     uint32_t binding_count;
     dm_vk_reflect_binding bindings[DM_VK_REFLECT_MAX_BINDINGS];
     uint32_t code_bytes;
+    uint32_t code_capacity;               // code 实际拥有的字节数；code_bytes 必须 ≤ 它 | owned bytes; code_bytes must not exceed it
     char code_sha256[65];                 // 模块内容摘要（总是计算） | always computed
     int sidecar_hash_bound;               // 1 = sidecar 带 spirv_sha256 且匹配 | sidecar carried a matching digest
     uint8_t *code;                        // 载入时读取的唯一副本，plan 拥有；执行用同一缓冲 | single owned copy used for execution
 } dm_vk_shader_plan;
+// 所有权契约 | Ownership contract:
+//   · load 成功时 plan 拥有 code（malloc）；用 dm_vk_reflect_free 释放。free 之后结构被清零，重复 free 安全。
+//   · 对结构做浅拷贝会共享 code：只能释放其中一个，或让所有副本都不释放；不要对同一 code 调用两次 free。
+//   · 重新 load 到同一个 plan 前必须先 free，否则旧 code 泄漏（load 会 memset，不会释放调用者已有指针）。
+//   · On success the plan owns code (malloc); release with dm_vk_reflect_free, which zeroes the struct so a repeat free
+//     is safe. A shallow copy shares code: free exactly one owner (or neither). Free before reloading into the same plan;
+//     load memsets the output and does not free a caller's existing pointer.
 
 // 设备/派发上限（测试可用小值构造；执行时从 VkPhysicalDeviceLimits 填充）。
 // Device/dispatch limits (tests may use small values; execution fills this from VkPhysicalDeviceLimits).

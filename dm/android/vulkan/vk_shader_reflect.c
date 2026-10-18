@@ -289,25 +289,33 @@ static int scan_module(const uint8_t *data, size_t size, module_t *m, char *why,
             break;
         }
         case OP_TYPE_IMAGE: {
-            if (n < 7) { set_why(why, cap, "OpTypeImage 操作数不足"); return 0; }
+            if (n < 8) { set_why(why, cap, "OpTypeImage 操作数不足（需 8 个，含必填 Image Format）"); return 0; }
             if (m->type_count >= MAX_TYPES) { set_why(why, cap, "类型过多"); return 0; }
             type_t *t = &m->types[m->type_count++];
             memset(t, 0, sizeof *t);
             t->id = o[0]; t->kind = OP_TYPE_IMAGE;
-            t->a = o[2]; t->b = o[4]; t->c = o[5]; t->d = o[6]; t->e = n > 7 ? o[7] : 0;   // dim, arrayed, ms, sampled, format
+            t->a = o[2]; t->b = o[4]; t->c = o[5]; t->d = o[6]; t->e = o[7];   // dim, arrayed, ms, sampled, format
             break;
         }
         case OP_TYPE_SAMPLED_IMAGE:
         case OP_TYPE_INT:
         case OP_TYPE_FLOAT:
         case OP_TYPE_VECTOR: {
+            if (n < 1) { set_why(why, cap, "类型指令缺少结果 id"); return 0; }
             if (m->type_count >= MAX_TYPES) { set_why(why, cap, "类型过多"); return 0; }
             type_t *t = &m->types[m->type_count++];
             memset(t, 0, sizeof *t);
             t->id = o[0]; t->kind = op;
-            if (op == OP_TYPE_INT || op == OP_TYPE_FLOAT) t->a = n >= 1 ? o[1] : 0;
-            if (op == OP_TYPE_VECTOR) { t->a = n >= 2 ? o[1] : 0; t->b = n >= 2 ? o[2] : 0; }
-            if (op == OP_TYPE_SAMPLED_IMAGE) t->a = n >= 1 ? o[1] : 0;
+            if (op == OP_TYPE_INT || op == OP_TYPE_FLOAT) {
+                if (n < 2) { set_why(why, cap, "OpTypeInt/Float 操作数不足（需宽度，实际 %u）", n); return 0; }
+                t->a = o[1];
+            } else if (op == OP_TYPE_VECTOR) {
+                if (n < 3) { set_why(why, cap, "OpTypeVector 操作数不足（需分量类型与数量，实际 %u）", n); return 0; }
+                t->a = o[1]; t->b = o[2];
+            } else {
+                if (n < 2) { set_why(why, cap, "OpTypeSampledImage 操作数不足（实际 %u）", n); return 0; }
+                t->a = o[1];
+            }
             break;
         }
         case OP_DECORATE:
@@ -399,6 +407,7 @@ static int build_plan(module_t *m, dm_vk_shader_plan *plan, char *why, size_t ca
             if (push_seen) { set_why(why, cap, "出现多个 push constant 块"); return 0; }
             type_t *t = find_type(m, ptr->pointee);
             if (!t || t->kind != OP_TYPE_STRUCT) { set_why(why, cap, "push constant 变量 %%%u 指向的不是结构体", var->id); return 0; }
+            if (!find_decor(m, t->id, DEC_BLOCK)) { set_why(why, cap, "push constant 结构体 %%%u 缺少 Block 装饰", t->id); return 0; }
             uint32_t size = 0, offs[MAX_MEMBERS], sizes[MAX_MEMBERS], spans = 0;
             for (uint32_t k = 0; k < t->members; k++) {
                 decor_t *off = NULL;
@@ -517,6 +526,7 @@ VkResult dm_vk_reflect_load(const char *spv_path, const char *res_json_path, dm_
     free(m);
     if (!ok) { free(code); return VK_ERROR_INITIALIZATION_FAILED; }
     plan->code_bytes = (uint32_t)len;
+    plan->code_capacity = (uint32_t)len;
     plan->code = code;                 // plan 拥有；执行时用同一缓冲，绝不按路径重开 | owned; execution uses this buffer, never a reopened path
     dm_vk_sha256_hex(plan->code, (size_t)len, plan->code_sha256);
 
@@ -567,7 +577,11 @@ int dm_vk_reflect_check(const dm_vk_shader_plan *plan, const dm_vk_reflect_limit
                         char *why, size_t why_cap) {
     if (why && why_cap) why[0] = 0;
     if (!plan || !plan->code || !plan->code_bytes) { set_why(why, why_cap, "plan 没有模块字节（未经 load 或已释放）"); return 0; }
-    if (plan->code_bytes < 20 || plan->code_bytes % 4) { set_why(why, why_cap, "plan 的模块长度 %u 非法", plan->code_bytes); return 0; }
+    if (plan->code_bytes < 20 || plan->code_bytes % 4 || plan->code_bytes > MAX_MODULE_BYTES ||
+        plan->code_capacity < 20 || plan->code_capacity > MAX_MODULE_BYTES || plan->code_bytes > plan->code_capacity) {
+        set_why(why, why_cap, "plan 的模块长度 %u / 拥有容量 %u 非法或超出上限", plan->code_bytes, plan->code_capacity);
+        return 0;
+    }
     char hash[65];
     dm_vk_sha256_hex(plan->code, plan->code_bytes, hash);
     if (strcmp(hash, plan->code_sha256)) { set_why(why, why_cap, "plan 的 sha256 与其字节不一致（公开结构被篡改）"); return 0; }

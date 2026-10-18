@@ -82,6 +82,39 @@ static int mutate_decor(uint8_t *code, size_t size, uint32_t dec, uint32_t value
     }
     return 0;
 }
+static int mutate_decor_nth(uint8_t *code, size_t size, uint32_t dec, int nth, uint32_t newdec) {
+    uint32_t *w = (uint32_t *)code;
+    size_t words = size / 4;
+    int seen = 0;
+    for (size_t i = 5; i < words;) {
+        uint16_t op = (uint16_t)(w[i] & 0xffff), wc = (uint16_t)(w[i] >> 16);
+        if (!wc || i + wc > words) return 0;
+        if (op == 71 && wc >= 3 && w[i + 2] == dec && seen++ == nth) { w[i + 2] = newdec; return 1; }
+        i += wc;
+    }
+    return 0;
+}
+static int count_decor(const uint8_t *code, size_t size, uint32_t dec) {
+    const uint32_t *w = (const uint32_t *)code;
+    size_t words = size / 4;
+    int n = 0;
+    for (size_t i = 5; i < words;) {
+        uint16_t op = (uint16_t)(w[i] & 0xffff), wc = (uint16_t)(w[i] >> 16);
+        if (!wc || i + wc > words) return n;
+        if (op == 71 && wc >= 3 && w[i + 2] == dec) n++;
+        i += wc;
+    }
+    return n;
+}
+// 构造只有 5 字头 + 一条指令的模块，用于精确命中操作数越界（ASAN 下运行）。
+// Build a header + one instruction module to hit exact operand truncation cases (run under ASAN).
+static int write_module(const char *name, const uint32_t *words, size_t count) {
+    uint32_t buf[16];
+    if (count + 5 > sizeof buf / sizeof buf[0]) return 0;
+    buf[0] = 0x07230203u; buf[1] = 0x00010300u; buf[2] = 0; buf[3] = 2; buf[4] = 0;
+    memcpy(buf + 5, words, count * sizeof buf[0]);
+    return write_all(path_of(name), (const uint8_t *)buf, (count + 5) * sizeof buf[0]);
+}
 
 static void expect_reject(const char *label, const char *spv, const char *res, const char *needle) {
     dm_vk_shader_plan plan;
@@ -193,8 +226,69 @@ int main(int argc, char **argv) {
             expect_reject("storage-class", path_of("storage.spv"), g_res, "存储类");
             free(m);
         }
+        // EOF 截断：从 5 字头起每 4 字节切一次，公开 load 必须拒绝且不越界读（ASAN 下运行）。
+        // EOF truncation: cut every 4 bytes from the header; the public load must reject without OOB reads (ASAN).
+        int trunc_bad = 0;
+        for (size_t cut = 20; cut < size; cut += 4) {
+            uint8_t *part = malloc(size);
+            if (!part) { trunc_bad++; break; }
+            memcpy(part, code, cut);
+            if (!write_all(path_of("eof.spv"), part, cut)) trunc_bad++;
+            free(part);
+            dm_vk_shader_plan p;
+            char w[DM_VK_REFLECT_WHY] = {0};
+            if (dm_vk_reflect_load(path_of("eof.spv"), g_res, &p, w, sizeof w) == VK_SUCCESS) {
+                trunc_bad++;
+                dm_vk_reflect_free(&p);
+            }
+        }
+        EXPECT(trunc_bad == 0);
         free(code);
     }
+
+    // 精确的缺操作数探测（对应 codex-pr60-truncated.c 的 7 字模块）：FLOAT wc=2 曾在 EOF 后读 4 字节。
+    // Exact missing-operand probes (the 7-word module from codex-pr60-truncated.c): FLOAT wc=2 used to read past the end.
+    const uint32_t float_trunc[] = {(2u << 16) | 22u, 1u};
+    EXPECT(write_module("float-trunc.spv", float_trunc, 2));
+    expect_reject("float-trunc", path_of("float-trunc.spv"), g_res, "操作数不足");
+    const uint32_t int_trunc[] = {(1u << 16) | 21u};
+    EXPECT(write_module("int-trunc.spv", int_trunc, 1));
+    expect_reject("int-trunc", path_of("int-trunc.spv"), g_res, "结果 id");
+    const uint32_t vec_trunc[] = {(3u << 16) | 23u, 1u, 2u};
+    EXPECT(write_module("vec-trunc.spv", vec_trunc, 3));
+    expect_reject("vector-trunc", path_of("vec-trunc.spv"), g_res, "OpTypeVector");
+    const uint32_t img_trunc[] = {(8u << 16) | 25u, 1u, 1u, 0u, 0u, 0u, 2u, 0u};
+    EXPECT(write_module("image-trunc.spv", img_trunc, 8));
+    expect_reject("image-format-missing", path_of("image-trunc.spv"), g_res, "Image Format");
+
+    // 公开长度/容量被篡改时，校验必须在哈希与解析之前拒绝。
+    // A mutated public length/capacity must be rejected before hashing or parsing.
+    dm_vk_shader_plan cap = plan;
+    cap.code_bytes = 0xfffffff0u;
+    expect_check_fail("plan-bytes-overflow", &cap, &real, WORDS, "长度");
+    cap = plan;
+    cap.code_capacity = 16;
+    expect_check_fail("plan-capacity-small", &cap, &real, WORDS, "容量");
+
+    // PushConstant 结构体缺少 Block：逐个把 Block 装饰改成无效值，必须拒绝且诊断指向 push constant。
+    // PushConstant struct without Block: turn each Block decoration into an invalid one; the diagnostic must name it.
+    int blocks = count_decor(plan.code, plan.code_bytes, 2);
+    EXPECT(blocks >= 1);
+    int push_block_hit = 0;
+    for (int n = 0; n < blocks; n++) {
+        uint8_t *b = malloc(plan.code_bytes);
+        if (!b) break;
+        memcpy(b, plan.code, plan.code_bytes);
+        if (!mutate_decor_nth(b, plan.code_bytes, 2, n, 33)) { free(b); continue; }
+        EXPECT(write_all(path_of("noblock.spv"), b, plan.code_bytes));
+        free(b);
+        dm_vk_shader_plan nb;
+        char nbwhy[DM_VK_REFLECT_WHY] = {0};
+        VkResult rr = dm_vk_reflect_load(path_of("noblock.spv"), g_res, &nb, nbwhy, sizeof nbwhy);
+        if (rr == VK_SUCCESS) { dm_vk_reflect_free(&nb); continue; }
+        if (strstr(nbwhy, "push constant") && strstr(nbwhy, "Block")) push_block_hit = 1;
+    }
+    EXPECT(push_block_hit);
 
     // image 夹具：sampled=2 的 storage image 仍被明确拒绝（本切片不执行 image）；把 sampled 改成 1 时诊断必须指向
     // Sampled 操作数，而不是 ImageFormat，证明扫描器区分了这两个操作数。
