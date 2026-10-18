@@ -196,6 +196,22 @@ static void two_distinct_pulses(fixture *f) {
     CHECK(c.buttons == 0);
 }
 
+/* A new pulse arriving during the release must queue, not replace the release or
+   the older same-button pulse; FIFO button order remains B, B, X. */
+static void same_button_release_with_new_pulse(fixture *f) {
+    dm_npad_state a, b, c, d, e;
+    tap(f, 1, f->layout.target[DM_TC_SKILL1].x, f->layout.target[DM_TC_SKILL1].y, 9300000000);
+    tap(f, 2, f->layout.target[DM_TC_SKILL1].x, f->layout.target[DM_TC_SKILL1].y, 9320000000);
+    a = read_pad(f); CHECK(a.buttons == DM_BTN_B);
+    tap(f, 3, f->layout.target[DM_TC_SKILL2].x, f->layout.target[DM_TC_SKILL2].y, 9340000000);
+    CHECK(dm_android_touch_tick(f->touch, 9350000000));
+    b = read_pad(f); CHECK(b.buttons == 0);
+    CHECK(dm_android_touch_tick(f->touch, 9360000000));
+    c = read_pad(f); CHECK(c.buttons == DM_BTN_B);
+    d = read_pad(f); CHECK(d.buttons == DM_BTN_X);
+    e = read_pad(f); CHECK(e.buttons == 0);
+}
+
 /* Same-button repeats need a consumer-visible release between edges. */
 static void repeated_same_button(fixture *f) {
     dm_npad_state a, b, c, d;
@@ -362,6 +378,7 @@ int main(void) {
     CASE(cancel_isolates_unread_pulse);
     CASE(two_distinct_pulses);
     CASE(repeated_same_button);
+    CASE(same_button_release_with_new_pulse);
     CASE(same_button_release_across_ticks);
     CASE(same_button_release_with_unrelated_move);
     CASE(distinct_aims);
