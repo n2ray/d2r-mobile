@@ -64,11 +64,13 @@ static void close_handle(dm_host*h,uint32_t handle){uint64_t r[31]={handle};CHEC
 static uint8_t *heap_for(dm_host*h){
     uint64_t r[31]={[1]=UNIT};CHECK(!dm_host_svc(h,1,r));return(uint8_t*)(uintptr_t)r[1];
 }
+#if defined(__aarch64__)
 static void check_state(dm_host*h,uint32_t handle,int32_t core,uint64_t mask){
     int32_t actual_core=-1;uint64_t actual_mask=0;
     CHECK(!dm_host_thread_virtual_core_state(h,handle,&actual_core,&actual_mask));
     CHECK(actual_core==core&&actual_mask==mask);
 }
+#endif
 
 int main(void){
 #if defined(__aarch64__)
