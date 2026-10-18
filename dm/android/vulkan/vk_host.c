@@ -15,6 +15,12 @@
 #ifndef VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
 #define VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME "VK_EXT_swapchain_maintenance1"
 #endif
+#ifndef VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME
+#define VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME "VK_EXT_surface_maintenance1"
+#endif
+#ifndef VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME
+#define VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME "VK_KHR_get_surface_capabilities2"
+#endif
 
 #define DM_VK_VALIDATION_LAYER "VK_LAYER_KHRONOS_validation"
 
@@ -105,7 +111,7 @@ VkResult dm_vk_create_present(const dm_vk_present_options *options, dm_vk *out) 
         return VK_ERROR_EXTENSION_NOT_PRESENT;
 #endif
     dm_vk vk = {0};
-    const char *instance_extensions[4];
+    const char *instance_extensions[6];
     uint32_t instance_extension_count = 0;
     instance_extensions[instance_extension_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
 #ifdef __ANDROID__
@@ -113,6 +119,12 @@ VkResult dm_vk_create_present(const dm_vk_present_options *options, dm_vk *out) 
 #endif
     int portability = dm_instance_extension_present(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
     if (portability) instance_extensions[instance_extension_count++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+    int surface_maintenance = dm_instance_extension_present(VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME) &&
+        dm_instance_extension_present(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+    if (surface_maintenance) {
+        instance_extensions[instance_extension_count++] = VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME;
+        instance_extensions[instance_extension_count++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
+    }
     VkResult result = vkEnumerateInstanceVersion(&vk.api_version);
     if (result != VK_SUCCESS) vk.api_version = VK_API_VERSION_1_0;
     uint32_t requested_api = VK_API_VERSION_1_1;
@@ -124,6 +136,7 @@ VkResult dm_vk_create_present(const dm_vk_present_options *options, dm_vk *out) 
         .enabledExtensionCount = instance_extension_count, .ppEnabledExtensionNames = instance_extensions};
     result = vkCreateInstance(&create, NULL, &vk.instance);
     if (result != VK_SUCCESS) return result;
+    vk.surface_maintenance1 = surface_maintenance;
 
     if (options->create_surface) {
         result = options->create_surface(vk.instance, options->window, &vk.surface);
@@ -188,7 +201,8 @@ VkResult dm_vk_create_present(const dm_vk_present_options *options, dm_vk *out) 
     device_extensions[device_extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     int portability_subset = dm_device_extension_present(vk.physical, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
     if (portability_subset) device_extensions[device_extension_count++] = VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME;
-    int maintenance1 = dm_device_extension_present(vk.physical, VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+    int maintenance1 = surface_maintenance && vk.api_version >= VK_API_VERSION_1_1 &&
+        dm_device_extension_present(vk.physical, VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
     VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance_features = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT};
     if (maintenance1) {

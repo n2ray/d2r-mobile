@@ -21,8 +21,11 @@ typedef struct {
     VkFence *present_fences;         // one per image; VK_EXT_swapchain_maintenance1 completion proof
     VkFence fence;                   // submission completion only
     uint8_t *present_pending;        // per image: a present fence must be waited before reuse/retire
+    VkFence acquire_fence;           // proof that vkAcquireNextImageKHR acquisition operation completed
+    int acquire_pending;
     uint32_t image_index;            // valid only while acquired/submitted
     int acquired, submitted, fence_pending, needs_recreate, retire_blocked;
+    VkResult retire_error;
 } dm_vk_swapchain;
 
 typedef struct {
