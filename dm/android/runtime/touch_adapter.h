@@ -76,6 +76,7 @@ typedef struct dm_android_touch_action {
     uint32_t kind;
     float x, y;
     uint64_t sequence;
+    int32_t source_pointer;   /* pointer id that produced an object action; -1 otherwise */
 } dm_android_touch_action;
 
 // One-shot observation of an armed town-portal gesture. The fields are copied

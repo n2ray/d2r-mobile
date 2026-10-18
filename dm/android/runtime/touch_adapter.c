@@ -38,6 +38,7 @@ struct dm_android_touch {
     uint64_t seen_tab_tap;
     uint64_t seen_shop_drop;
     uint64_t seen_mouse_click;
+    int32_t use_pointer;
     int portal_available;
     uint64_t portal_mask;
     uint64_t portal_identity;
@@ -199,6 +200,7 @@ static void release_all(dm_android_touch *touch) {
     memset(touch->used, 0, sizeof touch->used);
     touch->pulse_head = touch->pulse_count = 0;
     touch->release_waiting = 0;
+    touch->use_pointer = -1;
     dm_tc_cancel_all(&touch->state);
     action_baseline(touch);
     dm_android_pad_clear_edges(touch->pad);
@@ -269,7 +271,9 @@ int dm_android_touch_up(dm_android_touch *touch, int32_t pointer_id, int64_t tim
     if (slot < 0) return 0;
     double now_s;
     if (!accept_time(touch, time_ns, &now_s)) return 0;
+    uint64_t use_before = touch->state.use_seq;
     dm_tc_end_at(&touch->state, slot, now_s);
+    if (touch->state.use_seq != use_before) touch->use_pointer = pointer_id;
     touch->used[slot] = 0;
     touch->pointer_id[slot] = -1;
     publish(touch);
@@ -460,6 +464,7 @@ int dm_android_touch_take_action(dm_android_touch *touch, dm_android_touch_actio
     if (!touch || !out) return 0;
     dm_tc_state *s = &touch->state;
     memset(out, 0, sizeof(*out));
+    out->source_pointer = -1;
     if (s->world_tap_seq != touch->seen_world_tap) {
         touch->seen_world_tap = s->world_tap_seq;
         out->kind = DM_ANDROID_ACTION_WORLD_TAP;
@@ -479,6 +484,7 @@ int dm_android_touch_take_action(dm_android_touch *touch, dm_android_touch_actio
         out->kind = DM_ANDROID_ACTION_USE;
         out->x = s->pointer_x; out->y = s->pointer_y;
         out->sequence = s->use_seq;
+        out->source_pointer = touch->use_pointer;
         return 1;
     }
     if (s->long_press_seq != touch->seen_long_press) {
