@@ -20,6 +20,7 @@ VkResult dm_vk_draw_indexed_textured_offscreen(dm_vk *vk, const dm_vk_indexed_te
     if (!pixels->bytes || !pixels->width || !pixels->height || pixels->width > 16384 || pixels->height > 16384)
         return VK_ERROR_INITIALIZATION_FAILED;
     if (!draw->texture_width || !draw->texture_height) return VK_ERROR_INITIALIZATION_FAILED;
+    if (draw->texture_width > 16384 || draw->texture_height > 16384) return VK_ERROR_INITIALIZATION_FAILED;
     uint64_t out_bytes = (uint64_t)pixels->width * pixels->height * 4u;
     uint64_t vertex_bytes = (uint64_t)draw->vertex_count * DM_VK_INDEXED_TEXTURED_VERTEX_STRIDE;
     uint64_t index_bytes = (uint64_t)draw->index_count * 2u;
