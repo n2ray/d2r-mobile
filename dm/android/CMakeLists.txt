@@ -318,6 +318,32 @@ endif()
 option(DM_ANDROID_VULKAN "Build Vulkan offscreen foundation and GPU verification" ON)
 if(DM_ANDROID_VULKAN)
     add_subdirectory(vulkan)
+    # #111 离屏触摸 HUD：几何直接复用冻结 dm_tc_layout；无 App/swapchain。
+    find_program(DM_GLSLC glslc REQUIRED)
+    set(dm_hud_vert ${CMAKE_CURRENT_BINARY_DIR}/vulkan/hud.vert.spv)
+    set(dm_hud_frag ${CMAKE_CURRENT_BINARY_DIR}/vulkan/hud.frag.spv)
+    add_custom_command(OUTPUT ${dm_hud_vert}
+        COMMAND ${DM_GLSLC} --target-env=vulkan1.1 -O ${CMAKE_CURRENT_SOURCE_DIR}/vulkan/hud.vert -o ${dm_hud_vert}
+        DEPENDS vulkan/hud.vert VERBATIM)
+    add_custom_command(OUTPUT ${dm_hud_frag}
+        COMMAND ${DM_GLSLC} --target-env=vulkan1.1 -O ${CMAKE_CURRENT_SOURCE_DIR}/vulkan/hud.frag -o ${dm_hud_frag}
+        DEPENDS vulkan/hud.frag VERBATIM)
+    add_custom_target(dm_touch_hud_shaders DEPENDS ${dm_hud_vert} ${dm_hud_frag})
+    add_library(dm_android_touch_hud STATIC runtime/touch_hud.c)
+    target_include_directories(dm_android_touch_hud PUBLIC runtime ../ios/Sources vulkan)
+    target_link_libraries(dm_android_touch_hud PUBLIC dm_android_vk dm_android_touch_core)
+    target_compile_options(dm_android_touch_hud PRIVATE -Wall -Wextra -Werror)
+    add_executable(dm_touch_hud_test tests/touch_hud.c)
+    target_link_libraries(dm_touch_hud_test PRIVATE dm_android_touch_hud)
+    target_compile_options(dm_touch_hud_test PRIVATE -Wall -Wextra -Werror)
+    add_dependencies(dm_touch_hud_test dm_touch_hud_shaders)
+    if(ANDROID)
+        target_link_options(dm_touch_hud_test PRIVATE "-Wl,-z,max-page-size=16384")
+    else()
+        add_test(NAME touch_hud_offscreen COMMAND dm_touch_hud_test
+            ${dm_hud_vert} ${dm_hud_frag} ${CMAKE_CURRENT_BINARY_DIR}/touch-hud-artifacts)
+        set_tests_properties(touch_hud_offscreen PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77)
+    endif()
 endif()
 
 if(ANDROID)
