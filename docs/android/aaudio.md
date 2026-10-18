@@ -16,8 +16,8 @@
 
 ## 生命周期
 
-- `dm_audio_destroy` 先拒绝回调线程重入，置 closing，调用 `requestStop`，检查状态并在未 STOPPED 时 `waitForStateChange`，再 `close`，然后等待 `callback_active==0` 才释放队列和控制块。
-- `requestStop`/状态等待/`close` 任一失败都返回 `-EIO` 并保留对象，不声称安全清理；`callback_active` 计数覆盖已进入的回调，AAudio 文档明确 close 后不再回调，且 close 不从回调内调用。
+- `dm_audio_destroy` 先拒绝回调线程重入，置 closing，调用 `requestStop`，检查状态并在未 STOPPED 时 `waitForStateChange`，**等已进入的 data callback 退出后才 `close`**，然后再确认 active 为 0 才释放队列和控制块。AAudio 文档明确 requestStop 后不再开始新 data callback，且 callbacks 不会多线程并发。
+- `requestStop`/状态等待/`close` 任一失败都返回 `-EIO` 并保留对象，不声称安全清理；`callback_active` 计数覆盖已进入的回调，close 不从回调内调用。
 - 错误回调只记录 disconnected；不回调内 stop/close。disconnect 后 producer write 返回 0，start 返回 `-ENOTCONN`。
 - 公开 start/pause/stop/destroy 需宿主串行化；AAudio close 本身不是线程安全的。
 

@@ -19,6 +19,10 @@ struct dm_audio {
     _Atomic uintptr_t callback_thread;
     pthread_mutex_t lifecycle;
     int started;
+#ifdef DM_AUDIO_TEST
+    dm_audio_test_callback_hook test_hook;
+    void *test_hook_user;
+#endif
 };
 
 #ifdef __ANDROID__
@@ -68,6 +72,9 @@ static dm_audio_callback_result data_callback(dm_aaudio_stream *stream, void *us
         return DM_AUDIO_CALLBACK_STOP;
     }
     atomic_fetch_add_explicit(&a->callbacks, 1, memory_order_relaxed);
+#ifdef DM_AUDIO_TEST
+    if (a->test_hook) a->test_hook(a->test_hook_user);
+#endif
     uint32_t frames = (uint32_t)num_frames;
     uint32_t tail = atomic_load_explicit(&a->tail, memory_order_relaxed);
     uint32_t head = atomic_load_explicit(&a->head, memory_order_acquire);
@@ -205,9 +212,13 @@ int dm_audio_destroy(dm_audio *a) {
     dm_audio_result wait = DM_AUDIO_OK;
     if (current != DM_AUDIO_STATE_STOPPED)
         wait = a->api->wait_for_state_change(a->stream, current, &next, 100000000);
+    // AAudio 文档：requestStop 后不再开始新数据回调；先等已进入的回调退出，再 close。
+    // AAudio docs: no new data callback starts after requestStop; retire the active callback before close.
+    while (atomic_load_explicit(&a->callback_active, memory_order_acquire) != 0) sched_yield();
     dm_audio_result close = a->api->close(a->stream);
     while (atomic_load_explicit(&a->callback_active, memory_order_acquire) != 0) sched_yield();
-    if (stop != DM_AUDIO_OK || wait != DM_AUDIO_OK || next != DM_AUDIO_STATE_STOPPED || close != DM_AUDIO_OK) {
+    if (stop != DM_AUDIO_OK || wait != DM_AUDIO_OK || next != DM_AUDIO_STATE_STOPPED ||
+        close != DM_AUDIO_OK) {
         // 证明失败时不释放队列/控制块；保留对象供调用者诊断，绝不假装安全关闭。
         return -EIO;
     }
@@ -217,3 +228,11 @@ int dm_audio_destroy(dm_audio *a) {
     free(a);
     return 0;
 }
+
+#ifdef DM_AUDIO_TEST
+void dm_audio_test_set_callback_hook(dm_audio *a, dm_audio_test_callback_hook hook, void *user) {
+    if (!a) return;
+    a->test_hook = hook;
+    a->test_hook_user = user;
+}
+#endif

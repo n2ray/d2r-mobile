@@ -90,9 +90,16 @@ int dm_audio_stop(dm_audio *audio);
 // Producer appends interleaved PCM16; returns frames actually written and records overflow/partial explicitly.
 uint32_t dm_audio_write(dm_audio *audio, const int16_t *samples, uint32_t frames);
 void dm_audio_get_stats(const dm_audio *audio, dm_audio_stats *stats);
-// 停止 → 等待 STOPPED → close → 等待回调退出后才释放；从回调内调用返回 -EBUSY，不重入 close。
-// stop -> wait STOPPED -> close -> wait callbacks exit, then free; callback-context calls return -EBUSY.
+// 停止 → 等已进入回调退出 → close/free；从回调内调用返回 -EBUSY，不重入 close。
+// stop -> retire the active callback -> close/free; callback-context calls return -EBUSY.
 int dm_audio_destroy(dm_audio *audio);
+
+#ifdef DM_AUDIO_TEST
+// 仅测试构建：在真实回调 active 区内注入观测/阻塞点，用于证明 owner 与回调的退休顺序。
+// Test build only: inject an observation/blocking point inside the real active-callback window.
+typedef void (*dm_audio_test_callback_hook)(void *user);
+void dm_audio_test_set_callback_hook(dm_audio *audio, dm_audio_test_callback_hook hook, void *user);
+#endif
 
 // Android 真实 AAudio 表；非 Android 返回 NULL。测试显式传入 stub 表。
 const dm_audio_api *dm_audio_default_api(void);
