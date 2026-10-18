@@ -16,6 +16,27 @@ static int map_wrap(int nvn, VkSamplerAddressMode *out) {
         default: return 0;   // 2/3 mirror-clamp 与 4/5 border 未实现 | mirror-clamp and border are not implemented
     }
 }
+// 公开枚举的穷举映射：未知/负值/超大值一律失败，绝不回退成 clamp（此前的三元表达式会静默映射）。
+// Exhaustive mapping for the public enum: unknown/negative/large values fail and never fall back to clamp (the previous
+// ternary silently mapped them).
+static int map_address(dm_vk_address a, VkSamplerAddressMode *out) {
+    switch (a) {
+        case DM_VK_ADDRESS_REPEAT: *out = VK_SAMPLER_ADDRESS_MODE_REPEAT; return 1;
+        case DM_VK_ADDRESS_MIRRORED_REPEAT: *out = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT; return 1;
+        case DM_VK_ADDRESS_CLAMP_TO_EDGE: *out = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; return 1;
+        case DM_VK_ADDRESS_CLAMP_TO_BORDER:
+        case DM_VK_ADDRESS_MIRROR_CLAMP_TO_EDGE:
+        default: return 0;   // 未实现或未知 | unimplemented or unknown
+    }
+}
+static int from_vk_address(VkSamplerAddressMode m, dm_vk_address *out) {
+    switch (m) {
+        case VK_SAMPLER_ADDRESS_MODE_REPEAT: *out = DM_VK_ADDRESS_REPEAT; return 1;
+        case VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT: *out = DM_VK_ADDRESS_MIRRORED_REPEAT; return 1;
+        case VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE: *out = DM_VK_ADDRESS_CLAMP_TO_EDGE; return 1;
+        default: return 0;
+    }
+}
 static VkFilter map_min_mag(int nvn_min) {
     return (nvn_min == 1 || nvn_min == 3 || nvn_min == 5) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
 }
@@ -32,8 +53,7 @@ VkResult dm_vk_sampler_create(dm_vk *vk, const dm_vk_sampler_desc *desc, dm_vk_s
     for (int i = 0; i < 3; i++) {
         if (modes[i] == DM_VK_ADDRESS_CLAMP_TO_BORDER) return VK_ERROR_FEATURE_NOT_PRESENT;   // 未实现 | unimplemented
         if (modes[i] == DM_VK_ADDRESS_MIRROR_CLAMP_TO_EDGE) return VK_ERROR_FEATURE_NOT_PRESENT;
-        if (!map_wrap(modes[i] == DM_VK_ADDRESS_REPEAT ? 1 : modes[i] == DM_VK_ADDRESS_MIRRORED_REPEAT ? 6 : 7, &addr[i]))
-            return VK_ERROR_INITIALIZATION_FAILED;
+        if (!map_address(modes[i], &addr[i])) return VK_ERROR_INITIALIZATION_FAILED;   // 未知/负值/超大值 | unknown/negative/large
     }
     if (!finite_float(desc->lod_min) || !finite_float(desc->lod_max) || !finite_float(desc->lod_bias))
         return VK_ERROR_INITIALIZATION_FAILED;
@@ -78,24 +98,27 @@ VkResult dm_vk_sampler_from_nvn(dm_vk *vk, const dm_vk_nvn_sampler *nvn, dm_vk_s
     memset(&d, 0, sizeof d);
     d.min_filter = map_min_mag(nvn->minf) == VK_FILTER_LINEAR ? DM_VK_FILTER_LINEAR : DM_VK_FILTER_NEAREST;
     d.mag_filter = nvn->magf == 1 ? DM_VK_FILTER_LINEAR : DM_VK_FILTER_NEAREST;
-    d.mipmap = (nvn->minf == 2 || nvn->minf == 3) ? DM_VK_MIP_NEAREST : DM_VK_MIP_LINEAR;
-    if (nvn->minf <= 1) { d.mipmap = DM_VK_MIP_NEAREST; d.lod_max = 0.0f; }       // NotMipmapped
-    else d.lod_max = nvn->lod_max;
-    d.lod_min = nvn->lod_min;
+    if (nvn->minf <= 1) {
+        // Metal 的 NotMipmapped 只采样 level 0（nvn_mtl.m:2553），且 lodMinClamp 在 2555 行被抬到 ≥0；非 mipmap 采样的
+        // 有效 LOD 恒为 0。因此 NVN 的正 lod_min 在这里被精确定义为 0，而不是让 max<min 意外失败。
+        // Metal's NotMipmapped samples level 0 only (nvn_mtl.m:2553) and lodMinClamp is raised to >=0 (line 2555); the
+        // effective LOD is therefore always 0 for non-mipmapped sampling, so a positive NVN lod_min becomes 0 here
+        // instead of failing accidentally on max<min.
+        d.mipmap = DM_VK_MIP_NEAREST;
+        d.lod_min = 0.0f;
+        d.lod_max = 0.0f;
+    } else {
+        d.lod_min = nvn->lod_min;
+        d.lod_max = nvn->lod_max;
+    }
     d.lod_bias = nvn->lod_bias;
     d.max_aniso = nvn->aniso;
     d.compare_enable = nvn->cmp_mode;
     d.has_border = 0;
     VkSamplerAddressMode mapped;
-    if (!map_wrap(nvn->ws, &mapped)) return VK_ERROR_FEATURE_NOT_PRESENT;
-    d.address_u = mapped == VK_SAMPLER_ADDRESS_MODE_REPEAT ? DM_VK_ADDRESS_REPEAT :
-                  mapped == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT ? DM_VK_ADDRESS_MIRRORED_REPEAT : DM_VK_ADDRESS_CLAMP_TO_EDGE;
-    if (!map_wrap(nvn->wt, &mapped)) return VK_ERROR_FEATURE_NOT_PRESENT;
-    d.address_v = mapped == VK_SAMPLER_ADDRESS_MODE_REPEAT ? DM_VK_ADDRESS_REPEAT :
-                  mapped == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT ? DM_VK_ADDRESS_MIRRORED_REPEAT : DM_VK_ADDRESS_CLAMP_TO_EDGE;
-    if (!map_wrap(nvn->wr, &mapped)) return VK_ERROR_FEATURE_NOT_PRESENT;
-    d.address_w = mapped == VK_SAMPLER_ADDRESS_MODE_REPEAT ? DM_VK_ADDRESS_REPEAT :
-                  mapped == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT ? DM_VK_ADDRESS_MIRRORED_REPEAT : DM_VK_ADDRESS_CLAMP_TO_EDGE;
+    if (!map_wrap(nvn->ws, &mapped) || !from_vk_address(mapped, &d.address_u)) return VK_ERROR_FEATURE_NOT_PRESENT;
+    if (!map_wrap(nvn->wt, &mapped) || !from_vk_address(mapped, &d.address_v)) return VK_ERROR_FEATURE_NOT_PRESENT;
+    if (!map_wrap(nvn->wr, &mapped) || !from_vk_address(mapped, &d.address_w)) return VK_ERROR_FEATURE_NOT_PRESENT;
     return dm_vk_sampler_create(vk, &d, out);
 }
 
@@ -106,6 +129,20 @@ VkResult dm_vk_sample_draw(dm_vk *vk, const char *vertex_path, const char *fragm
     if (!vk || !vk->device || !vertex_path || !fragment_path || !texture || !texture->view || !sampler || !sampler->handle || !pixels || !pixels->bytes)
         return VK_ERROR_INITIALIZATION_FAILED;
     if (!width || !height || width > 16384 || height > 16384) return VK_ERROR_INITIALIZATION_FAILED;
+    // sampler2D 输入契约：只接受自有管线验证过的 2D 单层 RGBA8 UNORM 视图，且在创建任何 GPU 对象之前拒绝其余形态。
+    // sampler2D input contract: only the owned pipeline's verified 2D single-layer RGBA8 UNORM view is accepted; all
+    // other shapes are rejected before any GPU object is created.
+    if (texture->view_type != VK_IMAGE_VIEW_TYPE_2D || texture->layers != 1 || texture->levels < 1)
+        return VK_ERROR_FEATURE_NOT_PRESENT;
+    if (texture->format != VK_FORMAT_R8G8B8A8_UNORM) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    if (texture->width > vk->properties.limits.maxImageDimension2D ||
+        texture->height > vk->properties.limits.maxImageDimension2D) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    VkFormatProperties tex_format;
+    vkGetPhysicalDeviceFormatProperties(vk->physical, VK_FORMAT_R8G8B8A8_UNORM, &tex_format);
+    if ((tex_format.optimalTilingFeatures & (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                             VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) !=
+        (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
+        return VK_ERROR_FORMAT_NOT_SUPPORTED;
     if (!finite_float(uv_scale) || uv_scale <= 0 || !finite_float(lod)) return VK_ERROR_INITIALIZATION_FAILED;
     uint64_t bytes = (uint64_t)width * height * 4;
     if (bytes > pixels->capacity) return VK_ERROR_INITIALIZATION_FAILED;

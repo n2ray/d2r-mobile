@@ -11,9 +11,15 @@
 //   · 各向异性：本切片只接受 1.0；> 1 需要设备已启用 samplerAnisotropy（本层不启用），按 FEATURE_NOT_PRESENT 拒绝。
 //   · 比较采样（cmp_mode != 0）未实现，明确拒绝。
 //   · 非法枚举/NaN/Inf/越界不修改 out、不创建资源。
-//   · min/mag filter, mipmap and address modes above; non-mipmapped NVN min filters clamp lod_max to 0 following Metal's
-//     NotMipmapped behaviour; anisotropy only 1.0 (feature is never enabled); comparison sampling is unsupported; invalid
-//     enums/NaN/Inf/limits leave out untouched and allocate nothing.
+//   · 采样绘制只接受 dm_vk_texture_upload 产出的 2D 单层 RGBA8 UNORM 视图；数组/立方/其它格式在创建 GPU 对象前拒绝。
+//     The sampled draw accepts only the 2D single-layer RGBA8 UNORM view produced by dm_vk_texture_upload; array/cube/
+//     other formats are rejected before any GPU object exists.
+//   · 非 mipmap 的 NVN min filter 0/1：Metal 的 NotMipmapped 只采样 level 0，因此有效 LOD 恒为 0（NVN 的正 lod_min
+//     也被定义为 0），这只是映射结论，单级夹具不构成 LOD 像素证明。
+//     Non-mipmapped NVN min filters 0/1: Metal's NotMipmapped samples level 0, so the effective LOD is always 0 (a
+//     positive NVN lod_min is defined as 0). This is a mapping result only; the single-level fixture is not LOD proof.
+//   · min/mag filter, mipmap and address modes above; anisotropy only 1.0 (feature is never enabled); comparison sampling
+//     is unsupported; invalid enums/NaN/Inf/limits leave out untouched and allocate nothing.
 #ifndef DM_VK_SAMPLER_H
 #define DM_VK_SAMPLER_H
 

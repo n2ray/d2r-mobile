@@ -121,6 +121,19 @@ int main(int argc, char **argv) {
     CHECK(((const uint8_t *)out_clamp)[(2 * 4 + 2) * 4] != ((const uint8_t *)out_repeat)[(2 * 4 + 2) * 4]);
     printf("clamp/repeat: %d channel mismatches\n", bad);
 
+    // sampler2D 输入契约：数组视图、sRGB/其它格式、超设备维度、多层都在 GPU 之前拒绝。
+    // sampler2D input contract: array views, sRGB/other formats, oversized dimensions and multi-layer are rejected
+    // before GPU work.
+    dm_vk_texture bad_tex = texture;
+    bad_tex.view_type = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    CHECK(dm_vk_sample_draw(&vk, vert, frag, &bad_tex, &nearest, 4, 4, &canvas, 1.0f, 0.0f) == VK_ERROR_FEATURE_NOT_PRESENT);
+    bad_tex = texture; bad_tex.format = VK_FORMAT_R8G8B8A8_SRGB;
+    CHECK(dm_vk_sample_draw(&vk, vert, frag, &bad_tex, &nearest, 4, 4, &canvas, 1.0f, 0.0f) == VK_ERROR_FORMAT_NOT_SUPPORTED);
+    bad_tex = texture; bad_tex.width = vk.properties.limits.maxImageDimension2D + 1;
+    CHECK(dm_vk_sample_draw(&vk, vert, frag, &bad_tex, &nearest, 4, 4, &canvas, 1.0f, 0.0f) == VK_ERROR_FORMAT_NOT_SUPPORTED);
+    bad_tex = texture; bad_tex.layers = 2;
+    CHECK(dm_vk_sample_draw(&vk, vert, frag, &bad_tex, &nearest, 4, 4, &canvas, 1.0f, 0.0f) == VK_ERROR_FEATURE_NOT_PRESENT);
+
     // 采样器在 GPU 完成后销毁：销毁后再次用新建采样器绘制仍正确。
     // Sampler destroyed after GPU completion: a fresh sampler still renders correctly afterwards.
     dm_vk_sampler_destroy(&vk, &nearest);
@@ -163,8 +176,10 @@ int main(int argc, char **argv) {
     nvn.minf = 4; nvn.cmp_mode = 1; CHECK(dm_vk_sampler_from_nvn(&vk, &nvn, &sentinel) != VK_SUCCESS);
     nvn.cmp_mode = 0; nvn.ws = 5; CHECK(dm_vk_sampler_from_nvn(&vk, &nvn, &sentinel) != VK_SUCCESS);
     nvn.ws = 1; nvn.aniso = 4; CHECK(dm_vk_sampler_from_nvn(&vk, &nvn, &sentinel) != VK_SUCCESS);
-    // 非 mipmap 的 min filter 0：lod_max 固定 0（Metal NotMipmapped）。 | non-mipmapped min filter 0 clamps lod_max to 0.
-    nvn.aniso = 1; nvn.minf = 0; nvn.lod_max = 1000;
+    // 非 mipmap 的 min filter 0：Metal NotMipmapped 只采样 level 0，正 lod_min 被精确定义为 0（映射结论，非像素证明）。
+    // Non-mipmapped min filter 0: Metal NotMipmapped samples level 0, so a positive lod_min is defined as 0 (mapping
+    // result only, not a pixel proof).
+    nvn.aniso = 1; nvn.minf = 0; nvn.lod_min = 5.0f; nvn.lod_max = 5.0f;
     VK_CHECK(dm_vk_sampler_from_nvn(&vk, &nvn, &converted));
     dm_vk_sampler_destroy(&vk, &converted);
 
