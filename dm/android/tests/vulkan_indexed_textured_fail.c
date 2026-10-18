@@ -3,6 +3,7 @@
 // #115 textured indexed failure injection against the real modules with mock Vulkan: descriptor-pool, pipeline, command
 // end and readback invalidation; caller inputs/canvas unchanged and every owned object balanced.
 #include "../vulkan/vk_indexed_textured.h"
+#include "../vulkan/vk_graphics_interface.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,13 +12,15 @@ static int checks, failures;
 #define CHECK(c) do { checks++; if (!(c)) { failures++; fprintf(stderr, "FAIL %d: %s\n", __LINE__, #c); } } while (0)
 #define HANDLE(type, v) ((type)(uintptr_t)(v))
 
-static int fail_stage;   // 1 descriptor pool, 2 pipeline, 3 draw command end, 4 readback invalidate
+static int fail_stage;   // 1 descriptor pool, 2 pipeline, 3 draw command end, 4 readback invalidate, 5 plan shader create
+static unsigned format_queries;
 static unsigned buffers, memories, images, views, renderpasses, framebuffers, shaders, dsls, layouts, pipelines, pools, sets, samplers, commands, fences, mapped, command_serial;
 static unsigned fail_hit, hit_buffers, hit_memories, hit_images, hit_views, hit_renderpasses, hit_framebuffers;
 static unsigned hit_shaders, hit_dsls, hit_layouts, hit_pipelines, hit_pools, hit_sets, hit_samplers, hit_commands, hit_fences, hit_mapped;
 static uint8_t staging[4096];
 
 static void reset(void) {
+    format_queries = 0;
     buffers = memories = images = views = renderpasses = framebuffers = shaders = dsls = layouts = pipelines = pools = sets = samplers = commands = fences = mapped = 0;
     command_serial = 0;
     fail_hit = hit_buffers = hit_memories = hit_images = hit_views = hit_renderpasses = hit_framebuffers = 0;
@@ -36,7 +39,7 @@ static void record_hit(void) {
 }
 
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice p, VkFormat f, VkFormatProperties *o) {
-    (void)p; CHECK(f == VK_FORMAT_R8G8B8A8_UNORM);
+    (void)p; CHECK(f == VK_FORMAT_R8G8B8A8_UNORM); format_queries++;
     o->optimalTilingFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
         VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 }
@@ -95,7 +98,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateFramebuffer(VkDevice d, const VkFramebuff
     (void)d; (void)a; CHECK(i->width == 16 && i->height == 16 && i->layers == 1); framebuffers++; *o = HANDLE(VkFramebuffer, 52); return VK_SUCCESS;
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice d, const VkShaderModuleCreateInfo *i, const VkAllocationCallbacks *a, VkShaderModule *o) {
-    (void)d; (void)i; (void)a; shaders++; *o = HANDLE(VkShaderModule, 60 + shaders); return VK_SUCCESS;
+    (void)d; (void)a; CHECK(i && i->codeSize >= 4 && i->pCode);
+    if (fail_stage == 5) { fail_hit = 5; record_hit(); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+    shaders++; *o = HANDLE(VkShaderModule, 60 + shaders); return VK_SUCCESS;
 }
 VKAPI_ATTR void VKAPI_CALL vkDestroyShaderModule(VkDevice d, VkShaderModule m, const VkAllocationCallbacks *a) { (void)d; (void)m; (void)a; CHECK(shaders >= 1); shaders--; }
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorSetLayout(VkDevice d, const VkDescriptorSetLayoutCreateInfo *i, const VkAllocationCallbacks *a, VkDescriptorSetLayout *o) {
@@ -230,6 +235,40 @@ int main(int argc, char **argv) {
         CHECK(!memcmp(tex, tex_before, sizeof tex));
         balanced();
     }
+    // #137 实际 textured plan 路径：plan-owned vkCreateShaderModule、失败回滚、成功/失败/重试。
+    dm_vk_graphics_plan plan; char why[DM_VK_GRAPHICS_WHY] = {0};
+    CHECK(dm_vk_textured_plan_load(argv[1], argv[2], NULL, &plan, why, sizeof why) == VK_SUCCESS);
+    draw.vertex_spv = NULL; draw.fragment_spv = NULL;
+    for (fail_stage = 0; fail_stage <= 5; fail_stage++) {
+        reset(); memset(output, 0x5a, sizeof output);
+        VkResult r = dm_vk_draw_indexed_textured_plan_offscreen(&vk, &draw, &plan, &pixels);
+        if (!fail_stage) {
+            CHECK(r == VK_SUCCESS);
+        } else {
+            CHECK(r != VK_SUCCESS);
+            CHECK(fail_hit == (unsigned)fail_stage);
+            for (size_t i = 0; i < sizeof output; i++) CHECK(output[i] == 0x5a);
+            if (fail_stage == 5) {
+                CHECK(hit_shaders == 0 && hit_dsls == 0 && hit_layouts == 0 && hit_pipelines == 0);
+                CHECK(hit_pools == 0 && hit_sets == 0 && hit_commands == 0);
+                CHECK(hit_buffers == 2 && hit_memories == 3 && hit_images == 1 && hit_views == 1);
+            }
+        }
+        CHECK(!memcmp(vertices, before, sizeof vertices));
+        CHECK(!memcmp(indices, indices_before, sizeof indices));
+        CHECK(!memcmp(tex, tex_before, sizeof tex));
+        balanced();
+    }
+    // 错误 kind 在任何 Vulkan format query 前拒绝；之后仍可成功重试。
+    reset();
+    plan.kind = DM_VK_PLAN_COLORED;
+    CHECK(dm_vk_draw_indexed_textured_plan_offscreen(&vk, &draw, &plan, &pixels) != VK_SUCCESS);
+    CHECK(format_queries == 0);
+    balanced();
+    plan.kind = DM_VK_PLAN_TEXTURED;
+    reset(); CHECK(dm_vk_draw_indexed_textured_plan_offscreen(&vk, &draw, &plan, &pixels) == VK_SUCCESS);
+    balanced();
+    dm_vk_graphics_plan_free(&plan);
     printf("vulkan_indexed_textured_fail: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
