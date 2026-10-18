@@ -17,16 +17,23 @@ NativeActivity APK.
   Callbacks run in order on the owning UI/control thread. This class does not
   log user text.
 - Composing text is separate from committed text. `setComposingText()` changes
-  only the composing buffer and never calls `onCommit()`. `commitText()` replaces
-  composing with the committed value and emits exactly one commit.
-  `finishComposingText()` commits any remaining composing text once; after an
-  explicit commit it is a no-op.
+  only the composing buffer and never calls `onCommit()`; this boundary supports
+  only the API's after-text `newCursorPosition == 1` and rejects other positions
+  before any mutation. `commitText()` replaces composing with the committed
+  value and emits exactly one commit. `finishComposingText()` commits any
+  remaining composing text once; after an explicit commit it is a no-op.
+- `commitText()` applies `newCursorPosition` with the documented relative-end /
+  relative-start formula, validates the resulting cursor against the existing
+  UTF-16 text before mutation, and rejects cursor positions inside a surrogate
+  pair. It does not return true while ignoring the requested position.
 - Owned text is bounded at `MAX_TEXT_UTF16_UNITS = 512` UTF-16 code units,
   including pending composing text. Over-limit or malformed UTF-16 input is
   rejected atomically: committed text and pending composing text are unchanged.
 - Deletion uses UTF-16 code units for `deleteSurroundingText()` and Unicode code
-  points for `deleteSurroundingTextInCodePoints()`. Both avoid splitting a
-  surrogate pair; the sink receives the exact removed committed text.
+  points for `deleteSurroundingTextInCodePoints()`. Endpoint rounding never
+  splits a surrogate pair; mixed composing/committed code-point deletion uses
+  consistent code-point counts; large positive lengths use overflow-safe
+  clamping. The sink receives the exact removed committed text.
 - `submit()` and editor actions `DONE`/`GO`/`SEND`/`SEARCH` emit submit once;
   `cancel()` emits cancel once. `sendKeyEvent()` and other unsupported optional
   operations return `false` rather than synthesizing keys.
@@ -39,9 +46,12 @@ NativeActivity APK.
 `dm/android/tests/ime-stubs/run.sh` compiles the exact production source plus
 `DmInputConnectionTest.java` against the real `android.jar` and runs Latin
 commit, Chinese composing/commit, emoji/surrogate deletion, length bound,
-malformed UTF-16, submit/cancel and stale/closed-session cases. It uses no
-phone, adb, game, JNI or Android runtime execution. Override `ANDROID_JAR`,
-`ANDROID_SDK_ROOT`, `JAVAC` or `JAVA` for another host SDK/JDK.
+malformed UTF-16, cursor-inside-pair rejection, huge deletion counts, mixed
+composing/committed code points, submit/cancel and stale/closed-session cases.
+`mutation.py` reintroduces the reviewed surrogate endpoint bug and requires that
+real-class test to fail. Neither uses a phone, adb, game, JNI or Android runtime
+execution. Override `ANDROID_JAR`, `ANDROID_SDK_ROOT`, `JAVAC` or `JAVA` for
+another host SDK/JDK.
 
 Packaging into the diagnostic APK is a later integration step after the pending
 Java packaging work is accepted. This boundary alone is not App/keyboard/device

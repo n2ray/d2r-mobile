@@ -109,6 +109,10 @@ public final class DmInputConnection implements InputConnection {
         if (closed) return false;
         String value = copy(text);
         if (value == null || !isWellFormed(value)) return false;
+        // In this boundary composing is represented at the insertion cursor.
+        // Only the API's "after the text" position is representable; do not
+        // accept and silently ignore any other requested cursor position.
+        if (newCursorPosition != 1) return false;
         if (committed.length() + value.length() > MAX_TEXT_UTF16_UNITS) return false;
         composing.setLength(0);
         composing.append(value);
@@ -134,12 +138,17 @@ public final class DmInputConnection implements InputConnection {
         String value = copy(text);
         if (value == null || !isWellFormed(value)) return false;
         if (committed.length() + value.length() > MAX_TEXT_UTF16_UNITS) return false;
-        composing.setLength(0);
-        if (value.length() == 0) return true;
         int start = cursor;
-        committed.insert(cursor, value);
-        cursor = applyCursor(start, start + value.length(), newCursorPosition);
-        sink.onCommit(value);
+        StringBuilder candidate = new StringBuilder(committed);
+        candidate.insert(start, value);
+        int newCursor = cursorPosition(start, value.length(), newCursorPosition,
+                candidate.length());
+        if (!isCodePointBoundary(candidate, newCursor)) return false;
+        composing.setLength(0);
+        committed.setLength(0);
+        committed.append(candidate);
+        cursor = newCursor;
+        if (value.length() > 0) sink.onCommit(value);
         return true;
     }
 
@@ -309,7 +318,8 @@ public final class DmInputConnection implements InputConnection {
             int take = Math.min(length, available);
             return Character.offsetByCodePoints(committed, cursor, -take);
         }
-        int start = Math.max(0, cursor - length);
+        long startLong = (long) cursor - length;
+        int start = (int) Math.max(0L, startLong);
         if (start > 0 && start < cursor
                 && Character.isLowSurrogate(committed.charAt(start))
                 && Character.isHighSurrogate(committed.charAt(start - 1))) {
@@ -324,15 +334,12 @@ public final class DmInputConnection implements InputConnection {
             int available = Character.codePointCount(committed, cursor, committed.length());
             end = Character.offsetByCodePoints(committed, cursor, Math.min(length, available));
         } else {
-            end = Math.min(committed.length(), cursor + length);
+            long requested = (long) cursor + length;
+            end = (int) Math.min((long) committed.length(), requested);
             if (end < committed.length() && end > cursor
                     && Character.isLowSurrogate(committed.charAt(end))
                     && Character.isHighSurrogate(committed.charAt(end - 1))) {
-                end++; // never split a surrogate pair
-            } else if (end < committed.length() && end > cursor
-                    && Character.isHighSurrogate(committed.charAt(end))
-                    && Character.isLowSurrogate(committed.charAt(end + 1))) {
-                end++;
+                end++; // deletion ends inside a pair; include its low surrogate
             }
         }
         return end;
@@ -345,23 +352,35 @@ public final class DmInputConnection implements InputConnection {
             int available = Character.codePointCount(text, 0, text.length());
             start = Character.offsetByCodePoints(text, text.length(), -Math.min(length, available));
         } else {
-            start = Math.max(0, text.length() - length);
+            long startLong = (long) text.length() - length;
+            start = (int) Math.max(0L, startLong);
             if (start > 0 && start < text.length()
                     && Character.isLowSurrogate(text.charAt(start))
                     && Character.isHighSurrogate(text.charAt(start - 1))) {
                 start--;
             }
         }
-        int removed = text.length() - start;
-        text.delete(start, text.length());
+        int oldLength = text.length();
+        int removed = codePoints
+                ? Character.codePointCount(text, start, oldLength)
+                : oldLength - start;
+        text.delete(start, oldLength);
         return removed;
     }
 
-    private int applyCursor(int start, int end, int newCursorPosition) {
-        int position = newCursorPosition > 0
-                ? end + newCursorPosition - 1
-                : start + newCursorPosition;
-        return Math.max(0, Math.min(committed.length(), position));
+    private static int cursorPosition(int start, int insertedLength, int newCursorPosition,
+                                      int resultLength) {
+        long end = (long) start + insertedLength;
+        long position = newCursorPosition > 0
+                ? end + newCursorPosition - 1L
+                : (long) start + newCursorPosition;
+        return (int) Math.max(0L, Math.min((long) resultLength, position));
+    }
+
+    private static boolean isCodePointBoundary(CharSequence text, int index) {
+        if (index <= 0 || index >= text.length()) return true;
+        return !(Character.isLowSurrogate(text.charAt(index))
+                && Character.isHighSurrogate(text.charAt(index - 1)));
     }
 
     private static String copy(CharSequence text) {

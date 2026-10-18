@@ -34,6 +34,11 @@ public final class DmInputConnectionTest {
         return value == null ? "" : value.toString();
     }
 
+    private static String after(DmInputConnection connection) {
+        CharSequence value = connection.getTextAfterCursor(4096, 0);
+        return value == null ? "" : value.toString();
+    }
+
     private static void testLatinCommit() {
         Recorder sink = new Recorder();
         DmInputConnection c = new DmInputConnection(sink);
@@ -112,6 +117,49 @@ public final class DmInputConnectionTest {
         check("ok你".equals(before(c)), "malformed replacement preserves composing");
     }
 
+    private static void testDeletionEndpointAndOverflow() {
+        Recorder sink = new Recorder();
+        DmInputConnection c = new DmInputConnection(sink);
+        check(c.commitText("A😀B", 0), "probe text accepted");
+        check(c.deleteSurroundingText(0, 1), "probe delete accepted");
+        check("😀B".equals(after(c)), "after-delete leaves whole emoji and B");
+        check(sink.deletes.size() == 1 && "A".equals(sink.deletes.get(0)), "only A deleted");
+
+        Recorder large = new Recorder();
+        DmInputConnection d = new DmInputConnection(large);
+        check(d.commitText("A😀B", 0), "large-count text accepted");
+        check(d.deleteSurroundingText(0, Integer.MAX_VALUE), "huge positive delete accepted");
+        check("".equals(after(d)), "huge positive delete removes remaining text");
+        check(large.deletes.size() == 1 && "A😀B".equals(large.deletes.get(0)), "huge delete exact text");
+        check(d.deleteSurroundingText(Integer.MAX_VALUE, 0), "huge negative-side delete accepted");
+    }
+
+    private static void testCursorInsidePairAndComposingPosition() {
+        Recorder sink = new Recorder();
+        DmInputConnection c = new DmInputConnection(sink);
+        check(c.commitText("😀", 0), "emoji baseline accepted");
+        check(!c.commitText("X", 2), "cursor inside existing pair rejected");
+        check(sink.commits.size() == 1, "rejected cursor has no commit callback");
+        check("😀".equals(after(c)), "rejected cursor preserves existing text");
+
+        Recorder composing = new Recorder();
+        DmInputConnection d = new DmInputConnection(composing);
+        check(d.setComposingText("ab", 1), "supported composing position accepted");
+        check(!d.setComposingText("x", 0), "unsupported composing position rejected");
+        check("ab".equals(before(d)), "rejected composing position preserves text");
+        check(composing.commits.isEmpty(), "rejected composing position has no commit");
+    }
+
+    private static void testCodePointComposingUnits() {
+        Recorder sink = new Recorder();
+        DmInputConnection c = new DmInputConnection(sink);
+        check(c.commitText("A", 1), "mixed baseline accepted");
+        check(c.setComposingText("😀", 1), "emoji composing accepted");
+        check(c.deleteSurroundingTextInCodePoints(2, 0), "mixed codepoint delete accepted");
+        check("".equals(before(c)), "two codepoints remove composing emoji and committed A");
+        check(sink.deletes.size() == 1 && "A".equals(sink.deletes.get(0)), "only committed A deletion reported");
+    }
+
     private static void testSubmitCancelAndStaleSession() {
         Recorder sink = new Recorder();
         DmInputConnection c = new DmInputConnection(sink);
@@ -155,6 +203,9 @@ public final class DmInputConnectionTest {
         testSurrogateDeletion();
         testLengthBound();
         testMalformedUtf16();
+        testDeletionEndpointAndOverflow();
+        testCursorInsidePairAndComposingPosition();
+        testCodePointComposingUnits();
         testSubmitCancelAndStaleSession();
         System.out.println("PASS ime boundary: " + checks + " checks");
     }
