@@ -16,6 +16,7 @@ static int g_fail_commands, g_fail_semaphore, g_fail_fence, g_fail_device_wait;
 static VkResult g_acquire_result, g_present_result, g_submit_result;
 static uint32_t g_acquire_count, g_submit_count, g_present_count, g_wait_fence_count, g_queue_wait_count;
 static VkSwapchainKHR g_old_seen, g_swapchain_handle;
+static VkExtent2D g_create_extent;
 static char g_order[512]; static unsigned g_order_n;
 static uint32_t g_destroy_swapchains, g_free_commands, g_destroy_views, g_destroy_fbs, g_destroy_rp;
 static uint32_t g_sem_created, g_fence_created, g_sem_destroyed, g_fence_destroyed;
@@ -35,7 +36,7 @@ VKAPI_ATTR void VKAPI_CALL test_vkGetPhysicalDeviceFormatProperties(VkPhysicalDe
     (void)p; (void)f; memset(o, 0, sizeof *o); o->optimalTilingFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
 }
 VKAPI_ATTR VkResult VKAPI_CALL test_vkCreateSwapchainKHR(VkDevice d, const VkSwapchainCreateInfoKHR *i, const VkAllocationCallbacks *a, VkSwapchainKHR *s) {
-    (void)d; (void)a; g_old_seen = i->oldSwapchain; CHECK(i->imageUsage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    (void)d; (void)a; g_old_seen = i->oldSwapchain; g_create_extent = i->imageExtent; CHECK(i->imageUsage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
     CHECK(i->presentMode == VK_PRESENT_MODE_FIFO_KHR); CHECK(i->minImageCount == 3);
     if (g_fail_swapchain) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     g_swapchain_handle = H(VkSwapchainKHR, 0x1000); *s = g_swapchain_handle; event('N'); return VK_SUCCESS;
@@ -107,6 +108,7 @@ static void reset(void) {
     g_acquire_result = VK_SUCCESS; g_present_result = VK_SUCCESS; g_submit_result = VK_SUCCESS;
     g_acquire_count = g_submit_count = g_present_count = g_wait_fence_count = g_queue_wait_count = 0;
     g_old_seen = g_swapchain_handle = VK_NULL_HANDLE;
+    memset(&g_create_extent, 0, sizeof g_create_extent);
     g_order_n = 0; memset(g_order, 0, sizeof g_order);
     g_destroy_swapchains = g_free_commands = g_destroy_views = g_destroy_fbs = g_destroy_rp = 0;
     g_sem_created = g_fence_created = g_sem_destroyed = g_fence_destroyed = 0;
@@ -181,6 +183,16 @@ int main(void) {
     reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0}; g_caps.supportedUsageFlags = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_ERROR_FEATURE_NOT_PRESENT);
     CHECK(!sc.handle && g_destroy_swapchains == 0);
+
+    // Undefined currentExtent: requested size is clamped to min/maxImageExtent.
+    reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0};
+    g_caps.currentExtent = (VkExtent2D){UINT32_MAX, UINT32_MAX};
+    g_caps.minImageExtent = (VkExtent2D){320, 240};
+    g_caps.maxImageExtent = (VkExtent2D){1280, 720};
+    dm_vk_swapchain_options clamp = o; clamp.width = 2000; clamp.height = 100;
+    CHECK(dm_vk_swapchain_create(&vk, &clamp, &sc) == VK_SUCCESS);
+    CHECK(g_create_extent.width == 1280 && g_create_extent.height == 240 && sc.extent.width == 1280 && sc.extent.height == 240);
+    dm_vk_swapchain_destroy(&vk, &sc);
 
     reset(); vk = fake_vk(); sc = (dm_vk_swapchain){0}; g_modes[0] = VK_PRESENT_MODE_MAILBOX_KHR;
     CHECK(dm_vk_swapchain_create(&vk, &o, &sc) == VK_ERROR_FEATURE_NOT_PRESENT && !sc.handle);
