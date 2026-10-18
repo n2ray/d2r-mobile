@@ -112,9 +112,13 @@ The public special values at the pinned reference are:
 | `-3` | `IdealCoreNoUpdate` | accepted only in the non-valid-core branch with a valid non-zero subset mask |
 
 Source: [Atmosphère `svc_types_common.hpp:379-381`](https://github.com/Atmosphere-NX/Atmosphere/blob/6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8/libraries/libvapours/include/vapours/svc/svc_types_common.hpp#L379-L381).
-The exact kernel-side selection behavior of `DontCare` and `NoUpdate` after
-acceptance remains **U** for this contract; only the validation and state
-ownership rules are claimed.
+For the pinned reference, `DontCare` post-validation is now documented: it
+writes virtual ideal core `-1`, replaces the virtual affinity mask, converts
+the physical mask, and may select the highest physical core when the active
+core is removed; the late termination result has no rollback. `NoUpdate`
+preserves the prior ideal instead. The actual target kernel remains **U**;
+see [`virtual-core-dontcare-reference.md`](virtual-core-dontcare-reference.md).
+Other special-value behavior is not claimed by this note.
 
 The libnx C wrapper exposes `u32`, while the raw 64 ABI and the SDK C++
 wrapper use a 64-bit mask. Do not discard bits 32..63 silently. A raw mask
@@ -198,8 +202,12 @@ until resolved or explicitly chosen by the owner:
    value. The exact numeric mask and handle, and whether the path executes,
    remain **U**; see
    [`virtual-core-callsite-arguments.md`](virtual-core-callsite-arguments.md).
-4. **`DontCare`/`NoUpdate` post-validation behavior.** Acceptance rules are
-   public; exact selection/update behavior in the target kernel is not proven.
+4. **`DontCare` post-validation behavior.** The pinned reference now proves
+   that `-1` replaces virtual ideal with `-1`, replaces the mask, converts
+   physical state and can return a late termination result without rollback.
+   The actual target kernel remains **U**; `NoUpdate` and the other special
+   values are separate. See
+   [`virtual-core-dontcare-reference.md`](virtual-core-dontcare-reference.md).
 5. **Result mapping.** Public names are known (`ResultInvalidHandle`,
    `ResultInvalidCoreId`, `ResultInvalidCombination`); the current runtime
    uses local numeric results. Do not equate the current default `0x4201`
@@ -335,6 +343,10 @@ The SVC `0x0f` slice is intentionally narrower than the public reference:
   behavior is added. The recorded `nnMain` call uses `-1`, so this
   subset does not cover that callsite; see
   [`virtual-core-callsite-arguments.md`](virtual-core-callsite-arguments.md).
+  The pinned reference `-1` transition is documented in
+  [`virtual-core-dontcare-reference.md`](virtual-core-dontcare-reference.md);
+  it changes virtual and physical/scheduler state, so the virtual-only owned
+  model does not implement it.
 - A successful call stores per-thread virtual core/mask state under the host
   mutex. CreateThread initializes that state from its validated core and the
   host mask. State is freed with the existing guest-thread object lifecycle;
