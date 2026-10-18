@@ -134,6 +134,7 @@ static int test_missing_and_invalid_inputs(void) {
     CHECK(dm_cp_load(&s, dm_cp_store_load, store) == DM_CP_LOAD_IO);
     CHECK(dm_cp_get(&s, "eco_fps") == 0);
     CHECK(unlinkat(fd, DM_CP_STORE_FILE, 0) == 0);
+    CHECK(unlinkat(fd, "ordinary", 0) == 0);
 
     close(fd);
     dm_cp_store_destroy(store);
