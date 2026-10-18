@@ -22,6 +22,7 @@ typedef struct {
     uint64_t ui_identity;
     int scene;
     int available;
+    uint32_t extra_panel;
     int hit_kind;
     uint32_t hit_offset;
     uint32_t hit_size;
@@ -42,6 +43,7 @@ static int snap(void *context, dm_tgp_snapshot *out) {
     out->captured_ns = f->now;
     out->ui_identity = f->ui_identity;
     out->panel_bits = f->scene == DM_TGP_SCENE_PANEL ? 1u : 0u;
+    out->panel_bits |= f->extra_panel;
     out->available = f->available;
     out->scene = f->scene;
     out->dialogue_only = f->scene == DM_TGP_SCENE_DIALOG;
@@ -154,12 +156,18 @@ static void transition_case(int which, uint64_t value) {
     else if (which == 2) f.ui_identity = value;
     else if (which == 3) { f.object_generation = value; f.hit_object_generation = value; }
     else if (which == 4) f.scene = DM_TGP_SCENE_MENU;
+    else if (which == 5) f.extra_panel = (uint32_t)value;
     dm_touch_event move = down;
     move.action = DM_TOUCH_ACTION_MOVE;
     move.time_ns = 2000000100;
     f.now = 2000000100;
     CHECK(!dm_touch_bridge_event(bridge, &move));
     CHECK(dm_touch_bridge_snapshot(bridge).buttons == 0);
+    dm_touch_event stale_up = down;
+    stale_up.action = DM_TOUCH_ACTION_UP;
+    stale_up.time_ns = 2000000150;
+    f.now = 2000000150;
+    CHECK(!dm_touch_bridge_event(bridge, &stale_up));
     dm_touch_event again = down;
     again.time_ns = 2000000200;
     f.now = 2000000200;
@@ -398,6 +406,7 @@ int main(void) {
     transition_case(2, 7);
     transition_case(3, 99);
     transition_case(4, 0);
+    transition_case(5, 16);
     replace_failure_case();
 
     dm_touch_bridge_destroy(bridge, NULL);

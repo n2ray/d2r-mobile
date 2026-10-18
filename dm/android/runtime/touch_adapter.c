@@ -26,6 +26,7 @@ struct dm_android_touch {
     uint64_t game_world_epoch;
     uint64_t game_ui_identity;
     uint64_t game_object_generation;
+    uint32_t game_panel_bits;
     uint64_t seen_world_tap;
     uint64_t seen_ident;
     uint64_t seen_use;
@@ -285,7 +286,8 @@ int dm_android_touch_set_game_context(dm_android_touch *touch, int navigation_mo
     navigation_mode = navigation_mode != 0;
     int changed = navigation_mode != touch->state.navigation_mode ||
                   (touch->game_scene_epoch_set &&
-                   (scene_epoch != touch->game_scene_epoch ||
+                   (panel_bits != touch->game_panel_bits ||
+                    scene_epoch != touch->game_scene_epoch ||
                     world_epoch != touch->game_world_epoch ||
                     ui_identity != touch->game_ui_identity ||
                     object_generation != touch->game_object_generation));
@@ -293,6 +295,7 @@ int dm_android_touch_set_game_context(dm_android_touch *touch, int navigation_mo
     dm_tc_set_panel_state((int)panel_bits);
     if (navigation_mode != touch->state.navigation_mode)
         dm_tc_set_navigation_mode(&touch->state, navigation_mode);
+    touch->game_panel_bits = panel_bits;
     touch->game_scene_epoch = scene_epoch;
     touch->game_world_epoch = world_epoch;
     touch->game_ui_identity = ui_identity;
