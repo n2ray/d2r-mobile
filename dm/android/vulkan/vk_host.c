@@ -12,8 +12,10 @@
 // Heap state for validation diagnostics: callback userdata points here, stable for the instance lifetime (dm_vk is copied by value).
 typedef struct dm_vk_diag {
     _Atomic uint32_t errors, warnings;
-    atomic_flag lock;                // 只保护 first_error 的写入 | guards first_error only
-    char status[192];
+    atomic_flag lock;                // 保护 first_error 的写入与拷贝 | guards writes and copies of first_error
+    int capture;                     // 1 = debug messenger 已装好，计数才有意义 | messenger installed, counters meaningful
+    char status[224];
+    char layer_version[96];
     char first_error[256];
 } dm_vk_diag;
 
@@ -23,19 +25,23 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL dm_validation_cb(VkDebugUtilsMessageSeveri
     dm_vk_diag *d = user;
     if (!d) return VK_FALSE;
     if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        atomic_fetch_add(&d->errors, 1);
-        if (!atomic_flag_test_and_set(&d->lock)) {
+        // 先在锁内发布完整字符串，再增加计数：看到 errors>0 的读者一定能拿到完整文本。
+        // Publish the complete text under the lock before bumping the counter: a reader that sees errors>0 can copy a complete string.
+        while (atomic_flag_test_and_set(&d->lock)) { }
+        if (!d->first_error[0]) {
             snprintf(d->first_error, sizeof d->first_error, "%s: %.200s",
                      data && data->pMessageIdName ? data->pMessageIdName : "?",
                      data && data->pMessage ? data->pMessage : "");
         }
+        atomic_flag_clear(&d->lock);
+        atomic_fetch_add(&d->errors, 1);
     } else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
         atomic_fetch_add(&d->warnings, 1);
     }
     return VK_FALSE;   // 只报告，不中止 | report only, never abort
 }
 
-static int dm_instance_layer_present(const char *name) {
+static int dm_instance_layer_present(const char *name, VkLayerProperties *props) {
     uint32_t n = 0;
     if (vkEnumerateInstanceLayerProperties(&n, NULL) != VK_SUCCESS || !n) return 0;
     VkLayerProperties *p = calloc(n, sizeof *p);
@@ -43,7 +49,7 @@ static int dm_instance_layer_present(const char *name) {
     int found = 0;
     if (vkEnumerateInstanceLayerProperties(&n, p) == VK_SUCCESS)
         for (uint32_t i = 0; i < n; i++)
-            if (!strcmp(p[i].layerName, name)) { found = 1; break; }
+            if (!strcmp(p[i].layerName, name)) { found = 1; if (props) *props = p[i]; break; }
     free(p);
     return found;
 }
@@ -88,7 +94,9 @@ VkResult dm_vk_create_ex(const dm_vk_options *options, dm_vk *out) {
     if (result != VK_SUCCESS) return result;
     // 显式 opt-in 的验证层：required 缺失即失败；optional 缺失继续但状态写明未验证。
     // Explicit opt-in layer: required fails when missing; optional continues with an explicit "unvalidated" status.
-    int layer_present = dm_instance_layer_present(DM_VK_VALIDATION_LAYER);
+    VkLayerProperties layer_props;
+    memset(&layer_props, 0, sizeof layer_props);
+    int layer_present = dm_instance_layer_present(DM_VK_VALIDATION_LAYER, &layer_props);
     int debug_ext = dm_instance_extension_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     int use_layer = 0;
     if (mode == DM_VK_VALIDATION_REQUIRED && !layer_present) return VK_ERROR_LAYER_NOT_PRESENT;
@@ -101,7 +109,12 @@ VkResult dm_vk_create_ex(const dm_vk_options *options, dm_vk *out) {
         vk.diag = calloc(1, sizeof *vk.diag);
         if (!vk.diag) return VK_ERROR_OUT_OF_HOST_MEMORY;
         atomic_flag_clear(&vk.diag->lock);
-        if (use_layer) snprintf(vk.diag->status, sizeof vk.diag->status, "enabled:%s", DM_VK_VALIDATION_LAYER);
+        if (use_layer) {
+            snprintf(vk.diag->status, sizeof vk.diag->status, "enabled:%s (capture pending)", DM_VK_VALIDATION_LAYER);
+            snprintf(vk.diag->layer_version, sizeof vk.diag->layer_version, "spec %u.%u.%u, impl %u",
+                     VK_VERSION_MAJOR(layer_props.specVersion), VK_VERSION_MINOR(layer_props.specVersion),
+                     VK_VERSION_PATCH(layer_props.specVersion), layer_props.implementationVersion);
+        }
         else if (!layer_present) snprintf(vk.diag->status, sizeof vk.diag->status,
             "unavailable:%s not in loader; running WITHOUT validation", DM_VK_VALIDATION_LAYER);
     }
@@ -137,9 +150,14 @@ VkResult dm_vk_create_ex(const dm_vk_options *options, dm_vk *out) {
                 vkDestroyInstance(vk.instance, NULL); free(vk.diag); vk.diag = NULL;
                 return VK_ERROR_EXTENSION_NOT_PRESENT;
             }
-            vk.validation = 0; use_layer = 0;
-            if (vk.diag) snprintf(vk.diag->status, sizeof vk.diag->status,
-                "unavailable:VK_EXT_debug_utils messenger creation failed; running WITHOUT validation");
+            // 层仍启用，但没有 messenger 就没有任何诊断：状态必须写清 "capture unavailable"，不能说成没开验证。
+            // The layer stays enabled but without a messenger there is no diagnostics: the status must say "capture unavailable".
+            vk.diag->capture = 0;
+            snprintf(vk.diag->status, sizeof vk.diag->status,
+                "enabled:%s (capture unavailable: debug messenger creation failed)", DM_VK_VALIDATION_LAYER);
+        } else {
+            vk.diag->capture = 1;
+            snprintf(vk.diag->status, sizeof vk.diag->status, "enabled:%s", DM_VK_VALIDATION_LAYER);
         }
     }
     count = 0; result = vkEnumeratePhysicalDevices(vk.instance, &count, NULL);
@@ -166,6 +184,7 @@ VkResult dm_vk_create_ex(const dm_vk_options *options, dm_vk *out) {
     if (!vk.physical) { result = VK_ERROR_FEATURE_NOT_PRESENT; goto failed; }
     vkGetPhysicalDeviceProperties(vk.physical, &vk.properties);
     vk.driver_api_version = vk.properties.apiVersion;
+    vk.driver_version = vk.properties.driverVersion;   // 驱动构建号，独立于 API 版本 | driver build, distinct from the API version
     vkGetPhysicalDeviceMemoryProperties(vk.physical, &vk.memory);
     count = 0; result = vkEnumerateDeviceExtensionProperties(vk.physical, NULL, &count, NULL);
     if (result != VK_SUCCESS) goto failed;
@@ -216,10 +235,24 @@ void dm_vk_destroy(dm_vk *vk) {
 }
 
 int dm_vk_validation_enabled(const dm_vk *vk) { return vk && vk->validation ? 1 : 0; }
+int dm_vk_validation_capture(const dm_vk *vk) { return vk && vk->diag ? vk->diag->capture : 0; }
 uint32_t dm_vk_validation_errors(const dm_vk *vk) { return vk && vk->diag ? atomic_load(&vk->diag->errors) : 0; }
 uint32_t dm_vk_validation_warnings(const dm_vk *vk) { return vk && vk->diag ? atomic_load(&vk->diag->warnings) : 0; }
 const char *dm_vk_validation_status(const dm_vk *vk) { return vk && vk->diag ? vk->diag->status : "disabled"; }
-const char *dm_vk_validation_first_error(const dm_vk *vk) { return vk && vk->diag ? vk->diag->first_error : ""; }
+const char *dm_vk_validation_layer_version(const dm_vk *vk) { return vk && vk->diag ? vk->diag->layer_version : ""; }
+size_t dm_vk_validation_first_error(const dm_vk *vk, char *dst, size_t cap) {
+    if (!dst || !cap) return 0;
+    dst[0] = 0;
+    if (!vk || !vk->diag) return 0;
+    dm_vk_diag *d = vk->diag;
+    while (atomic_flag_test_and_set(&d->lock)) { }   // 与回调互斥，避免半截字符串 | mutual exclusion with the callback, no torn string
+    size_t n = strlen(d->first_error);
+    if (n >= cap) n = cap - 1;
+    memcpy(dst, d->first_error, n);
+    dst[n] = 0;
+    atomic_flag_clear(&d->lock);
+    return n;
+}
 
 VkResult dm_vk_begin(dm_vk *vk, VkCommandBuffer *out) {
     VkCommandBufferAllocateInfo alloc = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,

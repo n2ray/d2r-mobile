@@ -193,7 +193,7 @@ int main(int argc, char **argv) {
     if (want_validation) {
         uint32_t errors = dm_vk_validation_errors(&vk), warnings = dm_vk_validation_warnings(&vk);
         printf("validation: errors %u, warnings %u\n", errors, warnings);
-        if (errors) fprintf(stderr, "  first validation error: %s\n", dm_vk_validation_first_error(&vk));
+        if (errors) { char first[256] = {0}; dm_vk_validation_first_error(&vk, first, sizeof first); fprintf(stderr, "  first validation error: %s\n", first); }
         EXPECT(errors == 0);   // 真实验证层报错即失败 | any real validation error fails the run
     }
     dm_vk_destroy(&vk);

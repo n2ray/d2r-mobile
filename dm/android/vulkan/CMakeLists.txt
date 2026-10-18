@@ -137,3 +137,28 @@ else()
         set_tests_properties(vulkan_validation PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
     endif()
 endif()
+
+# 注入 loader 边界：层存在 + debug utils 可用、messenger 失败/清理、回调计数与并发读取（无需 GPU/真实层）。
+# Injected loader boundary: layer present + debug utils, messenger failure/cleanup, callback counters and concurrent
+# readers, without GPU or a real layer.
+find_package(Threads REQUIRED)
+add_executable(dm_vulkan_validation_fakeloader_test ../tests/vulkan_validation_fakeloader.c vk_host.c)
+target_link_libraries(dm_vulkan_validation_fakeloader_test PRIVATE dm_android_vk Threads::Threads)
+target_compile_options(dm_vulkan_validation_fakeloader_test PRIVATE -Wall -Wextra -Werror)
+foreach(symbol vkEnumerateInstanceLayerProperties vkEnumerateInstanceExtensionProperties vkCreateInstance vkDestroyInstance
+    vkGetInstanceProcAddr vkEnumeratePhysicalDevices vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceProperties
+    vkGetPhysicalDeviceMemoryProperties vkEnumerateDeviceExtensionProperties vkCreateDevice vkDestroyDevice vkGetDeviceQueue
+    vkCreateCommandPool vkDestroyCommandPool vkDeviceWaitIdle)
+    target_compile_definitions(dm_vulkan_validation_fakeloader_test PRIVATE ${symbol}=dm_test_${symbol})
+endforeach()
+option(DM_VK_SANITIZE_THREAD "Build the fake-loader validation test with ThreadSanitizer" OFF)
+if(DM_VK_SANITIZE_THREAD)
+    target_compile_options(dm_vulkan_validation_fakeloader_test PRIVATE -fsanitize=thread -g)
+    target_link_options(dm_vulkan_validation_fakeloader_test PRIVATE -fsanitize=thread)
+endif()
+if(ANDROID)
+    target_link_options(dm_vulkan_validation_fakeloader_test PRIVATE "-Wl,-z,max-page-size=16384")
+else()
+    add_test(NAME vulkan_validation_fakeloader COMMAND dm_vulkan_validation_fakeloader_test)
+    set_tests_properties(vulkan_validation_fakeloader PROPERTIES TIMEOUT 60)
+endif()

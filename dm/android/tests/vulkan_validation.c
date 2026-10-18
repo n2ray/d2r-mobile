@@ -99,9 +99,12 @@ int main(void) {
         vkDeviceWaitIdle(vk.device);
     }
     EXPECT(made == VK_SUCCESS);
-    printf("captured validation errors: %u (first: %.120s)\n",
-           dm_vk_validation_errors(&vk), dm_vk_validation_first_error(&vk));
+    char first[256] = {0};
+    dm_vk_validation_first_error(&vk, first, sizeof first);
+    printf("captured validation errors: %u (first: %.120s)\n", dm_vk_validation_errors(&vk), first);
     EXPECT(dm_vk_validation_errors(&vk) > 0);
+    EXPECT(dm_vk_validation_capture(&vk) == 1);
+    EXPECT(dm_vk_validation_layer_version(&vk)[0]);
     dm_vk_buffer_destroy(&vk, &buffer);
     dm_vk_destroy(&vk);
     printf("validation test: %u checks, %u failures\n", checks, failures);

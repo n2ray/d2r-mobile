@@ -30,6 +30,7 @@ typedef struct {
     // Validation diagnostics, allocated on the heap only when requested through dm_vk_create_ex; lifetime matches the instance.
     uint32_t api_version;            // loader 报告的实例版本 | instance version reported by the loader
     uint32_t driver_api_version;     // VkPhysicalDeviceProperties::apiVersion
+    uint32_t driver_version;         // VkPhysicalDeviceProperties::driverVersion（驱动构建号，别与 API 版本混用 | driver build, not the API version）
     uint32_t validation;             // 1 = VK_LAYER_KHRONOS_validation 已启用 | layer enabled
     struct dm_vk_diag *diag;         // 私有；accessors 读取 | private, read through the accessors
     VkDebugUtilsMessengerEXT messenger;
@@ -48,8 +49,14 @@ VkResult dm_vk_create_ex(const dm_vk_options *options, dm_vk *out);   // 显式 
 int dm_vk_validation_enabled(const dm_vk *vk);
 uint32_t dm_vk_validation_errors(const dm_vk *vk);
 uint32_t dm_vk_validation_warnings(const dm_vk *vk);
+// 仅当 debug messenger 真正装好 (capture=1) 才可能计数；层启用但 capture=0 必须能从状态看出来。
+// Counters are only possible when the debug messenger is installed (capture=1); a layer enabled without capture must be visible in the status.
+int dm_vk_validation_capture(const dm_vk *vk);
 const char *dm_vk_validation_status(const dm_vk *vk);
-const char *dm_vk_validation_first_error(const dm_vk *vk);
+const char *dm_vk_validation_layer_version(const dm_vk *vk);   // "spec x.y.z, impl N" when the layer was found
+// 把首个错误**在锁内**拷进调用者缓冲（完整、不会读到半截字符串）；返回拷贝长度。
+// Copies the first error into the caller buffer under the lock (complete text, never a torn string); returns the copied length.
+size_t dm_vk_validation_first_error(const dm_vk *vk, char *dst, size_t cap);
 void dm_vk_destroy(dm_vk *vk);
 VkResult dm_vk_buffer_create(dm_vk *vk, const dm_vk_buffer_info *info, dm_vk_buffer *out);
 void dm_vk_buffer_destroy(dm_vk *vk, dm_vk_buffer *buffer);
