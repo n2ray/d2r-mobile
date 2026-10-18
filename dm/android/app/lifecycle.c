@@ -12,6 +12,7 @@ struct dm_app_lifecycle {
     uint32_t pending_work;
     int host_stopped;
     int cleanup_done;
+    int cleanup_failed;
     int stop_after_drain;
 };
 
@@ -32,7 +33,7 @@ static void finish_failure_cleanup(dm_app_lifecycle *lifecycle) {
     release_surface(lifecycle);
     if (!lifecycle->host_stopped) {
         lifecycle->host_stopped = 1;
-        (void)lifecycle->host.stop(lifecycle->host.ctx);
+        if (lifecycle->host.stop(lifecycle->host.ctx)) lifecycle->cleanup_failed = 1;
     }
     lifecycle->cleanup_done = 1;
 }
@@ -48,6 +49,7 @@ static void finish_stop(dm_app_lifecycle *lifecycle) {
         lifecycle->host_stopped = 1;
         if (lifecycle->host.stop(lifecycle->host.ctx)) {
             lifecycle->cleanup_done = 1;
+            lifecycle->cleanup_failed = 1;
             lifecycle->pending_work = 0;
             notify(lifecycle, DM_APP_STATE_FAILED);
             return;
@@ -102,6 +104,7 @@ int dm_app_lifecycle_start(dm_app_lifecycle *lifecycle) {
     }
     lifecycle->host_stopped = 0;
     lifecycle->cleanup_done = 0;
+    lifecycle->cleanup_failed = 0;
     lifecycle->stop_after_drain = 0;
     lifecycle->pending_work = 0;
     lifecycle->resume_state = DM_APP_STATE_OWNED_DIAGNOSTIC;
@@ -127,7 +130,7 @@ int dm_app_lifecycle_stop(dm_app_lifecycle *lifecycle) {
         lifecycle->stop_after_drain = 1;
         if (lifecycle->pending_work != 0) return 1;
         finish_failure_cleanup(lifecycle);
-        notify(lifecycle, DM_APP_STATE_STOPPED);
+        if (!lifecycle->cleanup_failed) notify(lifecycle, DM_APP_STATE_STOPPED);
         return 1;
     case DM_APP_STATE_STOPPING:
         if (lifecycle->pending_work == 0) finish_stop(lifecycle);
@@ -226,7 +229,8 @@ int dm_app_lifecycle_work_end(dm_app_lifecycle *lifecycle) {
             finish_stop(lifecycle);
         } else if (lifecycle->state == DM_APP_STATE_FAILED) {
             finish_failure_cleanup(lifecycle);
-            if (lifecycle->stop_after_drain) notify(lifecycle, DM_APP_STATE_STOPPED);
+            if (lifecycle->stop_after_drain && !lifecycle->cleanup_failed)
+                notify(lifecycle, DM_APP_STATE_STOPPED);
         }
     }
     return 1;

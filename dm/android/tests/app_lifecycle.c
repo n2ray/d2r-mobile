@@ -234,8 +234,9 @@ static void error_contracts(void) {
     CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_FAILED);
     CHECK(h.stops == 1);
     CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_FAILED); /* no fake STOPPED */
     CHECK(h.stops == 1);
-    dm_app_lifecycle_destroy(lc);
+    CHECK(dm_app_lifecycle_destroy(lc) == 1);
 }
 
 static void failure_drains_pending_work(void) {
