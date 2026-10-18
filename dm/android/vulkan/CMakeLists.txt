@@ -1,6 +1,6 @@
 # Vulkan 底座在 Android 链接系统 loader，开发机通过已安装 Vulkan SDK 验证；着色器由宿主 glslc 构建。
 # Link Android's system loader, verify on hosts with an installed Vulkan SDK; compile the synthetic shader using host glslc.
-add_library(dm_android_vk STATIC vk_host.c vk_memory.c vk_compute.c vk_clear.c vk_shader.c vk_draw.c vk_texture.c)
+add_library(dm_android_vk STATIC vk_host.c vk_memory.c vk_compute.c vk_clear.c vk_shader.c vk_draw.c vk_texture.c vk_sampler.c)
 target_link_libraries(dm_android_vk PUBLIC dm_android_tex)
 target_compile_options(dm_android_vk PRIVATE -Wall -Wextra -Werror)
 if(ANDROID)
@@ -23,6 +23,12 @@ add_custom_command(OUTPUT ${fragment}
     COMMAND ${DM_GLSLC} --target-env=vulkan1.1 -O ${CMAKE_CURRENT_SOURCE_DIR}/pixels.frag -o ${fragment}
     DEPENDS pixels.frag VERBATIM)
 add_custom_target(dm_vk_shaders DEPENDS ${pattern} ${vertex} ${fragment})
+# #13 采样绘制片段着色器（自有合成着色器） | #13 sampled-draw fragment shader (owned synthetic shader)
+set(sample_frag ${CMAKE_CURRENT_BINARY_DIR}/sample2d.frag.spv)
+add_custom_command(OUTPUT ${sample_frag}
+    COMMAND ${DM_GLSLC} --target-env=vulkan1.1 -O ${CMAKE_CURRENT_SOURCE_DIR}/sample2d.frag -o ${sample_frag}
+    DEPENDS sample2d.frag VERBATIM)
+add_custom_target(dm_vk_sampler_shaders DEPENDS ${sample_frag})
 add_executable(dm_vulkan_test ../tests/vulkan.c)
 target_link_libraries(dm_vulkan_test PRIVATE dm_android_vk)
 target_compile_options(dm_vulkan_test PRIVATE -Wall -Wextra -Werror)
@@ -161,4 +167,30 @@ if(ANDROID)
 else()
     add_test(NAME vulkan_validation_fakeloader COMMAND dm_vulkan_validation_fakeloader_test)
     set_tests_properties(vulkan_validation_fakeloader PROPERTIES TIMEOUT 60)
+endif()
+
+# #13 采样器：自有 2x2 纹理 + nearest/linear、clamp/repeat 数值对照，以及 loader 失败注入。
+# #13 samplers: owned 2x2 texture with nearest/linear and clamp/repeat numeric checks, plus loader failure injection.
+add_executable(dm_vulkan_sampler_test ../tests/vulkan_sampler.c)
+target_link_libraries(dm_vulkan_sampler_test PRIVATE dm_android_vk)
+target_compile_options(dm_vulkan_sampler_test PRIVATE -Wall -Wextra -Werror)
+add_dependencies(dm_vulkan_sampler_test dm_vk_sampler_shaders dm_vk_shaders)
+
+add_executable(dm_vulkan_sampler_createfail_test ../tests/vulkan_sampler_createfail.c vk_sampler.c)
+target_link_libraries(dm_vulkan_sampler_createfail_test PRIVATE dm_android_vk)
+target_compile_options(dm_vulkan_sampler_createfail_test PRIVATE -Wall -Wextra -Werror)
+target_compile_definitions(dm_vulkan_sampler_createfail_test PRIVATE vkCreateSampler=dm_test_vkCreateSampler)
+
+if(ANDROID)
+    target_link_options(dm_vulkan_sampler_test PRIVATE "-Wl,-z,max-page-size=16384")
+    target_link_options(dm_vulkan_sampler_createfail_test PRIVATE "-Wl,-z,max-page-size=16384")
+else()
+    add_test(NAME vulkan_sampler COMMAND dm_vulkan_sampler_test ${vertex} ${sample_frag})
+    add_test(NAME vulkan_sampler_createfail COMMAND dm_vulkan_sampler_createfail_test)
+    set_tests_properties(vulkan_sampler PROPERTIES TIMEOUT 60)
+    set_tests_properties(vulkan_sampler_createfail PROPERTIES TIMEOUT 60)
+    if(APPLE AND DM_MOLTENVK_ICD)
+        set_tests_properties(vulkan_sampler PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
+        set_tests_properties(vulkan_sampler_createfail PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
+    endif()
 endif()
