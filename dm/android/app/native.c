@@ -182,6 +182,7 @@ static void draw_diagnostic(ANativeActivity*a,ANativeWindow*window,int external_
             dm_app_lifecycle_surface(s->lifecycle)?"yes":"no");
         return;
     }
+    if(external_redraw&&s->hud_obs_valid)dm_touch_hud_frame_dirty(&s->hud_frame);
     if(!s->vertex[0]||!s->fragment[0]){LOG("graphics draw skipped: no staged shader assets");return;}
     if(!s->vk.device){VkResult created=dm_vk_create(&s->vk);if(created!=VK_SUCCESS){LOG("Vulkan create failed: %d",created);return;}}
     const size_t target_bytes=(size_t)DM_DIAG_TARGET_EXTENT*DM_DIAG_TARGET_EXTENT*4u;

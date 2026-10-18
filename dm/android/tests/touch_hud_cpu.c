@@ -109,6 +109,18 @@ int main(void) {
         CHECK(padding_untouched(bits, width, height, stride));
     }
 
+    /* External redraw can fail before begin (GPU preparation/window lock).
+       NativeActivity marks the request dirty before those fallible operations. */
+    dm_touch_hud_frame early; dm_touch_hud_frame_init(&early);
+    dm_touch_hud_frame_dirty(&early);
+    CHECK(!early.open && dm_touch_hud_frame_timer_ready(&early, 1));
+    CHECK(!dm_touch_hud_frame_complete(&early, 0));
+    CHECK(dm_touch_hud_frame_timer_ready(&early, 1));
+    CHECK(dm_touch_hud_frame_begin(&early, 0, 1, 1, 1));
+    dm_touch_hud_frame_composed(&early, 1);
+    CHECK(dm_touch_hud_frame_complete(&early, 1));
+    CHECK(!dm_touch_hud_frame_timer_ready(&early, 1));
+
     /* Post failure must retain retry; a later successful post clears dirty once. */
     dm_touch_hud_frame_dirty(&frame);
     CHECK(dm_touch_hud_frame_begin(&frame, 0, 1, 1, 1));
