@@ -320,15 +320,26 @@ static void domain_tests(void) {
 
 static uint8_t log_rest[DM_IPC_BUFFER_SIZE - 48u];
 #define WIRE_ADDRESS_LIMIT (1ull << 39)
-// The HIPC Log wire format carries only address bits 0..38. OS hints can be
-// ignored, so verify the returned mapping is below the encode limit and near
-// the requested low range; never use MAP_FIXED. The second range is a portable
-// fallback for hosts (notably macOS) that reject the first hint.
+// Linux x86_64 ASAN's application LowMem ends at 0x7fff7fff; its shadow gap
+// starts at 0x8fff7000 and extends far above. Hints at 0x1_00000000 or higher
+// can therefore be mapped but still fault on the first instrumented access.
+// Use only bounded, non-fixed hints inside LowMem on that target. macOS has a
+// different layout and accepts the 4 GiB hint range, so keep it separate.
 static uint8_t *wire_page(unsigned slot) {
+#if defined(__linux__) && defined(__x86_64__)
     const uintptr_t hints[] = {
-        0x400000000ull + (uintptr_t)slot * 0x10000ull,
-        0x100000000ull + (uintptr_t)slot * 0x10000ull,
+        0x10000000ull + (uintptr_t)slot * 0x1000000ull,
+        0x20000000ull + (uintptr_t)slot * 0x1000000ull,
+        0x40000000ull + (uintptr_t)slot * 0x1000000ull,
     };
+    const uintptr_t low_max = 0x80000000ull;
+#else
+    const uintptr_t hints[] = {
+        0x100000000ull + (uintptr_t)slot * 0x10000ull,
+        0x100010000ull + (uintptr_t)slot * 0x10000ull,
+    };
+    const uintptr_t low_max = WIRE_ADDRESS_LIMIT;
+#endif
     for (unsigned h = 0; h < sizeof hints / sizeof hints[0]; h++) {
         for (unsigned retry = 0; retry < 4; retry++) {
             uintptr_t hint = hints[h] + (uintptr_t)retry * 0x1000ull;
@@ -336,9 +347,13 @@ static uint8_t *wire_page(unsigned slot) {
                               MAP_PRIVATE | MAP_ANON, -1, 0);
             if (p == MAP_FAILED) continue;
             uintptr_t address = (uintptr_t)p;
+#if defined(__linux__) && defined(__x86_64__)
+            if (address >= hint && address < low_max &&
+                low_max - address >= 4096) return p;
+#else
             if (address >= hint && address - hint < 0x40000000ull &&
-                address < WIRE_ADDRESS_LIMIT &&
-                WIRE_ADDRESS_LIMIT - address >= 4096) return p;
+                address < low_max && low_max - address >= 4096) return p;
+#endif
             CHECK(munmap(p, 4096) == 0);
         }
     }
