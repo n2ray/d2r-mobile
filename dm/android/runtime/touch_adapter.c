@@ -11,11 +11,15 @@ struct dm_android_touch {
     uint8_t used[DM_TC_MAX_TOUCH];
     int64_t last_ns;
     int suspended;
-    /* A release-to-cast pulse is published until the consumer takes it once.
-       One bounded slot; no unbounded event queue. */
-    int pulse_pending;
-    uint64_t pulse_buttons;
-    int32_t pulse_rx, pulse_ry;
+    /* Bounded pending release-to-cast pulses, each with its own button/aim.
+       A same-button repeat is separated by one neutral read. */
+    struct {
+        uint64_t buttons;
+        int32_t rx, ry;
+    } pulses[DM_ANDROID_TOUCH_PULSE_CAPACITY];
+    int pulse_head;
+    int pulse_count;
+    int release_waiting;
 };
 
 static int accept_time(dm_android_touch *touch, int64_t time_ns, double *now_s) {
@@ -38,28 +42,24 @@ static int free_slot(const dm_android_touch *touch) {
 }
 
 /* One coherent publish per event. A release-to-cast pulse is captured before
-   the core pulse is withdrawn and retained until dm_android_touch_read takes it
-   exactly once. This keeps button + aim + modifier coherent across delayed
-   reads and later ticks. */
-static void publish(dm_android_touch *touch) {
+   the core pulse is withdrawn and queued in bounded acceptance order. The
+   oldest queued pulse is published until dm_android_touch_read takes it; a
+   same-button successor gets a neutral release read in between. */
+static void publish_core(dm_android_touch *touch) {
     dm_tc_state *s = &touch->state;
-    if (s->pulse_button) {
-        if (!touch->pulse_pending) {
-            touch->pulse_pending = 1;
-            touch->pulse_buttons = s->buttons;
-            touch->pulse_rx = s->pulse_rx;
-            touch->pulse_ry = s->pulse_ry;
-        }
-        uint64_t epoch = s->pulse_epoch;
-        (void)dm_tc_pulse_end(s, epoch);
-    }
-    uint64_t buttons = s->buttons;
-    int32_t rx = s->rx, ry = s->ry;
-    if (touch->pulse_pending) {
-        buttons |= touch->pulse_buttons;
-        rx = touch->pulse_rx;
-        ry = touch->pulse_ry;
-    }
+    dm_pad_sample sample = {
+        .buttons = s->buttons,
+        .lx = s->lx,
+        .ly = s->ly,
+        .rx = s->rx,
+        .ry = s->ry,
+        .connected = 1,
+    };
+    dm_android_pad_publish(touch->pad, &sample);
+}
+
+static void publish_entry(dm_android_touch *touch, uint64_t buttons, int32_t rx, int32_t ry) {
+    dm_tc_state *s = &touch->state;
     dm_pad_sample sample = {
         .buttons = buttons,
         .lx = s->lx,
@@ -71,12 +71,35 @@ static void publish(dm_android_touch *touch) {
     dm_android_pad_publish(touch->pad, &sample);
 }
 
+static int pending_full(const dm_android_touch *touch) {
+    return touch->pulse_count >= DM_ANDROID_TOUCH_PULSE_CAPACITY;
+}
+
+static void publish(dm_android_touch *touch) {
+    dm_tc_state *s = &touch->state;
+    if (s->pulse_button) {
+        if (pending_full(touch)) return;   /* defensive; callers backpressure first */
+        int tail = (touch->pulse_head + touch->pulse_count) % DM_ANDROID_TOUCH_PULSE_CAPACITY;
+        touch->pulses[tail].buttons = s->buttons;
+        touch->pulses[tail].rx = s->pulse_rx;
+        touch->pulses[tail].ry = s->pulse_ry;
+        ++touch->pulse_count;
+        uint64_t epoch = s->pulse_epoch;
+        (void)dm_tc_pulse_end(s, epoch);
+    }
+    if (touch->pulse_count > 0) {
+        publish_entry(touch, touch->pulses[touch->pulse_head].buttons,
+                      touch->pulses[touch->pulse_head].rx, touch->pulses[touch->pulse_head].ry);
+    } else {
+        publish_core(touch);
+    }
+}
+
 static void release_all(dm_android_touch *touch) {
     memset(touch->pointer_id, 0, sizeof touch->pointer_id);
     memset(touch->used, 0, sizeof touch->used);
-    touch->pulse_pending = 0;
-    touch->pulse_buttons = 0;
-    touch->pulse_rx = touch->pulse_ry = 0;
+    touch->pulse_head = touch->pulse_count = 0;
+    touch->release_waiting = 0;
     dm_tc_cancel_all(&touch->state);
     dm_android_pad_clear_edges(touch->pad);
 }
@@ -108,6 +131,7 @@ int dm_android_touch_down(dm_android_touch *touch, int32_t pointer_id,
                           float x_pt, float y_pt, int64_t time_ns) {
     if (!touch || touch->suspended || pointer_id < 0 || !isfinite(x_pt) || !isfinite(y_pt))
         return 0;
+    if (pending_full(touch)) return 0;   /* bounded backpressure: no partial mutation */
     if (find_pointer(touch, pointer_id) >= 0) return 0;   /* duplicate down: keep the first owner */
     int slot = free_slot(touch);
     if (slot < 0) return 0;
@@ -125,6 +149,7 @@ int dm_android_touch_move(dm_android_touch *touch, int32_t pointer_id,
                           float x_pt, float y_pt, int64_t time_ns) {
     if (!touch || touch->suspended || pointer_id < 0 || !isfinite(x_pt) || !isfinite(y_pt))
         return 0;
+    if (pending_full(touch)) return 0;
     int slot = find_pointer(touch, pointer_id);
     if (slot < 0) return 0;
     double now_s;
@@ -136,6 +161,7 @@ int dm_android_touch_move(dm_android_touch *touch, int32_t pointer_id,
 
 int dm_android_touch_up(dm_android_touch *touch, int32_t pointer_id, int64_t time_ns) {
     if (!touch || touch->suspended || pointer_id < 0) return 0;
+    if (pending_full(touch)) return 0;   /* leave the pointer intact for retry after read */
     int slot = find_pointer(touch, pointer_id);
     if (slot < 0) return 0;
     double now_s;
@@ -209,7 +235,9 @@ int dm_android_touch_resize(dm_android_touch *touch, float width_pt, float heigh
 
 int dm_android_touch_tick(dm_android_touch *touch, int64_t time_ns) {
     double now_s;
-    if (!touch || !accept_time(touch, time_ns, &now_s)) return 0;
+    if (!touch) return 0;
+    if (pending_full(touch)) return 0;   /* backpressure before timer/core mutation */
+    if (!accept_time(touch, time_ns, &now_s)) return 0;
     if (!touch->suspended) {
         dm_tc_tick(&touch->state, now_s);
         publish(touch);
@@ -222,12 +250,24 @@ int dm_android_touch_tick(dm_android_touch *touch, int64_t time_ns) {
 dm_npad_state dm_android_touch_read(dm_android_touch *touch) {
     dm_npad_state out = {0};
     if (!touch) return out;
+    if (touch->release_waiting) {
+        touch->release_waiting = 0;
+        return dm_android_pad_read(touch->pad);   /* neutral/held release between same-button pulses */
+    }
+    if (touch->pulse_count == 0) return dm_android_pad_read(touch->pad);
+
+    int head = touch->pulse_head;
+    uint64_t buttons = touch->pulses[head].buttons;
+    int32_t rx = touch->pulses[head].rx, ry = touch->pulses[head].ry;
+    touch->pulse_head = (head + 1) % DM_ANDROID_TOUCH_PULSE_CAPACITY;
+    --touch->pulse_count;
+    publish_entry(touch, buttons, rx, ry);
     out = dm_android_pad_read(touch->pad);
-    if (touch->pulse_pending) {
-        touch->pulse_pending = 0;
-        touch->pulse_buttons = 0;
-        touch->pulse_rx = touch->pulse_ry = 0;
-        publish(touch);   /* neutral/held state is visible to the next read */
+    if (touch->pulse_count > 0 && touch->pulses[touch->pulse_head].buttons == buttons) {
+        touch->release_waiting = 1;
+        publish_core(touch);   /* make the next read a release, not a duplicate edge */
+    } else if (touch->pulse_count == 0) {
+        publish_core(touch);   /* last pulse consumed: next read is neutral/held */
     }
     return out;
 }

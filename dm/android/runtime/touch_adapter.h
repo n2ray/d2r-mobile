@@ -33,15 +33,23 @@
 extern "C" {
 #endif
 
+// Pending release-to-cast pulses are held in a fixed 16-slot ring (the same
+// bound as the pointer table). When it is full, mutating input events are
+// rejected with 0 before they touch core state; read/cancel operations remain
+// available so the consumer can drain. This is explicit backpressure, not an
+// unbounded queue and not a silent drop.
+#define DM_ANDROID_TOUCH_PULSE_CAPACITY 16
+
 typedef struct dm_android_touch dm_android_touch;
 
 dm_android_touch *dm_android_touch_create(dm_android_pad *pad, float width_pt, float height_pt);
 void dm_android_touch_destroy(dm_android_touch *touch);
 
-// Read one coherent pad snapshot. If a short release-to-cast pulse is pending,
-// it is included exactly once here (button + aim + modifier), then the adapter
-// republishes the neutral/held state so a later read does not repeat it. Direct
-// dm_android_pad_read calls bypass this consumption and should not be used.
+// Read one coherent pad snapshot. Pending release-to-cast pulses are returned
+// one per read in acceptance order, each with its own button/aim/modifier. A
+// repeated same-button pulse is separated by one neutral read so the consumer
+// sees distinct edges. After the last pulse, the next read is neutral/held.
+// Direct dm_android_pad_read calls bypass this consumption and must not be used.
 
 // Each function returns 1 when the event was accepted and 0 when it was
 // rejected. Rejected events publish nothing and do not alter another pointer.

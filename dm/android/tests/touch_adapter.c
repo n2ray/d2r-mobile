@@ -175,7 +175,7 @@ static void delayed_pulse_keeps_aim(fixture *f) {
     s = read_pad(f); CHECK(s.buttons == 0 && s.rx == 0 && s.ry == 0);
 }
 
-/* Cancelling the joystick must not erase another pointer's unread skill pulse. */
+/* Canceling the joystick must not erase another pointer's unread skill pulse. */
 static void cancel_isolates_unread_pulse(fixture *f) {
     dm_npad_state s;
     CHECK(dm_android_touch_down(f->touch, 1, 90, 275, 8400000000));
@@ -183,6 +183,71 @@ static void cancel_isolates_unread_pulse(fixture *f) {
     CHECK(dm_android_touch_cancel(f->touch, 1, 8420000000));
     s = read_pad(f); CHECK(s.buttons == DM_BTN_B && s.lx == 0 && s.ly == 0);
     s = read_pad(f); CHECK(s.buttons == 0 && s.lx == 0 && s.ly == 0);
+}
+
+/* Two distinct skills tapped before either read must both survive in order. */
+static void two_distinct_pulses(fixture *f) {
+    dm_npad_state a, b, c;
+    tap(f, 1, f->layout.target[DM_TC_SKILL1].x, f->layout.target[DM_TC_SKILL1].y, 8250000000);
+    tap(f, 2, f->layout.target[DM_TC_SKILL2].x, f->layout.target[DM_TC_SKILL2].y, 8270000000);
+    a = read_pad(f); b = read_pad(f); c = read_pad(f);
+    CHECK(a.buttons == DM_BTN_B);
+    CHECK(b.buttons == DM_BTN_X);
+    CHECK(c.buttons == 0);
+}
+
+/* Same-button repeats need a consumer-visible release between edges. */
+static void repeated_same_button(fixture *f) {
+    dm_npad_state a, b, c, d;
+    tap(f, 1, f->layout.target[DM_TC_SKILL1].x, f->layout.target[DM_TC_SKILL1].y, 8350000000);
+    tap(f, 2, f->layout.target[DM_TC_SKILL1].x, f->layout.target[DM_TC_SKILL1].y, 8370000000);
+    a = read_pad(f); b = read_pad(f); c = read_pad(f); d = read_pad(f);
+    CHECK(a.buttons == DM_BTN_B);
+    CHECK(b.buttons == 0);
+    CHECK(c.buttons == DM_BTN_B);
+    CHECK(d.buttons == 0);
+}
+
+/* Distinct pulses keep their own aim directions, not an OR/collapsed sample. */
+static void distinct_aims(fixture *f) {
+    dm_npad_state a, b, c;
+    float x1 = f->layout.target[DM_TC_SKILL1].x, y1 = f->layout.target[DM_TC_SKILL1].y;
+    float x2 = f->layout.target[DM_TC_SKILL2].x, y2 = f->layout.target[DM_TC_SKILL2].y;
+    CHECK(dm_android_touch_down(f->touch, 1, x1, y1, 8600000000));
+    CHECK(dm_android_touch_move(f->touch, 1, x1 - 50, y1 - 50, 8601000000));
+    CHECK(dm_android_touch_up(f->touch, 1, 8602000000));
+    CHECK(dm_android_touch_down(f->touch, 2, x2, y2, 8610000000));
+    CHECK(dm_android_touch_move(f->touch, 2, x2 + 50, y2 + 50, 8611000000));
+    CHECK(dm_android_touch_up(f->touch, 2, 8612000000));
+    a = read_pad(f); b = read_pad(f); c = read_pad(f);
+    CHECK(a.buttons == DM_BTN_B && a.rx < 0 && a.ry > 0);
+    CHECK(b.buttons == DM_BTN_X && b.rx > 0 && b.ry < 0);
+    CHECK(c.buttons == 0 && c.rx == 0 && c.ry == 0);
+}
+
+/* Full bounded pulse storage backpressures without partial mutation; global
+   cancel clears the queued pulses. */
+static void bounded_pulses_and_overflow(fixture *f) {
+    dm_npad_state s;
+    for (int i = 0; i < DM_ANDROID_TOUCH_PULSE_CAPACITY; ++i)
+        tap(f, i, f->layout.target[DM_TC_SKILL1].x, f->layout.target[DM_TC_SKILL1].y,
+            8700000000 + (int64_t)i * 1000000);
+    CHECK(!dm_android_touch_down(f->touch, 99, f->layout.target[DM_TC_SKILL1].x,
+                                 f->layout.target[DM_TC_SKILL1].y, 8800000000));
+    CHECK(!dm_android_touch_tick(f->touch, 8801000000));
+    CHECK(dm_android_touch_cancel_all(f->touch, 8802000000));
+    s = read_pad(f); CHECK(s.buttons == 0);
+}
+
+/* Global cancellation must clear a queue of pending pulses, not only the
+   deferred single-slot case. */
+static void global_cancel_clears_pulses(fixture *f) {
+    dm_npad_state s;
+    tap(f, 1, f->layout.target[DM_TC_SKILL1].x, f->layout.target[DM_TC_SKILL1].y, 8900000000);
+    tap(f, 2, f->layout.target[DM_TC_SKILL2].x, f->layout.target[DM_TC_SKILL2].y, 8902000000);
+    CHECK(dm_android_touch_focus_lost(f->touch, 8903000000));
+    s = read_pad(f); CHECK(s.buttons == 0);
+    s = read_pad(f); CHECK(s.buttons == 0);
 }
 
 /* Unknown/duplicate/full events must not advance the accepted clock. */
@@ -263,6 +328,11 @@ int main(void) {
     CASE(release_to_cast_pulse);
     CASE(delayed_pulse_keeps_aim);
     CASE(cancel_isolates_unread_pulse);
+    CASE(two_distinct_pulses);
+    CASE(repeated_same_button);
+    CASE(distinct_aims);
+    CASE(bounded_pulses_and_overflow);
+    CASE(global_cancel_clears_pulses);
     CASE(invalid_event_no_timer_mutation);
     RUN(destroy_leaves_pad_neutral);
     CASE(second_set_zl_and_deferred);
