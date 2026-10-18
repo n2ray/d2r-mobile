@@ -81,14 +81,22 @@ keep their original fd. It uses the fixed `custom_preferences.txt` name and a
 fixed `.custom_preferences.tmp` name in that directory.
 
 - Load accepts only a bounded regular file (`DM_CP_MAX_BYTES`) opened with
-  `O_NOFOLLOW`; absent files return an empty document (the existing module then
-  supplies defaults). IO errors and oversize files leave the instance's current
+  `O_NOFOLLOW|O_NONBLOCK`; absent files return an empty document (the existing
+  module then supplies defaults). A FIFO or other non-regular object is rejected
+  without blocking. IO errors and oversize files leave the instance's current
   settings unchanged.
+- Save rejects an existing destination object that is a symlink or otherwise
+  non-regular before creating anything; the link and its target are preserved.
+  The private directory is expected to have a single owning control thread;
+  this is not a defense against arbitrary concurrent writers.
 - Save rejects content over 2048 bytes, creates a same-directory temporary file
   with `O_CREAT|O_EXCL|O_NOFOLLOW`, handles short writes/EINTR, fsyncs the file,
   and uses `renameat()` as the commit point. Failures before rename remove only
   the temporary file this call created and leave the previous file intact.
   Stale or symlink temporary names are unknown collisions and are not removed.
+- A test-only compiled hook simulates failure after fsync and before rename; it
+  verifies the old file, pending settings and temp cleanup and a successful
+  retry. The production adapter exposes no operation table or hook.
 - There is no directory-fsync/power-loss durability claim and no UI/JNI/App
   wiring. This is an offline file adapter, not device persistence acceptance.
 

@@ -11,6 +11,10 @@ struct dm_cp_store {
     int dirfd;
 };
 
+#ifdef DM_CP_STORE_TEST_FAULT
+extern int dm_cp_store_test_fail_after_fsync(void);
+#endif
+
 static int valid_store(const dm_cp_store *store) {
     return store && store->dirfd >= 0;
 }
@@ -39,7 +43,8 @@ void dm_cp_store_destroy(dm_cp_store *store) {
 int dm_cp_store_load(void *ctx, char *out, size_t capacity, size_t *len) {
     dm_cp_store *store = ctx;
     if (!valid_store(store) || !out || capacity == 0 || !len) return 1;
-    int fd = openat(store->dirfd, DM_CP_STORE_FILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    int fd = openat(store->dirfd, DM_CP_STORE_FILE,
+                    O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
         if (errno == ENOENT) {
             *len = 0;
@@ -85,6 +90,16 @@ int dm_cp_store_save(void *ctx, const char *data, size_t len) {
     dm_cp_store *store = ctx;
     if (!valid_store(store) || len > DM_CP_MAX_BYTES || (len && !data)) return 1;
 
+    /* A private directory is serialized by its single owning control thread.
+       Refuse an existing destination symlink/non-regular object before creating
+       a temp; this is not an adversarial concurrent-writer framework. */
+    struct stat destination;
+    if (fstatat(store->dirfd, DM_CP_STORE_FILE, &destination, AT_SYMLINK_NOFOLLOW) == 0) {
+        if (!S_ISREG(destination.st_mode)) return 1;
+    } else if (errno != ENOENT) {
+        return 1;
+    }
+
     int fd = openat(store->dirfd, DM_CP_STORE_TEMP,
                     O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) return 1;   /* a stale/symlink temp is an unknown collision */
@@ -105,6 +120,13 @@ int dm_cp_store_save(void *ctx, const char *data, size_t len) {
         remove_own_temp(store);
         return 1;
     }
+#ifdef DM_CP_STORE_TEST_FAULT
+    if (dm_cp_store_test_fail_after_fsync()) {
+        close(fd);
+        remove_own_temp(store);
+        return 1;
+    }
+#endif
     if (close(fd) != 0) {
         remove_own_temp(store);
         return 1;

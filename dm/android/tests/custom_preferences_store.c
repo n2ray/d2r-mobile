@@ -19,6 +19,11 @@ static int checks;
     } \
 } while (0)
 
+#ifdef DM_CP_STORE_TEST_FAULT
+static int fail_after_fsync;
+int dm_cp_store_test_fail_after_fsync(void) { return fail_after_fsync; }
+#endif
+
 static int make_dir(char path[]) {
     return mkdtemp(path) != NULL;
 }
@@ -124,6 +129,16 @@ static int test_missing_and_invalid_inputs(void) {
     CHECK(dm_cp_get(&q, "eco_fps") == 0);
     unlinkat(fd, DM_CP_STORE_FILE, 0);
 
+    // A FIFO at the data name must be rejected without blocking.
+    char fifo_path[512];
+    snprintf(fifo_path, sizeof fifo_path, "%s/%s", path_a, DM_CP_STORE_FILE);
+    CHECK(mkfifo(fifo_path, 0600) == 0);
+    dm_cp_instance fifo;
+    dm_cp_init(&fifo);
+    CHECK(dm_cp_load(&fifo, dm_cp_store_load, store) == DM_CP_LOAD_IO);
+    CHECK(dm_cp_get(&fifo, "eco_fps") == 0);
+    unlink(fifo_path);
+
     // Symlink at the data path is not followed.
     int target = openat(fd, "target", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     CHECK(target >= 0);
@@ -182,6 +197,25 @@ static int test_pre_rename_failure_and_retry(void) {
     CHECK(after_len > 0 && strstr(after, "q3d=1\n") != NULL);
     CHECK(!path_exists(fd, DM_CP_STORE_TEMP));
 
+    // Existing destination symlink must be refused, leaving link and target.
+    CHECK(unlinkat(fd, DM_CP_STORE_FILE, 0) == 0);
+    CHECK(write_file(fd, "destination_target", "target-data", 11));
+    CHECK(symlinkat("destination_target", fd, DM_CP_STORE_FILE) == 0);
+    CHECK(dm_cp_set(&p, "auto_mana", 0) == DM_CP_OK);
+    CHECK(dm_cp_apply(&p, dm_cp_store_save, store) == DM_CP_SAVE_FAILED);
+    CHECK(dm_cp_pending(&p, "auto_mana") == 0);
+    struct stat link_st;
+    CHECK(fstatat(fd, DM_CP_STORE_FILE, &link_st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISLNK(link_st.st_mode));
+    char target_data[32];
+    size_t target_len = 0;
+    CHECK(read_file(fd, "destination_target", target_data, sizeof target_data, &target_len));
+    CHECK(target_len == 11 && !memcmp(target_data, "target-data", 11));
+    CHECK(!path_exists(fd, DM_CP_STORE_TEMP));
+    CHECK(unlinkat(fd, DM_CP_STORE_FILE, 0) == 0);
+    CHECK(dm_cp_apply(&p, dm_cp_store_save, store) == DM_CP_OK);
+    CHECK(dm_cp_get(&p, "auto_mana") == 0);
+    CHECK(unlinkat(fd, "destination_target", 0) == 0);
+
     char big[DM_CP_MAX_BYTES + 1];
     memset(big, 'y', sizeof big);
     CHECK(dm_cp_store_save(store, big, sizeof big) != 0);
@@ -235,11 +269,55 @@ static int test_independent_directories(void) {
     return 0;
 }
 
+#ifdef DM_CP_STORE_TEST_FAULT
+static int test_post_fsync_failure(void) {
+    char path_a[] = "/tmp/dm-cp-store-f-XXXXXX";
+    CHECK(make_dir(path_a));
+    int fd = open(path_a, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(fd >= 0);
+    dm_cp_store *store = dm_cp_store_create(fd);
+    CHECK(store != NULL);
+    dm_cp_instance p;
+    dm_cp_init(&p);
+    CHECK(dm_cp_set(&p, "eco_fps", 1) == DM_CP_OK);
+    CHECK(dm_cp_apply(&p, dm_cp_store_save, store) == DM_CP_OK);
+    char old_doc[DM_CP_MAX_BYTES + 1];
+    size_t old_len = 0;
+    CHECK(read_file(fd, DM_CP_STORE_FILE, old_doc, sizeof old_doc, &old_len));
+
+    CHECK(dm_cp_set(&p, "q3d", 1) == DM_CP_OK);
+    fail_after_fsync = 1;
+    CHECK(dm_cp_apply(&p, dm_cp_store_save, store) == DM_CP_SAVE_FAILED);
+    fail_after_fsync = 0;
+    CHECK(dm_cp_pending(&p, "q3d") == 1);
+    char current[DM_CP_MAX_BYTES + 1];
+    size_t current_len = 0;
+    CHECK(read_file(fd, DM_CP_STORE_FILE, current, sizeof current, &current_len));
+    CHECK(old_len == current_len && !memcmp(old_doc, current, old_len));
+    CHECK(!path_exists(fd, DM_CP_STORE_TEMP));
+    CHECK(dm_cp_apply(&p, dm_cp_store_save, store) == DM_CP_OK);
+    CHECK(dm_cp_get(&p, "q3d") == 1);
+    CHECK(read_file(fd, DM_CP_STORE_FILE, current, sizeof current, &current_len));
+    CHECK(current_len > 0 && strstr(current, "q3d=1\n") != NULL);
+
+    close(fd);
+    dm_cp_store_destroy(store);
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", path_a, DM_CP_STORE_FILE);
+    unlink(path);
+    rmdir(path_a);
+    return 0;
+}
+#endif
+
 int main(void) {
     if (test_roundtrip_and_ownership()) return 1;
     if (test_missing_and_invalid_inputs()) return 1;
     if (test_pre_rename_failure_and_retry()) return 1;
     if (test_independent_directories()) return 1;
+#ifdef DM_CP_STORE_TEST_FAULT
+    if (test_post_fsync_failure()) return 1;
+#endif
     printf("PASS custom preferences store: %d checks\n", checks);
     return 0;
 }

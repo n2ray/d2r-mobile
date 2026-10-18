@@ -152,6 +152,16 @@ target_link_libraries(dm_custom_preferences_store_test PRIVATE dm_android_custom
 target_compile_options(dm_custom_preferences_store_test PRIVATE -Wall -Wextra -Werror)
 add_test(NAME custom_preferences_store COMMAND dm_custom_preferences_store_test)
 set_tests_properties(custom_preferences_store PROPERTIES TIMEOUT 60)
+# #167 test-only post-fsync/pre-rename fault hook; production library has no hook.
+add_executable(dm_custom_preferences_store_fault_test
+    tests/custom_preferences_store.c
+    app/custom_preferences_store.c
+    app/custom_preferences.c)
+target_include_directories(dm_custom_preferences_store_fault_test PRIVATE app)
+target_compile_definitions(dm_custom_preferences_store_fault_test PRIVATE DM_CP_STORE_TEST_FAULT=1)
+target_compile_options(dm_custom_preferences_store_fault_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME custom_preferences_store_fault COMMAND dm_custom_preferences_store_fault_test)
+set_tests_properties(custom_preferences_store_fault PROPERTIES TIMEOUT 60)
 add_library(dm_android_touch_bridge STATIC app/touch_bridge.c)
 target_include_directories(dm_android_touch_bridge PUBLIC app runtime)
 target_link_libraries(dm_android_touch_bridge PUBLIC dm_android_touch dm_android_touch_game)
