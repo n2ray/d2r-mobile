@@ -23,13 +23,14 @@
 #define DM_VK_SHADER_REFLECT_H
 
 #include "vk_host.h"
+#include "vk_sampler.h"
 
 #define DM_VK_REFLECT_ABI "dm-vk-reflect/1"
 #define DM_VK_REFLECT_MAX_BINDINGS 8
 #define DM_VK_REFLECT_MAX_PUSH 128
 #define DM_VK_REFLECT_WHY 192
 
-typedef enum { DM_VK_REFLECT_SBUF = 1, DM_VK_REFLECT_IMAGE = 2 } dm_vk_reflect_kind;
+typedef enum { DM_VK_REFLECT_SBUF = 1, DM_VK_REFLECT_IMAGE = 2, DM_VK_REFLECT_SAMPLED_IMAGE = 3 } dm_vk_reflect_kind;
 
 typedef struct {
     uint32_t set, binding, count, kind;   // kind = dm_vk_reflect_kind
@@ -82,6 +83,14 @@ int dm_vk_reflect_check(const dm_vk_shader_plan *plan, const dm_vk_reflect_limit
 // Execute: build the pipeline from the plan's owned bytes, dispatch 1D by the plan's LocalSize, read back the words.
 VkResult dm_vk_reflect_compute(dm_vk *vk, const dm_vk_shader_plan *plan, dm_vk_pixels *canvas,
                                const void *push, uint32_t push_bytes);
+
+// 最小采样消费子集：一个 storage buffer + 一个 sampler2D。纹理/采样器由调用者拥有，必须是 upload 后的
+// RGBA8 UNORM 2D 单层、SHADER_READ_ONLY_OPTIMAL；失败不改画布且不销毁调用者资源。
+// Minimal sampled consumer: one storage buffer plus one sampler2D. Texture/sampler are caller-owned, RGBA8 UNORM 2D
+// single-layer in SHADER_READ_ONLY_OPTIMAL after upload; failure leaves the canvas and caller resources untouched.
+VkResult dm_vk_reflect_compute_sampled(dm_vk *vk, const dm_vk_shader_plan *plan, dm_vk_pixels *canvas,
+                                       const void *push, uint32_t push_bytes,
+                                       const dm_vk_texture *texture, const dm_vk_sampler *sampler);
 
 // 十六进制 SHA-256（供 sidecar 绑定与测试核对）；out 至少 65 字节。
 // Hex SHA-256 (for sidecar binding and tests); out must hold at least 65 bytes.

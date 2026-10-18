@@ -279,6 +279,27 @@ endif()
 # #12 reflection consumer regression: real-GPU positive run with an independent oracle, negatives rejected before
 # any Vulkan object exists.
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/reflect-tmp)
+set(sampled_spv ${CMAKE_CURRENT_BINARY_DIR}/sampled.spv)
+add_custom_command(OUTPUT ${sampled_spv}
+    COMMAND ${DM_GLSLC} --target-env=vulkan1.1 -O ${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/sampled.comp -o ${sampled_spv}
+    DEPENDS ../tests/fixtures/sampled.comp VERBATIM)
+add_custom_target(dm_vk_sampled_fixture DEPENDS ${sampled_spv})
+add_executable(dm_vulkan_reflect_sampled_test ../tests/vulkan_reflect_sampled.c)
+target_link_libraries(dm_vulkan_reflect_sampled_test PRIVATE dm_android_vk)
+target_compile_options(dm_vulkan_reflect_sampled_test PRIVATE -Wall -Wextra -Werror)
+add_dependencies(dm_vulkan_reflect_sampled_test dm_vk_sampled_fixture)
+if(ANDROID)
+    target_link_options(dm_vulkan_reflect_sampled_test PRIVATE "-Wl,-z,max-page-size=16384")
+else()
+    add_test(NAME vulkan_reflect_sampled COMMAND dm_vulkan_reflect_sampled_test ${sampled_spv}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/sampled.res.json
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/reflect.res.json)
+    set_tests_properties(vulkan_reflect_sampled PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+    if(APPLE AND DM_MOLTENVK_ICD)
+        set_tests_properties(vulkan_reflect_sampled PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
+    endif()
+endif()
+
 add_executable(dm_vulkan_reflect_test ../tests/vulkan_reflect.c)
 target_link_libraries(dm_vulkan_reflect_test PRIVATE dm_android_vk)
 target_compile_options(dm_vulkan_reflect_test PRIVATE -Wall -Wextra -Werror)
