@@ -306,13 +306,89 @@ static void acquire_failure_drains_pending_work(void) {
     CHECK(dm_app_lifecycle_surface_created(lc, &two) == 0);
     CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_FAILED);
     CHECK(dm_app_lifecycle_pending_work(lc) == 1);
-    CHECK(dm_app_lifecycle_surface(lc) == NULL);
-    CHECK(h.releases == 1 && h.stops == 0);
+    CHECK(dm_app_lifecycle_surface(lc) == &one);  /* old reference retained */
+    CHECK(h.releases == 0 && h.stops == 0);       /* no early release */
     CHECK(dm_app_lifecycle_destroy(lc) == 0);
     CHECK(dm_app_lifecycle_work_end(lc) == 1);
     CHECK(dm_app_lifecycle_pending_work(lc) == 0);
+    CHECK(dm_app_lifecycle_surface(lc) == NULL);
     CHECK(h.releases == 1 && h.stops == 1);
     CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(dm_app_lifecycle_destroy(lc) == 1);
+}
+
+static void replacement_retains_surface_until_drain(void) {
+    fake_host h; reset_host(&h);
+    dm_app_host_ops ops = ops_for(&h);
+    dm_app_lifecycle *lc = dm_app_lifecycle_create(&ops, observe, &h);
+    int one = 0, two = 0, three = 0;
+    CHECK(lc != NULL);
+    CHECK(dm_app_lifecycle_start(lc) == 1);
+    CHECK(dm_app_lifecycle_surface_created(lc, &one) == 1);
+    CHECK(dm_app_lifecycle_work_begin(lc) == 1);
+    CHECK(dm_app_lifecycle_surface_created(lc, &two) == 1);
+    CHECK(h.acquires == 2);
+    CHECK(dm_app_lifecycle_surface_created(lc, &three) == 0); /* retired slot busy */
+    CHECK(h.acquires == 2);
+    CHECK(h.releases == 0);                       /* A retained for pending work */
+    CHECK(dm_app_lifecycle_surface(lc) == &two);
+    CHECK(dm_app_lifecycle_surface_destroyed(lc, &one) == 1); /* old callback */
+    CHECK(h.releases == 0);
+    CHECK(dm_app_lifecycle_surface_destroyed(lc, &one) == 1); /* duplicate */
+    CHECK(h.releases == 0);
+    CHECK(dm_app_lifecycle_work_end(lc) == 1);
+    CHECK(h.releases == 1 && h.released[0] == &one);
+    CHECK(dm_app_lifecycle_surface(lc) == &two);
+    CHECK(dm_app_lifecycle_surface_destroyed(lc, &one) == 0); /* stale after drain */
+    CHECK(h.releases == 1);
+    CHECK(dm_app_lifecycle_surface_destroyed(lc, &two) == 1);
+    CHECK(h.releases == 2 && h.released[1] == &two);
+    CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(dm_app_lifecycle_destroy(lc) == 1);
+}
+
+static void replacement_stop_releases_both(void) {
+    fake_host h; reset_host(&h);
+    dm_app_host_ops ops = ops_for(&h);
+    dm_app_lifecycle *lc = dm_app_lifecycle_create(&ops, observe, &h);
+    int one = 0, two = 0;
+    CHECK(lc != NULL);
+    CHECK(dm_app_lifecycle_start(lc) == 1);
+    CHECK(dm_app_lifecycle_surface_created(lc, &one) == 1);
+    CHECK(dm_app_lifecycle_work_begin(lc) == 1);
+    CHECK(dm_app_lifecycle_surface_created(lc, &two) == 1);
+    CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_STOPPING);
+    CHECK(h.releases == 0 && h.stops == 0);
+    CHECK(dm_app_lifecycle_work_end(lc) == 1);
+    CHECK(dm_app_lifecycle_state(lc) == DM_APP_STATE_STOPPED);
+    CHECK(h.releases == 2 && h.stops == 1);
+    CHECK(h.released[0] == &one && h.released[1] == &two);
+    CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(h.stops == 1);
+    CHECK(dm_app_lifecycle_destroy(lc) == 1);
+}
+
+static void matching_destroy_retains_until_drain(void) {
+    fake_host h; reset_host(&h);
+    dm_app_host_ops ops = ops_for(&h);
+    dm_app_lifecycle *lc = dm_app_lifecycle_create(&ops, observe, &h);
+    int one = 0;
+    CHECK(lc != NULL);
+    CHECK(dm_app_lifecycle_start(lc) == 1);
+    CHECK(dm_app_lifecycle_surface_created(lc, &one) == 1);
+    CHECK(dm_app_lifecycle_work_begin(lc) == 1);
+    CHECK(dm_app_lifecycle_surface_destroyed(lc, &one) == 1);
+    CHECK(dm_app_lifecycle_surface(lc) == &one);  /* still owned */
+    CHECK(h.releases == 0);
+    CHECK(dm_app_lifecycle_surface_destroyed(lc, &one) == 1); /* duplicate */
+    CHECK(h.releases == 0);
+    CHECK(dm_app_lifecycle_work_end(lc) == 1);
+    CHECK(dm_app_lifecycle_surface(lc) == NULL);
+    CHECK(h.releases == 1 && h.released[0] == &one);
+    CHECK(dm_app_lifecycle_surface_destroyed(lc, &one) == 0);
+    CHECK(dm_app_lifecycle_stop(lc) == 1);
+    CHECK(h.releases == 1);
     CHECK(dm_app_lifecycle_destroy(lc) == 1);
 }
 
@@ -384,6 +460,9 @@ int main(void) {
     failure_drains_pending_work();
     resume_failure_drains_pending_work();
     acquire_failure_drains_pending_work();
+    replacement_retains_surface_until_drain();
+    replacement_stop_releases_both();
+    matching_destroy_retains_until_drain();
     busy_destroy_contract();
     failure_acknowledgement_restart();
     error_contracts();

@@ -18,11 +18,14 @@ before another start.
 
 The controller owns one acquired `ANativeWindow` reference, not a
 callback-scoped borrowed pointer. `onNativeWindowCreated` acquires and
-`onNativeWindowDestroyed`/stop releases it; replacement releases the old
-reference before acquiring the new one. Engine cleanup is called once, stop is
-idempotent, and a stop requested while asynchronous work is pending remains in
-`stopping` until `work_end` completes it. The controller is single-threaded on
-the Android activity/control thread.
+`onNativeWindowDestroyed`/stop releases it. Replacement acquires the new
+reference first; with work outstanding the old reference is retained in one
+retired slot until the final `work_end`, and matching destroy callbacks defer
+rather than release it early. A second replacement while that retired slot is
+occupied is rejected as explicit backpressure. Stale callbacks are ignored.
+Engine cleanup is called once, stop is idempotent, and a stop requested while
+asynchronous work is pending remains in `stopping` until `work_end` completes it.
+The controller is single-threaded on the Android activity/control thread.
 
 Failure is also drain-aware. If pause, resume or a Surface acquire fails while
 work is outstanding, the controller remains `failed`, preserves the pending

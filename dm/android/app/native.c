@@ -111,7 +111,9 @@ static void input_destroyed(ANativeActivity*a,AInputQueue*queue){AInputQueue_det
 static void window_ready(ANativeActivity*a,ANativeWindow*window){
     app_state*s=a->instance;if(!s||!s->lifecycle)return;
     if(!dm_app_lifecycle_surface_created(s->lifecycle,window)){
-        LOG("surface acquire rejected: state=%s",dm_app_lifecycle_state_name(dm_app_lifecycle_state(s->lifecycle)));
+        LOG("surface callback rejected: state=%s pending=%u",
+            dm_app_lifecycle_state_name(dm_app_lifecycle_state(s->lifecycle)),
+            dm_app_lifecycle_pending_work(s->lifecycle));
         return;
     }
     if(dm_app_lifecycle_state(s->lifecycle)==DM_APP_STATE_OWNED_DIAGNOSTIC)draw(a,window);

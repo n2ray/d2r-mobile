@@ -14,8 +14,11 @@ English: [README.md](README.md)
 `owned-diagnostic`；`running` 保留给已准入的真实游戏后端，本 App 不会进入。
 加载失败会显示为 `failed`，只执行一次宿主清理；必须停止并重新启动后才能再次
 尝试。控制器持有一个已 acquire 的 `ANativeWindow` 引用，而不是回调期间可失效
-的借用指针；窗口替换先释放旧引用，停止可重复调用，异步工作未完成时停止保持
-`stopping`，直到工作结束后再清理。控制器只在 Android Activity/控制线程上使用。
+的借用指针；窗口替换先 acquire 新引用，旧引用在有工作时保留在唯一的 retired
+槽中，直到最后一次 `work_end`。匹配的 destroy 回调会延后释放，不会提前释放旧
+引用；retired 槽占用期间的第二次替换会明确拒绝（背压），陈旧回调忽略。停止可
+重复调用，异步工作未完成时停止保持 `stopping`，直到工作结束后再清理。控制器
+只在 Android Activity/控制线程上使用。
 
 失败路径同样会等待排空：暂停、恢复或 Surface acquire 失败时，如果仍有工作，
 控制器保持 `failed`，保留 pending 计数并继续持有 Surface，直到最后一次

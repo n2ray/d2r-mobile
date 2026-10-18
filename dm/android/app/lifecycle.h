@@ -71,9 +71,12 @@ int dm_app_lifecycle_stop(dm_app_lifecycle *lifecycle);
 int dm_app_lifecycle_pause(dm_app_lifecycle *lifecycle);
 int dm_app_lifecycle_resume(dm_app_lifecycle *lifecycle);
 
-// Registers an owned surface reference. A replacement releases the old
-// reference before acquiring the new one. The pointer is treated as an opaque
-// token and is never dereferenced here. Stale destroys are rejected.
+// Registers an owned surface reference. A replacement is acquired before the
+// old reference is released. While work is outstanding, the old reference is
+// retained in one retired slot until final work_end; matching destroy callbacks
+// are deferred and stale callbacks are ignored. A second replacement while the
+// retired slot is occupied is rejected (explicit backpressure), not silently
+// dropped. The pointer is treated as an opaque token and is never dereferenced.
 int dm_app_lifecycle_surface_created(dm_app_lifecycle *lifecycle, void *surface);
 int dm_app_lifecycle_surface_destroyed(dm_app_lifecycle *lifecycle, void *surface);
 void *dm_app_lifecycle_surface(const dm_app_lifecycle *lifecycle);

@@ -9,11 +9,13 @@ struct dm_app_lifecycle {
     dm_app_state state;
     dm_app_state resume_state;
     void *surface;
+    void *retired_surface;
     uint32_t pending_work;
     int host_stopped;
     int cleanup_done;
     int cleanup_failed;
     int stop_after_drain;
+    int current_destroy_pending;
 };
 
 static void notify(dm_app_lifecycle *lifecycle, dm_app_state state) {
@@ -23,14 +25,32 @@ static void notify(dm_app_lifecycle *lifecycle, dm_app_state state) {
 }
 
 static void release_surface(dm_app_lifecycle *lifecycle) {
-    if (!lifecycle->surface) return;
-    lifecycle->host.surface_release(lifecycle->host.ctx, lifecycle->surface);
-    lifecycle->surface = NULL;
+    if (lifecycle->surface) {
+        lifecycle->host.surface_release(lifecycle->host.ctx, lifecycle->surface);
+        lifecycle->surface = NULL;
+    }
+    lifecycle->current_destroy_pending = 0;
+}
+
+static void release_retired_surface(dm_app_lifecycle *lifecycle) {
+    if (!lifecycle->retired_surface) return;
+    lifecycle->host.surface_release(lifecycle->host.ctx, lifecycle->retired_surface);
+    lifecycle->retired_surface = NULL;
+}
+
+static void release_all_surfaces(dm_app_lifecycle *lifecycle) {
+    release_surface(lifecycle);
+    release_retired_surface(lifecycle);
+}
+
+static void settle_retired_after_drain(dm_app_lifecycle *lifecycle) {
+    release_retired_surface(lifecycle);
+    if (lifecycle->current_destroy_pending) release_surface(lifecycle);
 }
 
 static void finish_failure_cleanup(dm_app_lifecycle *lifecycle) {
     if (lifecycle->cleanup_done) return;
-    release_surface(lifecycle);
+    release_all_surfaces(lifecycle);
     if (!lifecycle->host_stopped) {
         lifecycle->host_stopped = 1;
         if (lifecycle->host.stop(lifecycle->host.ctx)) lifecycle->cleanup_failed = 1;
@@ -44,7 +64,7 @@ static void fail(dm_app_lifecycle *lifecycle) {
 }
 
 static void finish_stop(dm_app_lifecycle *lifecycle) {
-    release_surface(lifecycle);
+    release_all_surfaces(lifecycle);
     if (!lifecycle->host_stopped) {
         lifecycle->host_stopped = 1;
         if (lifecycle->host.stop(lifecycle->host.ctx)) {
@@ -107,6 +127,8 @@ int dm_app_lifecycle_start(dm_app_lifecycle *lifecycle) {
     lifecycle->cleanup_failed = 0;
     lifecycle->stop_after_drain = 0;
     lifecycle->pending_work = 0;
+    lifecycle->retired_surface = NULL;
+    lifecycle->current_destroy_pending = 0;
     lifecycle->resume_state = DM_APP_STATE_OWNED_DIAGNOSTIC;
     notify(lifecycle, DM_APP_STATE_STARTING);
     notify(lifecycle, DM_APP_STATE_LOADING);
@@ -186,21 +208,45 @@ int dm_app_lifecycle_surface_created(dm_app_lifecycle *lifecycle, void *surface)
         lifecycle->state != DM_APP_STATE_PAUSED) {
         return 0;
     }
-    if (lifecycle->surface == surface) return 1;
-    if (lifecycle->surface) release_surface(lifecycle);
+    if (lifecycle->surface == surface) {
+        lifecycle->current_destroy_pending = 0;
+        return 1;
+    }
+    /* One retired ownership slot is enough for the old Surface while work is
+       outstanding. A second replacement is explicit backpressure, not a
+       release of the only old reference. */
+    if (lifecycle->pending_work != 0 && lifecycle->retired_surface) return 0;
     if (!lifecycle->host.surface_acquire ||
         lifecycle->host.surface_acquire(lifecycle->host.ctx, surface)) {
-        fail(lifecycle);
+        fail(lifecycle);  /* keep the current Surface when pending */
         return 0;
     }
-    lifecycle->surface = surface;
+    if (lifecycle->pending_work != 0) {
+        if (lifecycle->surface) {
+            lifecycle->retired_surface = lifecycle->surface;
+            lifecycle->current_destroy_pending = 0;
+        }
+        lifecycle->surface = surface;
+    } else {
+        release_surface(lifecycle);
+        release_retired_surface(lifecycle);
+        lifecycle->surface = surface;
+    }
     return 1;
 }
 
 int dm_app_lifecycle_surface_destroyed(dm_app_lifecycle *lifecycle, void *surface) {
-    if (!lifecycle || !surface || lifecycle->surface != surface) return 0;
-    release_surface(lifecycle);
-    return 1;
+    if (!lifecycle || !surface) return 0;
+    if (lifecycle->surface == surface) {
+        if (lifecycle->pending_work != 0) {
+            lifecycle->current_destroy_pending = 1;
+            return 1;  /* retain the owned reference until final work_end */
+        }
+        release_surface(lifecycle);
+        return 1;
+    }
+    if (lifecycle->retired_surface == surface) return 1; /* already owned until drain */
+    return 0;  /* stale/non-matching window */
 }
 
 void *dm_app_lifecycle_surface(const dm_app_lifecycle *lifecycle) {
@@ -225,6 +271,7 @@ int dm_app_lifecycle_work_end(dm_app_lifecycle *lifecycle) {
     if (!lifecycle || lifecycle->pending_work == 0) return 0;
     lifecycle->pending_work--;
     if (lifecycle->pending_work == 0) {
+        settle_retired_after_drain(lifecycle);
         if (lifecycle->state == DM_APP_STATE_STOPPING) {
             finish_stop(lifecycle);
         } else if (lifecycle->state == DM_APP_STATE_FAILED) {
