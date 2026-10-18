@@ -52,9 +52,14 @@ def vertex_module(dim=1, set_number=0, duplicate=False):
     return body
 
 
-def compute_module(x=8, y=4, z=1):
-    body = header_ops(5, 20) + [inst(16, 20, 17, x, y, z), inst(19, 1),
-                                inst(33, 13, 1), inst(54, 1, 20, 0, 13), inst(248, 21), inst(253), inst(56)]
+def compute_module(x=8, y=4, z=1, entry_id=20, local_target=None, dims=None, duplicate_target=None):
+    target = entry_id if local_target is None else local_target
+    shape = [x, y, z] if dims is None else list(dims)
+    modes = [inst(16, target, 17, *shape)]
+    if duplicate_target is not None:
+        modes.append(inst(16, duplicate_target, 17, *shape))
+    body = header_ops(5, entry_id) + modes + [inst(19, 1),
+                                              inst(33, 13, 1), inst(54, 1, entry_id, 0, 13), inst(248, 21), inst(253), inst(56)]
     return body
 
 
@@ -138,6 +143,37 @@ class Contract(unittest.TestCase):
 
     def test_localsize_mismatch_rejected(self):
         self.expect_fail(module(compute_module()), CS_RES, "LocalSize", ("--local", "8,4,2"))
+
+    def test_localsize_on_wrong_entry_rejected(self):
+        # 入口函数是 20，LocalSize 却指向 29：必须按「不是入口函数」拒绝。 | entry is 20 but LocalSize targets 29.
+        self.expect_fail(module(compute_module(local_target=29)), CS_RES, "不是入口函数")
+
+    def test_localsize_zero_dimension_rejected(self):
+        self.expect_fail(module(compute_module(x=0)), CS_RES, "全为正数")
+
+    def test_localsize_truncated_rejected(self):
+        self.expect_fail(module(compute_module(dims=(8, 4))), CS_RES, "契约要求 3 个")
+
+    def test_localsize_duplicate_rejected(self):
+        self.expect_fail(module(compute_module(duplicate_target=20)), CS_RES, "恰好一次")
+
+    def test_localsize_conflicting_target_rejected(self):
+        self.expect_fail(module(compute_module(duplicate_target=29)), CS_RES, "恰好一次")
+
+    def test_local_argument_missing_value_is_usage_error(self):
+        code, out = self.run_tool(module(compute_module()), CS_RES, ("--local",))
+        self.assertEqual(code, 2, out)
+        self.assertIn("用法错误", out)
+
+    def test_local_argument_non_numeric_is_usage_error(self):
+        code, out = self.run_tool(module(compute_module()), CS_RES, ("--local", "8,x,1"))
+        self.assertEqual(code, 2, out)
+        self.assertIn("正整数", out)
+
+    def test_local_argument_zero_is_usage_error(self):
+        code, out = self.run_tool(module(compute_module()), CS_RES, ("--local", "8,0,1"))
+        self.assertEqual(code, 2, out)
+        self.assertIn("正整数", out)
 
     def test_truncated_module_rejected(self):
         words = module(vertex_module())[:8]   # 切断 OpMemoryModel：字数声明 3、实际只剩 1 | cut OpMemoryModel: declares 3 words, only 1 left
