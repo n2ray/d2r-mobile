@@ -325,6 +325,7 @@ int dm_touch_hud_render(dm_vk *vk, const dm_touch_hud_snapshot *s, dm_vk_pixels 
         if ((result = dm_vk_buffer_sync(vk, &vb, 1)) != VK_SUCCESS) { owned_buffer_destroy(vk, &vb); goto done; }
         result = dm_vk_begin(vk, &cmd);
         if (result != VK_SUCCESS) { owned_buffer_destroy(vk, &vb); goto done; }
+        OWNED_ADD();
         VkClearValue clear = {.color = {.float32 = {0, 0, 0, 0}}};
         VkRenderPassBeginInfo rbi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .renderPass = pass, .framebuffer = fb, .renderArea = {.extent = {s->pixel_width, s->pixel_height}},
@@ -355,6 +356,7 @@ int dm_touch_hud_render(dm_vk *vk, const dm_touch_hud_snapshot *s, dm_vk_pixels 
             0, 0, NULL, 1, &hb, 0, NULL);
         result = dm_vk_submit(vk, cmd);
         cmd = VK_NULL_HANDLE;
+        OWNED_DEL();
         owned_buffer_destroy(vk, &vb);
         if (result != VK_SUCCESS) goto done;
         if (dm_vk_buffer_sync(vk, &readback, 0) != VK_SUCCESS) { result = VK_ERROR_UNKNOWN; goto done; }
