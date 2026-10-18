@@ -8,6 +8,7 @@
 #include "lifecycle.h"
 #include "present_policy.h"
 #include "touch_bridge.h"
+#include "touch_hud.h"
 #include "view_policy.h"
 #include <android/asset_manager.h>
 #include <android/configuration.h>
@@ -18,6 +19,7 @@
 #include <android/keycodes.h>
 #include <android/looper.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,7 +28,7 @@
 #include <time.h>
 #include <unistd.h>
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"D2R-Diagnostic",__VA_ARGS__)
-typedef struct{dm_vk vk;AInputQueue*input;dm_app_lifecycle*lifecycle;ANativeActivity*activity;ANativeWindow*window;dm_touch_bridge*touch;dm_view_policy view;dm_input_policy gate;ALooper*looper;int timer_fd;int resumed,focused,touch_allowed;float density,touch_width_pt,touch_height_pt;uint64_t last_touch_buttons;int32_t last_touch_lx,last_touch_ly,last_touch_rx,last_touch_ry;int64_t last_touch_log_ns;char vertex[4096],fragment[4096];}app_state;
+typedef struct{dm_vk vk;AInputQueue*input;dm_app_lifecycle*lifecycle;ANativeActivity*activity;ANativeWindow*window;dm_touch_bridge*touch;dm_view_policy view;dm_input_policy gate;ALooper*looper;int timer_fd;int resumed,focused,touch_allowed;float density,touch_width_pt,touch_height_pt;uint64_t last_touch_buttons;int32_t last_touch_lx,last_touch_ly,last_touch_rx,last_touch_ry;int64_t last_touch_log_ns;dm_android_touch_observation hud_obs;int hud_obs_valid,hud_dirty;char vertex[4096],fragment[4096];}app_state;
 static int copy_asset(ANativeActivity*a,const char*name,char path[4096]){
     int n=snprintf(path,4096,"%s/%s",a->internalDataPath,name);if(n<0||n>=4096)return 1;
     AAsset*asset=AAssetManager_open(a->assetManager,name,AASSET_MODE_STREAMING);if(!asset)return 1;
@@ -92,8 +94,75 @@ static float activity_density(ANativeActivity*a){
     AConfiguration_delete(config);
     return dpi>0?(float)dpi/160.0f:1.0f;
 }
+/* Read-only diagnostic HUD observation. Motion events only update this dirty
+   flag; the existing 8 ms looper timer coalesces the actual scene/HUD draw. */
+static void touch_refresh_hud(app_state*s){
+    if(!s||!s->touch||s->density<=0){if(s){s->hud_obs_valid=0;s->hud_dirty=0;}return;}
+    dm_android_touch_observation o;
+    if(!dm_touch_bridge_observe(s->touch,s->density,&o)){
+        s->hud_obs_valid=0;s->hud_dirty=0;return;
+    }
+    if(!s->hud_obs_valid||memcmp(&s->hud_obs,&o,sizeof o)!=0){
+        s->hud_obs=o;s->hud_obs_valid=1;s->hud_dirty=1;
+    }
+}
+static void hud_pixel(uint8_t*bits,uint32_t stride,uint32_t width,uint32_t height,
+                      int x,int y,const float c[4]){
+    if(x<0||y<0||(uint32_t)x>=width||(uint32_t)y>=height)return;
+    uint8_t*p=bits+((size_t)y*stride+(uint32_t)x)*4u;
+    float a=c[3];
+    p[0]=(uint8_t)(c[0]*a*255.0f+p[0]*(1.0f-a)+0.5f);
+    p[1]=(uint8_t)(c[1]*a*255.0f+p[1]*(1.0f-a)+0.5f);
+    p[2]=(uint8_t)(c[2]*a*255.0f+p[2]*(1.0f-a)+0.5f);
+    p[3]=255;
+}
+static void hud_disk(uint8_t*bits,uint32_t stride,uint32_t width,uint32_t height,
+                     float cx,float cy,float r,const float c[4]){
+    if(r<=0||!isfinite(cx)||!isfinite(cy)||!isfinite(r))return;
+    int x0=(int)floorf(cx-r),x1=(int)ceilf(cx+r),y0=(int)floorf(cy-r),y1=(int)ceilf(cy+r);
+    for(int y=y0;y<=y1;y++)for(int x=x0;x<=x1;x++){
+        float dx=(float)x+0.5f-cx,dy=(float)y+0.5f-cy;
+        if(dx*dx+dy*dy<=r*r)hud_pixel(bits,stride,width,height,x,y,c);
+    }
+}
+/* Owned geometric diagnostic feedback only: no glyphs, binding claims or game
+   actions. Geometry is the accepted frozen layout at the observed density. */
+static int draw_hud_overlay(app_state*s,ANativeWindow_Buffer*buffer){
+    if(!s||!s->touch||!buffer||!buffer->bits||!buffer->width||!buffer->height)return 0;
+    if(buffer->format!=WINDOW_FORMAT_RGBA_8888||buffer->stride<(int32_t)buffer->width)return 0;
+    if(!s->hud_obs_valid)return 0;
+    if((uint32_t)buffer->width!=s->view.view_width_px||(uint32_t)buffer->height!=s->view.view_height_px)return 0;
+    dm_touch_hud_snapshot h;
+    if(!dm_touch_hud_snapshot_from_observation(&s->hud_obs,(uint32_t)buffer->width,(uint32_t)buffer->height,&h))return 0;
+    dm_touch_hud_geometry g[DM_TC_COUNT];dm_touch_hud_joy_geometry joy;
+    if(!dm_touch_hud_build_geometry(&h,g,&joy))return 0;
+    const float normal[4]={0.15f,0.65f,0.95f,0.30f};
+    const float pressed[4]={0.95f,0.35f,0.15f,0.60f};
+    const float unavailable[4]={0.45f,0.45f,0.45f,0.16f};
+    const float joy_c[4]={0.15f,0.85f,0.55f,0.22f};
+    const float thumb[4]={0.95f,0.35f,0.15f,0.60f};
+    uint8_t*bits=buffer->bits;
+    uint32_t stride=(uint32_t)buffer->stride,width=(uint32_t)buffer->width,height=(uint32_t)buffer->height;
+    for(int i=0;i<DM_TC_COUNT;i++){
+        if(!(h.enabled_mask&(1u<<i)))continue;
+        int pressed_i=(h.pressed_mask&(1u<<i))!=0;
+        int available=(h.available_mask&(1u<<i))!=0;
+        hud_disk(bits,stride,width,height,g[i].center_x_px,g[i].center_y_px,g[i].radius_px,
+                 pressed_i?pressed:available?normal:unavailable);
+    }
+    if(h.joystick_active){
+        hud_disk(bits,stride,width,height,h.joy_origin_x_pt*h.density,h.joy_origin_y_pt*h.density,
+                 joy.radius_px,joy_c);
+        hud_disk(bits,stride,width,height,h.joy_current_x_pt*h.density,h.joy_current_y_pt*h.density,
+                 joy.radius_px*0.42f,thumb);
+    }else{
+        hud_disk(bits,stride,width,height,joy.center_x_px,joy.center_y_px,joy.radius_px,joy_c);
+    }
+    return 1;
+}
 static void touch_consume(app_state*s,const char*reason){
     if(!s||!s->touch)return;
+    touch_refresh_hud(s);
     dm_npad_state state=dm_touch_bridge_read(s->touch);
     if(state.attributes!=1)return;
     int64_t now=monotonic_ns();
@@ -142,6 +211,7 @@ static void touch_resize_window(app_state*s,ANativeWindow*window){
 #define DM_DIAG_TARGET_EXTENT 256u
 static void draw_diagnostic(ANativeActivity*a,ANativeWindow*window){
     app_state*s=a->instance;if(!s||!window)return;
+    touch_refresh_hud(s);
     if(!dm_diag_scene_ready(s->lifecycle,window)){
         LOG("graphics draw suppressed: state=%s owned-surface=%s",
             dm_app_lifecycle_state_name(dm_app_lifecycle_state(s->lifecycle)),
@@ -193,14 +263,18 @@ static void draw_diagnostic(ANativeActivity*a,ANativeWindow*window){
         .format_rgba8888=buffer.format==WINDOW_FORMAT_RGBA_8888};
     dm_present_rect copied;
     int presented=dm_present_copy(&source,&present,&copied);
+    int overlaid=0;
+    if(presented) overlaid=draw_hud_overlay(s,&buffer);
     if(!presented)
         LOG("window copy rejected: format=%d %dx%d stride=%d; readback kept out of the window",
             (int)buffer.format,(int)buffer.width,(int)buffer.height,(int)buffer.stride);
     else (void)dm_view_policy_set_buffer(&s->view,present.width,present.height);
     if(ANativeWindow_unlockAndPost(window))LOG("window post failed");
-    else if(presented)LOG("indexed textured diagnostic: %ux%u pixel-check=PASS (%u probes), copy %ux%u at %u,%u into %dx%d view / %dx%d buffer; game presenter not implemented",
+    else if(presented){if(!overlaid)LOG("touch HUD overlay unavailable for this buffer; suppressed until next observation");
+        s->hud_dirty=0;
+        LOG("indexed textured diagnostic: %ux%u pixel-check=PASS (%u probes), copy %ux%u at %u,%u into %dx%d view / %dx%d buffer; hud=%s; game presenter not implemented",
         target.width,target.height,probes,copied.width,copied.height,copied.x,copied.y,
-        window_width,window_height,(int)buffer.width,(int)buffer.height);
+        window_width,window_height,(int)buffer.width,(int)buffer.height,overlaid?"geometry":"unavailable");}
     free(pixels);
 }
 static void stop_input_timer(app_state*s){
@@ -228,7 +302,9 @@ static int input_timer(int fd,int events,void*data){
     }
     if(!s->touch_allowed)return 1;
     int64_t now=monotonic_ns();if(now<0)return 1;
-    if(dm_touch_bridge_tick(s->touch,now))touch_consume(s,"timer");
+    int ticked=dm_touch_bridge_tick(s->touch,now);
+    if(ticked)touch_consume(s,"timer");
+    if(s->hud_dirty&&s->window&&s->touch_allowed)draw_diagnostic(s->activity,s->window);
     return 1;
 }
 static int start_input_timer(app_state*s){
@@ -364,6 +440,7 @@ static void window_ready(ANativeActivity*a,ANativeWindow*window){
 static void window_destroyed(ANativeActivity*a,ANativeWindow*window){
     app_state*s=a->instance;if(!s||!s->lifecycle)return;
     if(s->window==window){s->window=NULL;update_touch_state(s);
+        s->hud_dirty=0;s->hud_obs_valid=0;
         int64_t now=monotonic_ns();touch_cancel(s,"window_destroyed",now<0?0:now);}
     if(!dm_app_lifecycle_surface_destroyed(s->lifecycle,window))
         LOG("stale surface destroy ignored");
