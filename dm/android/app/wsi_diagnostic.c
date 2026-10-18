@@ -23,7 +23,7 @@ static dm_wsi_status fail(dm_wsi *wsi, dm_wsi_status status) {
     return status;
 }
 
-// 只有暂存窗口/设备且无在途帧时才调用 close；失败保留所有权。| close only with a staged device and no frame in flight; failure retains ownership.
+// close waits for asynchronous acquire/submit/present ownership before release; failure retains the device.
 static dm_wsi_status drain_close(dm_wsi *wsi) {
     if (!wsi->open) return DM_WSI_OK;
     if (!wsi->ops.close) return fail(wsi, DM_WSI_ERROR);
