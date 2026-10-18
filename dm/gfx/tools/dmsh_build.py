@@ -410,29 +410,49 @@ def finish(key, w, j, c1):
     r = subprocess.run(['spirv-cross', *XC, os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
     if r.returncode: return 'MSL 失败', r.stderr.strip()[:160], None
     src = open(msl).read()
+    # 每键暂存：mac/iOS 的 metallib、MSL 与反射全部写临时名，所有必需阶段成功后才逐个 os.replace 提交；
+    # 任何一个阶段失败都删掉临时文件，已发布的旧产物一个字节不动。并发线程用各自的键与线程号命名，不共享输出状态。
+    # Per-key staging: mac/iOS metallib, MSL and reflection go to temporary names and are committed with os.replace only
+    # after every required stage succeeded; on failure the temporaries are removed and the previously published outputs
+    # stay untouched. Concurrent threads use their own key and thread id, so no output state is shared.
+    tag = '.tmp-' + str(os.getpid()) + '-' + str(threading.get_ident())
+    staged = []
+
+    def dst(path):
+        tmp = path + tag
+        staged.append((tmp, path))
+        return tmp
+
+    phase = 'metal'
     try:
         subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', msl, '-o', air], check=True)
-        tmp_lib = lib + '.tmp-' + str(os.getpid())
-        subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', air, '-o', tmp_lib], check=True)
-        os.replace(tmp_lib, lib)
+        subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', air, '-o', dst(lib)], check=True)
+        clone(msl, dst(os.path.join(out, key + '_b.metal')))
+        phase = 'iOS metal'
+        if IOSOUT:   # iOS：同一份 MSL 走 iOS 的唯一编译口径（dm/ios/tools/ios_metal.py）出 iphoneos metallib | iOS: the same MSL goes through iOS's single compile convention (dm/ios/tools/ios_metal.py) to produce an iphoneos metallib
+            ios_metal.compile(msl, msl[:-6] + '.ios.air', dst(os.path.join(IOSOUT, key + '_b.metallib')))
+        phase = '反射'
+        entry = re.search(r'(vertex|fragment|kernel)\s+\S+\s+(\w+)\s*\(', src)
+        dr = drv_reads(src)
+        refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': j['stage'],
+                'entry': entry.group(2) if entry else 'main0', 'msl_entry_kind': entry.group(1) if entry else None,
+                'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['无配对 PC 反射，查询按缺省'] if j.get('pc_missing') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),
+                'bindings': reflect(key, j['stage'], src, res),
+                'vertex_inputs': [{'location': int(m.group(2)), 'msl_type': m.group(1)} for m in re.finditer(r'(\w+)\s+\w+\s*\[\[attribute\((\d+)\)\]\]', src)],
+                'raster': raster_facts(j['stage'], src)}
+        for d, rec in ((out, MAC_RECORD),) + (((IOSOUT, ios_metal.RECORD),) if IOSOUT else ()):
+            atomic_json(dst(os.path.join(d, key + '_b.json')), dict(refl, chain_metal=rec))
+        for tmp, path in staged: os.replace(tmp, path)
     except subprocess.CalledProcessError as e:
-        return 'metal 失败', str(e)[:160], None
-    clone(msl, os.path.join(out, key + '_b.metal'))
-    if IOSOUT:   # iOS：同一份 MSL 走 iOS 的唯一编译口径（dm/ios/tools/ios_metal.py）出 iphoneos metallib | iOS: the same MSL goes through iOS's single compile convention (dm/ios/tools/ios_metal.py) to produce an iphoneos metallib
-        ilib = os.path.join(IOSOUT, key + '_b.metallib')
-        try:
-            ios_metal.compile(msl, msl[:-6] + '.ios.air', ilib + '.tmp')
-            os.replace(ilib + '.tmp', ilib)
-        except subprocess.CalledProcessError as e: return 'iOS metal 失败', str(e)[:160], None
-    entry = re.search(r'(vertex|fragment|kernel)\s+\S+\s+(\w+)\s*\(', src)
-    dr = drv_reads(src)
-    refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': j['stage'],
-            'entry': entry.group(2) if entry else 'main0', 'msl_entry_kind': entry.group(1) if entry else None,
-            'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['无配对 PC 反射，查询按缺省'] if j.get('pc_missing') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),
-            'bindings': reflect(key, j['stage'], src, res),
-            'vertex_inputs': [{'location': int(m.group(2)), 'msl_type': m.group(1)} for m in re.finditer(r'(\w+)\s+\w+\s*\[\[attribute\((\d+)\)\]\]', src)],
-            'raster': raster_facts(j['stage'], src)}
-    write_refl(key, refl)
+        for tmp, _ in staged:
+            try: os.unlink(tmp)
+            except FileNotFoundError: pass
+        return phase + ' 失败', str(e)[:160], None
+    except Exception:
+        for tmp, _ in staged:
+            try: os.unlink(tmp)
+            except FileNotFoundError: pass
+        raise
     fetch_finish(key, src, refl)
     return 'ok', '', refl
 
