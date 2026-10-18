@@ -21,7 +21,7 @@ typedef struct {
     uint32_t pixel_width, pixel_height;
     uint32_t available_mask;       /* target has a proven binding/resource */
     uint32_t enabled_mask;         /* target is shown in this context */
-    uint32_t pressed_mask;         /* pressed visual only for available+enabled */
+    uint32_t pressed_mask;         /* diagnostic pressed state; drawn for enabled targets even when availability is unknown */
     int joystick_active;           /* live observed joystick, not a guess */
     float joy_origin_x_pt, joy_origin_y_pt;
     float joy_current_x_pt, joy_current_y_pt;

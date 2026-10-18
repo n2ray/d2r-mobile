@@ -158,14 +158,25 @@ int main(void) {
     dm_touch_hud_schedule sc; dm_touch_hud_schedule_init(&sc);
     CHECK(!dm_touch_hud_schedule_should_draw(&sc, 1));
     dm_touch_hud_schedule_dirty(&sc); dm_touch_hud_schedule_dirty(&sc);
-    CHECK(!dm_touch_hud_schedule_should_draw(&sc, 0));
+    CHECK(!dm_touch_hud_schedule_should_draw(&sc, 0));   // pause/focus/windowloss/late callback
     CHECK(dm_touch_hud_schedule_should_draw(&sc, 1));
     dm_touch_hud_schedule_draw_done(&sc, 0);   // failed draw keeps needed retry
     CHECK(sc.dirty && sc.retries == 1 && dm_touch_hud_schedule_should_draw(&sc, 1));
     dm_touch_hud_schedule_draw_done(&sc, 1);
-    CHECK(!sc.dirty && sc.draws == 1);
+    CHECK(!sc.dirty && sc.draws == 1);         // one coalesced draw for the tick
+    CHECK(!dm_touch_hud_schedule_should_draw(&sc, 1));
+    /* Not-ready callbacks retain pending work for a later ready tick. */
     dm_touch_hud_schedule_dirty(&sc);
-    CHECK(!dm_touch_hud_schedule_should_draw(&sc, 0)); // lifecycle late callback
+    CHECK(!dm_touch_hud_schedule_should_draw(&sc, 0));
+    CHECK(sc.dirty);
+    dm_touch_hud_schedule_draw_done(&sc, 1);
+    /* Permanent format/extent suppression drops work instead of looping. */
+    dm_touch_hud_schedule_dirty(&sc);
+    dm_touch_hud_schedule_suppress(&sc);
+    CHECK(!dm_touch_hud_schedule_should_draw(&sc, 1));
+    /* Stop/destroy late callback cannot draw. */
+    dm_touch_hud_schedule_dirty(&sc);
+    CHECK(!dm_touch_hud_schedule_should_draw(&sc, 0));
     dm_touch_hud_schedule_suppress(&sc);
     CHECK(!dm_touch_hud_schedule_should_draw(&sc, 1));
 
