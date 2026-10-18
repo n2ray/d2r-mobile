@@ -1,4 +1,4 @@
-// #12 反射消费方回归：正例在真实 GPU（宿主 MoltenVK）上执行并独立复算数值；负例全部在创建 Vulkan 对象之前被拒。
+// #12 反射消费方回归：正例在真实 GPU（宿主 MoltenVK）上执行并独立复算数值；负例在创建 Vulkan 对象之前被拒。
 // #12 reflection consumer regression: the positive case runs on a real GPU (host MoltenVK) and is recomputed
 // independently; every negative case must be rejected before any Vulkan object exists.
 #include "../vulkan/vk_shader_reflect.h"
@@ -40,7 +40,6 @@ static int write_all(const char *path, const uint8_t *data, size_t size) {
     int ok = fwrite(data, 1, size, f) == size;
     return fclose(f) == 0 && ok;
 }
-// 用等长的就地替换改写 JSON（测试夹具变异，不是生产解析） | equal-length in-place JSON edit for fixture mutation
 static int mutate_json(const char *src, const char *from, const char *to, const char *out) {
     size_t n;
     char *text = (char *)read_all(src, &n);
@@ -55,8 +54,6 @@ static int mutate_json(const char *src, const char *from, const char *to, const 
 }
 static int write_json(const char *out, const char *text) { return write_all(out, (const uint8_t *)text, strlen(text)); }
 
-// 找到第 n 个 opcode 指令并把指定操作数改成 value（只用于夹具变异）。
-// Find the n-th instruction with `op` and overwrite one operand; fixture mutation only.
 static int mutate_word(uint8_t *code, size_t size, uint16_t op, int nth, int operand, uint32_t value) {
     uint32_t *w = (uint32_t *)code;
     size_t words = size / 4;
@@ -91,16 +88,34 @@ static void expect_reject(const char *label, const char *spv, const char *res, c
     char why[DM_VK_REFLECT_WHY] = {0};
     VkResult r = dm_vk_reflect_load(spv, res, &plan, why, sizeof why);
     checks++;
-    if (r == VK_SUCCESS) { failures++; fprintf(stderr, "FAIL %s: unexpectedly accepted\n", label); return; }
+    if (r == VK_SUCCESS) { failures++; fprintf(stderr, "FAIL %s: unexpectedly accepted\n", label); dm_vk_reflect_free(&plan); return; }
+    EXPECT(!plan.code);
     if (!why[0]) { failures++; fprintf(stderr, "FAIL %s: rejected without a diagnostic\n", label); return; }
     if (needle && !strstr(why, needle)) { failures++; fprintf(stderr, "FAIL %s: diagnostic %s lacks %s\n", label, why, needle); }
     printf("reject %-22s %s\n", label, why);
 }
+static void expect_check_fail(const char *label, const dm_vk_shader_plan *plan, const dm_vk_reflect_limits *limits,
+                              uint32_t words, const char *needle) {
+    char why[DM_VK_REFLECT_WHY] = {0};
+    checks++;
+    if (dm_vk_reflect_check(plan, limits, words, why, sizeof why)) {
+        failures++; fprintf(stderr, "FAIL %s: check unexpectedly passed\n", label);
+        return;
+    }
+    if (!why[0] || (needle && !strstr(why, needle))) {
+        failures++; fprintf(stderr, "FAIL %s: diagnostic %s lacks %s\n", label, why, needle);
+    }
+    printf("check  %-22s %s\n", label, why);
+}
 
 int main(int argc, char **argv) {
-    if (argc != 4) { fprintf(stderr, "usage: %s <reflect.spv> <reflect.res.json> <tmpdir>\n", argv[0]); return 2; }
+    if (argc != 6) {
+        fprintf(stderr, "usage: %s <reflect.spv> <reflect.res.json> <image.spv> <image.res.json> <tmpdir>\n", argv[0]);
+        return 2;
+    }
     g_spv = argv[1]; g_res = argv[2];
-    snprintf(g_dir, sizeof g_dir, "%s", argv[3]);
+    const char *image_spv = argv[3], *image_res = argv[4];
+    snprintf(g_dir, sizeof g_dir, "%s", argv[5]);
 
     // ---- 正例：解析与交叉核对 | positive: parse and cross-check --------------------------------
     dm_vk_shader_plan plan;
@@ -112,12 +127,23 @@ int main(int argc, char **argv) {
     EXPECT(plan.local[0] == 4 && plan.local[1] == 1 && plan.local[2] == 1);
     EXPECT(plan.push_offset == 0 && plan.push_size == 8);
     EXPECT(plan.binding_count == 1);
-    EXPECT(plan.binding_count == 1 && plan.bindings[0].set == 0 && plan.bindings[0].binding == 0 &&
-           plan.bindings[0].count == 1 && plan.bindings[0].kind == DM_VK_REFLECT_SBUF);
-    EXPECT(plan.code_bytes > 0 && strlen(plan.code_sha256) == 64);
+    EXPECT(plan.bindings[0].set == 0 && plan.bindings[0].binding == 0 && plan.bindings[0].count == 1 &&
+           plan.bindings[0].kind == DM_VK_REFLECT_SBUF);
+    EXPECT(plan.code_bytes > 0 && strlen(plan.code_sha256) == 64 && plan.code != NULL);
     EXPECT(plan.sidecar_hash_bound == 0);
+    char hash[65];
+    dm_vk_sha256_hex("abc", 3, hash);
+    EXPECT(!strcmp(hash, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));   // MbedTLS KAT
 
-    // ---- 负例：模块变异 | negative: module mutations ------------------------------------------
+    // 完整设备上限下正向 check 必须通过（用宿主真实上限，不创建 GPU 对象）。
+    dm_vk_reflect_limits real;
+    memset(&real, 0, sizeof real);
+    real.max_workgroup_size[0] = 1024; real.max_workgroup_size[1] = 1024; real.max_workgroup_size[2] = 64;
+    real.max_invocations = 1024; real.max_workgroup_count[0] = 65535;
+    real.max_push_constants = 128; real.max_storage_range = 1u << 30;
+    EXPECT(dm_vk_reflect_check(&plan, &real, WORDS, why, sizeof why));
+
+    // ---- 负例：模板块变异 | negative: module mutations ----------------------------------------
     size_t size;
     uint8_t *code = read_all(g_spv, &size);
     EXPECT(code != NULL);
@@ -135,22 +161,20 @@ int main(int argc, char **argv) {
             expect_reject("truncated", path_of("truncated.spv"), g_res, "OpFunctionEnd");
 
             memcpy(m, code, size);
-            // 入口名 main -> mxin（4 字节 ASCII，长度不变） | entry name main -> mxin, same length
             int renamed = 0;
-            for (size_t i = 0; i + 4 < size; i++) {
+            for (size_t i = 0; i + 4 < size; i++)
                 if (!memcmp(m + i, "main", 4)) { m[i + 1] = 'x'; renamed = 1; break; }
-            }
             EXPECT(renamed);
             EXPECT(write_all(path_of("entry.spv"), m, size));
             expect_reject("entry-name", path_of("entry.spv"), g_res, "入口名");
 
             memcpy(m, code, size);
-            EXPECT(mutate_word(m, size, 16, 0, 2, 0));   // LocalSize x = 0
+            EXPECT(mutate_word(m, size, 16, 0, 2, 0));
             EXPECT(write_all(path_of("local.spv"), m, size));
             expect_reject("localsize-zero", path_of("local.spv"), g_res, "LocalSize");
 
             memcpy(m, code, size);
-            EXPECT(mutate_decor(m, size, 34, 1));   // DescriptorSet 0 -> 1
+            EXPECT(mutate_decor(m, size, 34, 1));
             EXPECT(write_all(path_of("set.spv"), m, size));
             expect_reject("descriptor-set", path_of("set.spv"), g_res, "set");
 
@@ -172,6 +196,26 @@ int main(int argc, char **argv) {
         free(code);
     }
 
+    // image 夹具：sampled=2 的 storage image 仍被明确拒绝（本切片不执行 image）；把 sampled 改成 1 时诊断必须指向
+    // Sampled 操作数，而不是 ImageFormat，证明扫描器区分了这两个操作数。
+    // The image fixture is rejected even with sampled=2 (images are out of scope); flipping sampled to 1 must produce a
+    // Sampled-operand diagnostic rather than a format one, proving the scanner separates the two operands.
+    expect_reject("image-scope", image_spv, image_res, "不在本切片执行范围");
+    size_t isize;
+    uint8_t *icode = read_all(image_spv, &isize);
+    EXPECT(icode != NULL);
+    if (icode) {
+        uint8_t *im = malloc(isize);
+        if (im) {
+            memcpy(im, icode, isize);
+            EXPECT(mutate_word(im, isize, 25, 0, 6, 1));   // OpTypeImage Sampled 2 -> 1
+            EXPECT(write_all(path_of("image-sampled.spv"), im, isize));
+            expect_reject("image-sampled", path_of("image-sampled.spv"), image_res, "Sampled");
+            free(im);
+        }
+        free(icode);
+    }
+
     // ---- 负例：sidecar 变异 | negative: sidecar mutations -------------------------------------
     EXPECT(mutate_json(g_res, "\"cs\"", "\"vs\"", path_of("stage.json")));
     expect_reject("stage", g_spv, path_of("stage.json"), "stage");
@@ -188,6 +232,14 @@ int main(int argc, char **argv) {
     expect_reject("textures-unsupported", g_spv, path_of("unsupported.json"), "textures");
     EXPECT(write_json(path_of("no-pc.json"), "{\"stage\":\"cs\",\"sbufs\":[{\"binding\":0,\"count\":1}]}"));
     expect_reject("missing-pc", g_spv, path_of("no-pc.json"), "push constant");
+    EXPECT(write_json(path_of("dup.json"),
+        "{\"stage\":\"cs\",\"stage\":\"cs\",\"sbufs\":[{\"binding\":0,\"count\":1}],\"push_constants\":[{\"offset\":0,\"size\":8}]}"));
+    expect_reject("duplicate-key", g_spv, path_of("dup.json"), "重复键");
+    char ctl[256];
+    snprintf(ctl, sizeof ctl,
+        "{\"stage\":\"c\ns\",\"sbufs\":[{\"binding\":0,\"count\":1}],\"push_constants\":[{\"offset\":0,\"size\":8}]}");
+    EXPECT(write_json(path_of("control.json"), ctl));
+    expect_reject("control-char", g_spv, path_of("control.json"), "控制字符");
     char bogus[128];
     memset(bogus, '0', 64); bogus[64] = 0;
     char json[512];
@@ -196,7 +248,6 @@ int main(int argc, char **argv) {
         "\"spirv_sha256\":\"%s\"}", bogus);
     EXPECT(write_json(path_of("digest.json"), json));
     expect_reject("sidecar-digest", g_spv, path_of("digest.json"), "spirv_sha256");
-    // 正确的摘要必须被接受，证明摘要路径不是永远拒绝 | a correct digest must pass, so this is not a blanket reject
     char good[600];
     snprintf(good, sizeof good,
         "{\"stage\":\"cs\",\"sbufs\":[{\"binding\":0,\"count\":1}],\"push_constants\":[{\"offset\":0,\"size\":8}],"
@@ -206,6 +257,77 @@ int main(int argc, char **argv) {
     char why2[DM_VK_REFLECT_WHY] = {0};
     EXPECT(dm_vk_reflect_load(g_spv, path_of("digest-ok.json"), &bound, why2, sizeof why2) == VK_SUCCESS);
     EXPECT(bound.sidecar_hash_bound == 1);
+    dm_vk_reflect_free(&bound);
+
+    // ---- 负例：篡改公开 plan 与设备上限（全部在 GPU 之前） --------------------------------------
+    // Mutated public plan and device limits; all rejected before GPU work.
+    dm_vk_shader_plan copy = plan;   // 共享 code 指针，仅用于检查字段；不单独 free | shares code pointer, inspection only
+    copy.local[0] = 1;
+    expect_check_fail("plan-local", &copy, &real, WORDS, "不一致");
+    copy = plan; copy.bindings[0].binding = 3;
+    expect_check_fail("plan-binding", &copy, &real, WORDS, "不一致");
+    copy = plan; copy.push_size = 4;
+    expect_check_fail("plan-push-size", &copy, &real, WORDS, "不一致");
+    copy = plan; copy.code_sha256[0] = copy.code_sha256[0] == 'a' ? 'b' : 'a';
+    expect_check_fail("plan-digest", &copy, &real, WORDS, "sha256");
+    copy = plan; copy.push_offset = 0xfffffffcu; copy.push_size = 8;
+    expect_check_fail("plan-push-overflow", &copy, &real, WORDS, "不一致");
+
+    dm_vk_reflect_limits small = real;
+    small.max_workgroup_size[0] = 2;
+    expect_check_fail("limit-workgroup", &plan, &small, WORDS, "maxComputeWorkGroupSize");
+    small = real; small.max_invocations = 2;
+    expect_check_fail("limit-invocations", &plan, &small, WORDS, "Invocations");
+    small = real; small.max_workgroup_count[0] = 1;
+    expect_check_fail("limit-count", &plan, &small, WORDS, "maxComputeWorkGroupCount");
+    small = real; small.max_push_constants = 4;
+    expect_check_fail("limit-push", &plan, &small, WORDS, "maxPushConstantsSize");
+    small = real; small.max_storage_range = 16;
+    expect_check_fail("limit-storage", &plan, &small, WORDS, "maxStorageBufferRange");
+    small = real; small.max_workgroup_count[0] = 65535;
+    expect_check_fail("huge-dispatch", &plan, &small, 16384u * 16384u, "maxComputeWorkGroupCount");
+
+    // plan 没有字节（被 free 或零值）也必须拒绝 | a plan without bytes (freed/zeroed) is rejected
+    dm_vk_shader_plan zero = {0};
+    expect_check_fail("plan-empty", &zero, &real, WORDS, "模块字节");
+
+    // ---- A→B：载入 A 后把同一路径改成 B，执行必须仍用 A 的字节 ---------------------------------
+    // A→B: after load, replace the file at the same path; execution must still use A's owned bytes.
+    size_t asize;
+    uint8_t *acode = read_all(g_spv, &asize);
+    EXPECT(acode != NULL);
+    dm_vk_shader_plan a;
+    char awhy[DM_VK_REFLECT_WHY] = {0};
+    if (acode) {
+        EXPECT(write_all(path_of("ab.spv"), acode, asize));   // 先放 A，再从该路径载入 | place A, then load from that path
+        EXPECT(dm_vk_reflect_load(path_of("ab.spv"), g_res, &a, awhy, sizeof awhy) == VK_SUCCESS);
+        uint8_t *replacement = malloc(asize);
+        if (replacement) {
+            memcpy(replacement, acode, asize);
+            ((uint32_t *)replacement)[0] = 0xdeadbeefu;   // 同一路径被换成无效模块 B | same path replaced by invalid module B
+            EXPECT(write_all(path_of("ab.spv"), replacement, asize));
+            dm_vk vk = {0};
+            if (dm_vk_create(&vk) != VK_SUCCESS) {
+                failures++; fprintf(stderr, "FAIL A->B: no Vulkan device\n");
+            } else {
+                uint32_t canvas_bytes[WORDS] = {0};
+                dm_vk_pixels canvas = {.width = W, .height = H, .bytes = (uint8_t *)canvas_bytes, .capacity = sizeof canvas_bytes};
+                uint32_t pc[2] = {7, 3};
+                EXPECT(dm_vk_reflect_compute(&vk, &a, &canvas, pc, sizeof pc) == VK_SUCCESS);
+                int mismatch = 0;
+                for (uint32_t i = 0; i < WORDS; i++) if (canvas_bytes[i] != pc[0] + i * pc[1]) mismatch++;
+                EXPECT(mismatch == 0);
+                printf("A->B: executed owned bytes, %d/%u mismatched\n", mismatch, WORDS);
+                dm_vk_shader_plan mutated = a;
+                mutated.local[0] = 2;
+                EXPECT(dm_vk_reflect_compute(&vk, &mutated, &canvas, pc, sizeof pc) == VK_ERROR_INITIALIZATION_FAILED);
+                dm_vk_destroy(&vk);
+            }
+            free(replacement);
+        }
+        dm_vk_reflect_free(&a);
+        free(acode);
+    }
 
     // ---- 正例：真实 GPU 执行 + 独立数值复算 | positive: real GPU execution + independent oracle -----
     dm_vk vk = {0};
@@ -213,7 +335,7 @@ int main(int argc, char **argv) {
     uint32_t canvas_bytes[WORDS] = {0};
     dm_vk_pixels canvas = {.width = W, .height = H, .bytes = (uint8_t *)canvas_bytes, .capacity = sizeof canvas_bytes};
     uint32_t pc[2] = {7, 3};
-    r = dm_vk_reflect_compute(&vk, &plan, g_spv, &canvas, pc, sizeof pc);
+    r = dm_vk_reflect_compute(&vk, &plan, &canvas, pc, sizeof pc);
     EXPECT(r == VK_SUCCESS);
     int mismatch = 0;
     for (uint32_t i = 0; i < WORDS; i++) if (canvas_bytes[i] != pc[0] + i * pc[1]) mismatch++;
@@ -221,15 +343,15 @@ int main(int argc, char **argv) {
     printf("oracle run1: %u/%u words mismatched, first=%u expected=%u\n", mismatch, WORDS, canvas_bytes[0], pc[0]);
     pc[0] = 100; pc[1] = 0;
     memset(canvas_bytes, 0, sizeof canvas_bytes);
-    EXPECT(dm_vk_reflect_compute(&vk, &plan, g_spv, &canvas, pc, sizeof pc) == VK_SUCCESS);
+    EXPECT(dm_vk_reflect_compute(&vk, &plan, &canvas, pc, sizeof pc) == VK_SUCCESS);
     mismatch = 0;
     for (uint32_t i = 0; i < WORDS; i++) if (canvas_bytes[i] != 100u) mismatch++;
     EXPECT(mismatch == 0);
     printf("oracle run2: %u/%u words mismatched\n", mismatch, WORDS);
-    // push 字节数不符要在 GPU 之前拒绝 | a wrong push size must be rejected before GPU work
-    EXPECT(dm_vk_reflect_compute(&vk, &plan, g_spv, &canvas, pc, 4) == VK_ERROR_INITIALIZATION_FAILED);
+    EXPECT(dm_vk_reflect_compute(&vk, &plan, &canvas, pc, 4) == VK_ERROR_INITIALIZATION_FAILED);
     dm_vk_destroy(&vk);
 
+    dm_vk_reflect_free(&plan);
     printf("vulkan_reflect: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

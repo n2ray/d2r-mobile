@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <mbedtls/sha256.h>
 
 #define SPV_MAGIC 0x07230203u
 #define OP_ENTRY_POINT 15u
@@ -100,6 +101,7 @@ static int jstring(jparser *j, char *out, size_t cap) {
             else if (e == 't') c = '\t';
             else { j->err = "JSON 不支持的转义（只接受 \\\" \\\\ \\/ \\n \\t）"; return 0; }
         }
+        if ((unsigned char)c < 0x20) { j->err = "JSON 字符串包含未转义控制字符"; return 0; }
         if (n + 1 >= cap) { j->err = "JSON 字符串过长"; return 0; }
         out[n++] = c;
     }
@@ -123,6 +125,8 @@ static jnode *jobject(jparser *j, int depth) {
         jnode *v = jnew(j);
         if (!v) return NULL;
         if (!jstring(j, v->key, sizeof v->key)) return NULL;
+        for (const jnode *e = o->first; e; e = e->next)
+            if (!strcmp(e->key, v->key)) { j->err = "JSON 对象出现重复键"; return NULL; }
         jws(j);
         if (j->p >= j->end || *j->p != ':') { j->err = "JSON 键后缺少冒号"; return NULL; }
         j->p++;
@@ -190,53 +194,13 @@ static jnode *jget(const jnode *obj, const char *key) {
 }
 static size_t jarray_len(const jnode *a) { size_t n = 0; if (!a || a->type != J_ARR) return 0; for (const jnode *i = a->first; i; i = i->next) n++; return n; }
 
-// ---- SHA-256（公有领域的紧凑实现） | compact public-domain style SHA-256 --------------------------------
-static const uint32_t K256[64] = {
-    0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
-    0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
-    0xe49b69c1u,0xefbe4786u,0x0fc19dc6u,0x240ca1ccu,0x2de92c6fu,0x4a7484aau,0x5cb0a9dcu,0x76f988dau,
-    0x983e5152u,0xa831c66du,0xb00327c8u,0xbf597fc7u,0xc6e00bf3u,0xd5a79147u,0x06ca6351u,0x14292967u,
-    0x27b70a85u,0x2e1b2138u,0x4d2c6dfcu,0x53380d13u,0x650a7354u,0x766a0abbu,0x81c2c92eu,0x92722c85u,
-    0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
-    0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
-    0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u};
-#define ROR(x,n) (((x) >> (n)) | ((x) << (32 - (n))))
-static void sha256_block(uint32_t h[8], const uint8_t *p) {
-    uint32_t w[64], a[8];
-    for (int i = 0; i < 16; i++) w[i] = ((uint32_t)p[i*4] << 24) | ((uint32_t)p[i*4+1] << 16) | ((uint32_t)p[i*4+2] << 8) | p[i*4+3];
-    for (int i = 16; i < 64; i++) {
-        uint32_t s0 = ROR(w[i-15], 7) ^ ROR(w[i-15], 18) ^ (w[i-15] >> 3);
-        uint32_t s1 = ROR(w[i-2], 17) ^ ROR(w[i-2], 19) ^ (w[i-2] >> 10);
-        w[i] = w[i-16] + s0 + w[i-7] + s1;
-    }
-    memcpy(a, h, sizeof a);
-    for (int i = 0; i < 64; i++) {
-        uint32_t S1 = ROR(a[4], 6) ^ ROR(a[4], 11) ^ ROR(a[4], 25);
-        uint32_t ch = (a[4] & a[5]) ^ (~a[4] & a[6]);
-        uint32_t t1 = a[7] + S1 + ch + K256[i] + w[i];
-        uint32_t S0 = ROR(a[0], 2) ^ ROR(a[0], 13) ^ ROR(a[0], 22);
-        uint32_t mj = (a[0] & a[1]) ^ (a[0] & a[2]) ^ (a[1] & a[2]);
-        uint32_t t2 = S0 + mj;
-        memmove(a + 1, a, 7 * sizeof(uint32_t));
-        a[4] += t1; a[0] = t1 + t2;
-    }
-    for (int i = 0; i < 8; i++) h[i] += a[i];
-}
+// ---- SHA-256：复用仓库已固定的 MbedTLS 3.6.4（nso/artifact 同源），不再手写实现。
+// ---- SHA-256: reuse the pinned MbedTLS 3.6.4 already linked for nso/artifact; no hand-written implementation.
 void dm_vk_sha256_hex(const void *data, size_t size, char out[65]) {
-    uint32_t h[8] = {0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u};
-    const uint8_t *p = data;
-    size_t left = size;
-    while (left >= 64) { sha256_block(h, p); p += 64; left -= 64; }
-    uint8_t tail[128];
-    memset(tail, 0, sizeof tail);
-    memcpy(tail, p, left);
-    tail[left] = 0x80;
-    size_t total = left + 1 + 8 <= 64 ? 64 : 128;
-    uint64_t bits = (uint64_t)size * 8;
-    for (int i = 0; i < 8; i++) tail[total - 1 - i] = (uint8_t)(bits >> (8 * i));
-    sha256_block(h, tail);
-    if (total == 128) sha256_block(h, tail + 64);
-    for (int i = 0; i < 8; i++) snprintf(out + i * 8, 9, "%08x", h[i]);
+    uint8_t digest[32];
+    if (!out) return;
+    if (mbedtls_sha256((const unsigned char *)data, size, digest, 0) != 0) { out[0] = 0; return; }
+    for (int i = 0; i < 32; i++) snprintf(out + i * 2, 3, "%02x", digest[i]);
 }
 
 // ---- 模块扫描 | module scan ----------------------------------------------------------------------------
@@ -407,17 +371,18 @@ static int build_plan(module_t *m, dm_vk_shader_plan *plan, char *why, size_t ca
         if (var->storage == SC_UNIFORM) { set_why(why, cap, "不支持 Uniform 常量块（cbuf）；本子集只做 storage buffer/image + push constant"); return 0; }
         if (var->storage == SC_UNIFORM_CONSTANT) {
             type_t *t = find_type(m, ptr->pointee);
-            if (!t || t->kind != OP_TYPE_IMAGE) { set_why(why, cap, "UniformConstant 变量 %%%u 不是普通 storage image（可能是采样图像/sampler），本子集不支持", var->id); return 0; }
-            if (t->e != 2) { set_why(why, cap, "图像 %%%u 的 Sampled 标志为 %u，本子集只接受 storage image(2)", var->id, t->e); return 0; }
-            if (t->a != DIM_2D) { set_why(why, cap, "图像 %%%u 的 Dim=%u，本子集只接受 2D(1)", var->id, t->a); return 0; }
-            if (t->b) { set_why(why, cap, "图像 %%%u 是数组图像，本子集不支持", var->id); return 0; }
-            if (t->c) { set_why(why, cap, "图像 %%%u 为多重采样，本子集不支持", var->id); return 0; }
-            decor_t *set = find_decor(m, var->id, DEC_DESCRIPTOR_SET);
-            decor_t *bnd = find_decor(m, var->id, DEC_BINDING);
-            if (!set || !bnd) { set_why(why, cap, "图像变量 %%%u 缺少 DescriptorSet 或 Binding 装饰", var->id); return 0; }
-            if (set->a != 0) { set_why(why, cap, "描述符在 set %u，本子集只接受 set 0", set->a); return 0; }
-            if (!add_binding(plan, DM_VK_REFLECT_IMAGE, bnd->a, why, cap)) return 0;
-            continue;
+            if (t && t->kind == OP_TYPE_SAMPLED_IMAGE) { set_why(why, cap, "采样图像/纹理（OpTypeSampledImage）不在本切片", var->id); return 0; }
+            if (!t || t->kind != OP_TYPE_IMAGE) { set_why(why, cap, "UniformConstant 变量 %%%u 不是图像类型", var->id); return 0; }
+            // 操作数区分：dim=2, arrayed=4, ms=5, sampled=6, format=7。先判定 Sampled，再看格式，避免把 Format 当 Sampled。
+            // Operand layout: dim=2, arrayed=4, ms=5, sampled=6, format=7. Check Sampled first, never Format.
+            if (t->d != 2) { set_why(why, cap, "图像 %%%u 的 Sampled 操作数为 %u，本切片只识别 storage image(2)", var->id, t->d); return 0; }
+            if (t->a != DIM_2D) { set_why(why, cap, "图像 %%%u 的 Dim=%u，本切片只识别 2D(1)", var->id, t->a); return 0; }
+            if (t->b) { set_why(why, cap, "图像 %%%u 是数组图像，本切片不支持", var->id); return 0; }
+            if (t->c) { set_why(why, cap, "图像 %%%u 为多重采样，本切片不支持", var->id); return 0; }
+            // 本切片没有 image 的自有 GPU 夹具，因此明确拒绝执行，而不是声称已验证的 image 支持。
+            // This slice has no owned GPU fixture for images, so it rejects them explicitly instead of claiming support.
+            set_why(why, cap, "storage image %%%u（sampled=2, format=%u）不在本切片执行范围（无自有 GPU 夹具）", var->id, t->e);
+            return 0;
         }
         if (var->storage == SC_STORAGE_BUFFER) {
             type_t *t = find_type(m, ptr->pointee);
@@ -434,7 +399,7 @@ static int build_plan(module_t *m, dm_vk_shader_plan *plan, char *why, size_t ca
             if (push_seen) { set_why(why, cap, "出现多个 push constant 块"); return 0; }
             type_t *t = find_type(m, ptr->pointee);
             if (!t || t->kind != OP_TYPE_STRUCT) { set_why(why, cap, "push constant 变量 %%%u 指向的不是结构体", var->id); return 0; }
-            uint32_t size = 0;
+            uint32_t size = 0, offs[MAX_MEMBERS], sizes[MAX_MEMBERS], spans = 0;
             for (uint32_t k = 0; k < t->members; k++) {
                 decor_t *off = NULL;
                 for (uint32_t d = 0; d < m->decor_count; d++)
@@ -443,8 +408,14 @@ static int build_plan(module_t *m, dm_vk_shader_plan *plan, char *why, size_t ca
                 uint32_t msize = type_bytes(m, t->member_type[k], 0);
                 if (!msize) { set_why(why, cap, "push constant 成员 %u 的类型大小无法确定（只支持标量/向量）", k); return 0; }
                 if (off->b % 4) { set_why(why, cap, "push constant 成员偏移 %u 未 4 字节对齐", off->b); return 0; }
-                uint32_t end = off->b + msize;
-                if (end > size) size = end;
+                uint64_t end64 = (uint64_t)off->b + msize;   // 64 位加法，避免 uint32 回绕成很小的区间
+                if (end64 > DM_VK_REFLECT_MAX_PUSH) { set_why(why, cap, "push constant 成员 %u 的 offset+size=%llu 超出上限 %u", k, (unsigned long long)end64, DM_VK_REFLECT_MAX_PUSH); return 0; }
+                for (uint32_t q = 0; q < spans; q++) {
+                    uint64_t qa = offs[q], qe = (uint64_t)offs[q] + sizes[q];
+                    if ((uint64_t)off->b < qe && qa < end64) { set_why(why, cap, "push constant 成员 %u 与成员 %u 重叠", k, q); return 0; }
+                }
+                offs[spans] = off->b; sizes[spans] = msize; spans++;
+                if (end64 > size) size = (uint32_t)end64;
             }
             if (!size || size % 4 || size > DM_VK_REFLECT_MAX_PUSH) { set_why(why, cap, "push constant 大小 %u 非法（需 4 的倍数且 ≤%u）", size, DM_VK_REFLECT_MAX_PUSH); return 0; }
             plan->push_offset = 0; plan->push_size = size; push_seen = 1;
@@ -546,21 +517,21 @@ VkResult dm_vk_reflect_load(const char *spv_path, const char *res_json_path, dm_
     free(m);
     if (!ok) { free(code); return VK_ERROR_INITIALIZATION_FAILED; }
     plan->code_bytes = (uint32_t)len;
-    dm_vk_sha256_hex(code, (size_t)len, plan->code_sha256);
-    free(code);
+    plan->code = code;                 // plan 拥有；执行时用同一缓冲，绝不按路径重开 | owned; execution uses this buffer, never a reopened path
+    dm_vk_sha256_hex(plan->code, (size_t)len, plan->code_sha256);
 
     f = fopen(res_json_path, "rb");
-    if (!f) { set_why(why, why_cap, "打不开反射 JSON"); return VK_ERROR_INITIALIZATION_FAILED; }
-    if (fseek(f, 0, SEEK_END) || ftell(f) < 0 || ftell(f) > (long)MAX_JSON_BYTES) { fclose(f); set_why(why, why_cap, "反射 JSON 大小非法或超过 64KiB"); return VK_ERROR_INITIALIZATION_FAILED; }
+    if (!f) { set_why(why, why_cap, "打不开反射 JSON"); dm_vk_reflect_free(plan); return VK_ERROR_INITIALIZATION_FAILED; }
+    if (fseek(f, 0, SEEK_END) || ftell(f) < 0 || ftell(f) > (long)MAX_JSON_BYTES) { fclose(f); set_why(why, why_cap, "反射 JSON 大小非法或超过 64KiB"); dm_vk_reflect_free(plan); return VK_ERROR_INITIALIZATION_FAILED; }
     size_t jlen = (size_t)ftell(f);
     fseek(f, 0, SEEK_SET);
     char *text = malloc(jlen + 1);
-    if (!text) { fclose(f); set_why(why, why_cap, "反射 JSON 内存不足"); return VK_ERROR_OUT_OF_HOST_MEMORY; }
-    if (fread(text, 1, jlen, f) != jlen) { free(text); fclose(f); set_why(why, why_cap, "反射 JSON 读取不完整"); return VK_ERROR_INITIALIZATION_FAILED; }
+    if (!text) { fclose(f); set_why(why, why_cap, "反射 JSON 内存不足"); dm_vk_reflect_free(plan); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+    if (fread(text, 1, jlen, f) != jlen) { free(text); fclose(f); set_why(why, why_cap, "反射 JSON 读取不完整"); dm_vk_reflect_free(plan); return VK_ERROR_INITIALIZATION_FAILED; }
     fclose(f);
     text[jlen] = 0;
     jnode *nodes = calloc(MAX_JSON_NODES, sizeof *nodes);
-    if (!nodes) { free(text); set_why(why, why_cap, "反射 JSON 解析内存不足"); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+    if (!nodes) { free(text); set_why(why, why_cap, "反射 JSON 解析内存不足"); dm_vk_reflect_free(plan); return VK_ERROR_OUT_OF_HOST_MEMORY; }
     jparser jp = {text, text + jlen, nodes, 0, MAX_JSON_NODES, NULL};
     jnode *root = jvalue(&jp, 0);
     int bad = 0;
@@ -572,19 +543,87 @@ VkResult dm_vk_reflect_load(const char *spv_path, const char *res_json_path, dm_
     if (!bad) bad = !cross_check(root, plan, plan->code_sha256, &plan->sidecar_hash_bound, why, why_cap);
     free(nodes);
     free(text);
-    return bad ? VK_ERROR_INITIALIZATION_FAILED : VK_SUCCESS;
+    if (bad) { dm_vk_reflect_free(plan); return VK_ERROR_INITIALIZATION_FAILED; }
+    return VK_SUCCESS;
+}
+
+void dm_vk_reflect_free(dm_vk_shader_plan *plan) {
+    if (!plan) return;
+    free(plan->code);
+    memset(plan, 0, sizeof *plan);
+}
+
+// plan 字段是否仍与其字节一致 + 是否满足设备上限与 1D 派发。纯 CPU，不创建任何 Vulkan 对象。
+// Do the plan fields still match their bytes, and do they fit the device limits for a 1D dispatch? Pure CPU.
+static int plan_fields_equal(const dm_vk_shader_plan *a, const dm_vk_shader_plan *b) {
+    if (a->push_offset != b->push_offset || a->push_size != b->push_size) return 0;
+    if (a->binding_count != b->binding_count) return 0;
+    if (memcmp(a->local, b->local, sizeof a->local)) return 0;
+    if (memcmp(a->bindings, b->bindings, sizeof(dm_vk_reflect_binding) * a->binding_count)) return 0;
+    return 1;
+}
+
+int dm_vk_reflect_check(const dm_vk_shader_plan *plan, const dm_vk_reflect_limits *limits, uint32_t words,
+                        char *why, size_t why_cap) {
+    if (why && why_cap) why[0] = 0;
+    if (!plan || !plan->code || !plan->code_bytes) { set_why(why, why_cap, "plan 没有模块字节（未经 load 或已释放）"); return 0; }
+    if (plan->code_bytes < 20 || plan->code_bytes % 4) { set_why(why, why_cap, "plan 的模块长度 %u 非法", plan->code_bytes); return 0; }
+    char hash[65];
+    dm_vk_sha256_hex(plan->code, plan->code_bytes, hash);
+    if (strcmp(hash, plan->code_sha256)) { set_why(why, why_cap, "plan 的 sha256 与其字节不一致（公开结构被篡改）"); return 0; }
+    module_t *m = calloc(1, sizeof *m);
+    if (!m) { set_why(why, why_cap, "校验内存不足"); return 0; }
+    dm_vk_shader_plan ref;
+    int ok = scan_module(plan->code, plan->code_bytes, m, why, why_cap) && build_plan(m, &ref, why, why_cap);
+    free(m);
+    if (!ok) return 0;
+    if (!plan_fields_equal(plan, &ref)) { set_why(why, why_cap, "plan 字段与其模块字节不一致（公开结构被篡改）"); return 0; }
+    // 本切片只做 1D 线性派发；多维索引没有独立的数值 oracle。
+    // This slice only does 1D linear dispatch; multidimensional indexing has no independent oracle here.
+    if (ref.local[1] != 1 || ref.local[2] != 1) { set_why(why, why_cap, "LocalSize y/z 必须为 1（本切片只执行 1D 派发）"); return 0; }
+    if (!words) { set_why(why, why_cap, "派发字数不能为 0"); return 0; }
+    if (limits) {
+        if (ref.local[0] > limits->max_workgroup_size[0] || ref.local[1] > limits->max_workgroup_size[1] ||
+            ref.local[2] > limits->max_workgroup_size[2]) { set_why(why, why_cap, "LocalSize %u,%u,%u 超出设备 maxComputeWorkGroupSize", ref.local[0], ref.local[1], ref.local[2]); return 0; }
+        uint64_t invocations = (uint64_t)ref.local[0] * ref.local[1] * ref.local[2];
+        if (invocations > limits->max_invocations) { set_why(why, why_cap, "LocalSize 乘积 %llu 超出 maxComputeWorkGroupInvocations %u", (unsigned long long)invocations, limits->max_invocations); return 0; }
+        uint64_t groups = (words + invocations - 1) / invocations;
+        if (groups > limits->max_workgroup_count[0] || groups > UINT32_MAX) { set_why(why, why_cap, "派发工作组 %llu 超出 maxComputeWorkGroupCount[0]=%u（%u 字 / %llu 调用）", (unsigned long long)groups, limits->max_workgroup_count[0], words, (unsigned long long)invocations); return 0; }
+        if (ref.push_size) {
+            if (ref.push_size > limits->max_push_constants) { set_why(why, why_cap, "push constant %u 字节超出 maxPushConstantsSize %u", ref.push_size, limits->max_push_constants); return 0; }
+            if ((uint64_t)ref.push_offset + ref.push_size > limits->max_push_constants) { set_why(why, why_cap, "push constant 范围 %u+%u 超出 maxPushConstantsSize %u", ref.push_offset, ref.push_size, limits->max_push_constants); return 0; }
+        }
+        if ((uint64_t)words * 4 > limits->max_storage_range) { set_why(why, why_cap, "画布 %llu 字节超出 maxStorageBufferRange %llu", (unsigned long long)words * 4, (unsigned long long)limits->max_storage_range); return 0; }
+    }
+    return 1;
 }
 
 // ---- 执行 | execution -----------------------------------------------------------------------------------
-VkResult dm_vk_reflect_compute(dm_vk *vk, const dm_vk_shader_plan *plan, const char *spv_path,
-                               dm_vk_pixels *canvas, const void *push, uint32_t push_bytes) {
-    if (!vk || !vk->device || !plan || !spv_path || !canvas || !canvas->bytes) return VK_ERROR_INITIALIZATION_FAILED;
+VkResult dm_vk_reflect_compute(dm_vk *vk, const dm_vk_shader_plan *plan, dm_vk_pixels *canvas,
+                               const void *push, uint32_t push_bytes) {
+    if (!vk || !vk->device || !plan || !canvas || !canvas->bytes) return VK_ERROR_INITIALIZATION_FAILED;
     if (!canvas->width || !canvas->height || canvas->width > 16384 || canvas->height > 16384) return VK_ERROR_INITIALIZATION_FAILED;
+    uint64_t words64 = (uint64_t)canvas->width * canvas->height;
+    if (words64 > UINT32_MAX) return VK_ERROR_INITIALIZATION_FAILED;
+    dm_vk_reflect_limits limits;
+    memset(&limits, 0, sizeof limits);
+    limits.max_workgroup_size[0] = vk->properties.limits.maxComputeWorkGroupSize[0];
+    limits.max_workgroup_size[1] = vk->properties.limits.maxComputeWorkGroupSize[1];
+    limits.max_workgroup_size[2] = vk->properties.limits.maxComputeWorkGroupSize[2];
+    limits.max_invocations = vk->properties.limits.maxComputeWorkGroupInvocations;
+    limits.max_workgroup_count[0] = vk->properties.limits.maxComputeWorkGroupCount[0];
+    limits.max_workgroup_count[1] = vk->properties.limits.maxComputeWorkGroupCount[1];
+    limits.max_workgroup_count[2] = vk->properties.limits.maxComputeWorkGroupCount[2];
+    limits.max_push_constants = vk->properties.limits.maxPushConstantsSize;
+    limits.max_storage_range = vk->properties.limits.maxStorageBufferRange;
+    char check_why[DM_VK_REFLECT_WHY] = {0};
+    if (!dm_vk_reflect_check(plan, &limits, (uint32_t)words64, check_why, sizeof check_why))
+        return VK_ERROR_INITIALIZATION_FAILED;   // plan 被篡改或超设备上限：GPU 之前拒绝 | mutated plan or device limit: reject before GPU
     if (plan->binding_count != 1 || plan->bindings[0].kind != DM_VK_REFLECT_SBUF || plan->bindings[0].set != 0)
         return VK_ERROR_FEATURE_NOT_PRESENT;   // 本切片只执行单一 storage buffer | this slice executes one storage buffer
     if (push_bytes != plan->push_size || (push_bytes && !push)) return VK_ERROR_INITIALIZATION_FAILED;
-    uint64_t bytes = (uint64_t)canvas->width * canvas->height * 4u;
-    if (bytes > canvas->capacity || bytes > vk->properties.limits.maxStorageBufferRange) return VK_ERROR_INITIALIZATION_FAILED;
+    uint64_t bytes = words64 * 4;
+    if (bytes > canvas->capacity) return VK_ERROR_INITIALIZATION_FAILED;
 
     dm_vk_buffer buffer = {0};
     VkShaderModule shader = VK_NULL_HANDLE;
@@ -600,7 +639,9 @@ VkResult dm_vk_reflect_compute(dm_vk *vk, const dm_vk_shader_plan *plan, const c
     result = dm_vk_buffer_create(vk, &info, &buffer);
     if (result != VK_SUCCESS) goto done;
     memset(buffer.mapped, 0, (size_t)bytes);
-    result = dm_vk_shader_load(vk, spv_path, &shader);
+    VkShaderModuleCreateInfo smci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = plan->code_bytes, .pCode = (const uint32_t *)(const void *)plan->code};
+    result = vkCreateShaderModule(vk->device, &smci, NULL, &shader);
     if (result != VK_SUCCESS) goto done;
     VkDescriptorSetLayoutBinding binding = {.binding = plan->bindings[0].binding,
         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1,

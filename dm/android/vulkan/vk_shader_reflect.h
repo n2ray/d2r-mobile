@@ -43,7 +43,18 @@ typedef struct {
     uint32_t code_bytes;
     char code_sha256[65];                 // 模块内容摘要（总是计算） | always computed
     int sidecar_hash_bound;               // 1 = sidecar 带 spirv_sha256 且匹配 | sidecar carried a matching digest
+    uint8_t *code;                        // 载入时读取的唯一副本，plan 拥有；执行用同一缓冲 | single owned copy used for execution
 } dm_vk_shader_plan;
+
+// 设备/派发上限（测试可用小值构造；执行时从 VkPhysicalDeviceLimits 填充）。
+// Device/dispatch limits (tests may use small values; execution fills this from VkPhysicalDeviceLimits).
+typedef struct {
+    uint32_t max_workgroup_size[3];
+    uint32_t max_invocations;
+    uint32_t max_workgroup_count[3];
+    uint32_t max_push_constants;
+    VkDeviceSize max_storage_range;
+} dm_vk_reflect_limits;
 
 // 载入并交叉核对 spv + res.json。失败返回 VK_ERROR_INITIALIZATION_FAILED 并写 why；成功时 plan 完整可用。
 // Load and cross-check spv + res.json. Returns VK_ERROR_INITIALIZATION_FAILED with `why` on failure; on success the plan
@@ -51,11 +62,18 @@ typedef struct {
 VkResult dm_vk_reflect_load(const char *spv_path, const char *res_json_path, dm_vk_shader_plan *plan,
                             char *why, size_t why_cap);
 
-// 按 plan 建管线并执行：画布按 uint32 字（width*height 个）读回。push 必须恰好等于 plan.push_size。
-// Build the pipeline from the plan and execute; the canvas is read back as uint32 words (width*height). `push` must be
-// exactly plan.push_size bytes.
-VkResult dm_vk_reflect_compute(dm_vk *vk, const dm_vk_shader_plan *plan, const char *spv_path,
-                               dm_vk_pixels *canvas, const void *push, uint32_t push_bytes);
+// 释放 plan 拥有的模块字节并清零；对零值 plan 安全。 | Free the plan's module bytes and zero it; safe on a zeroed plan.
+void dm_vk_reflect_free(dm_vk_shader_plan *plan);
+
+// 纯校验：plan 字段是否仍与其字节一致、是否满足 limits 与 words 个 uint 的 1D 派发。失败写 why。
+// Pure check: do the plan fields still match their bytes, and do they fit `limits` for a 1D dispatch of `words` uints?
+int dm_vk_reflect_check(const dm_vk_shader_plan *plan, const dm_vk_reflect_limits *limits, uint32_t words,
+                        char *why, size_t why_cap);
+
+// 执行：用 plan 拥有的字节建管线，按 plan 的 LocalSize 做 1D 派发并把 words 个 uint 读回画布。
+// Execute: build the pipeline from the plan's owned bytes, dispatch 1D by the plan's LocalSize, read back the words.
+VkResult dm_vk_reflect_compute(dm_vk *vk, const dm_vk_shader_plan *plan, dm_vk_pixels *canvas,
+                               const void *push, uint32_t push_bytes);
 
 // 十六进制 SHA-256（供 sidecar 绑定与测试核对）；out 至少 65 字节。
 // Hex SHA-256 (for sidecar binding and tests); out must hold at least 65 bytes.

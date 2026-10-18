@@ -2,6 +2,8 @@
 # Link Android's system loader, verify on hosts with an installed Vulkan SDK; compile the synthetic shader using host glslc.
 add_library(dm_android_vk STATIC vk_host.c vk_memory.c vk_compute.c vk_clear.c vk_shader.c vk_draw.c vk_texture.c vk_shader_reflect.c)
 target_link_libraries(dm_android_vk PUBLIC dm_android_tex)
+target_link_libraries(dm_android_vk PRIVATE dm_nso_dependencies)   # 复用已固定的 MbedTLS SHA-256 | reuse pinned MbedTLS SHA-256
+target_include_directories(dm_android_vk PRIVATE ${dm_mbedtls_SOURCE_DIR}/include)
 target_compile_options(dm_android_vk PRIVATE -Wall -Wextra -Werror)
 if(ANDROID)
     target_link_libraries(dm_android_vk PUBLIC vulkan)
@@ -29,6 +31,12 @@ add_custom_command(OUTPUT ${reflect_spv}
     COMMAND ${DM_GLSLC} --target-env=vulkan1.1 -O ${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/reflect.comp -o ${reflect_spv}
     DEPENDS ../tests/fixtures/reflect.comp VERBATIM)
 add_custom_target(dm_vk_reflect_fixture DEPENDS ${reflect_spv})
+# image 夹具只用于证明 image 被明确拒绝，不参与执行 | the image fixture only proves images are rejected, never executed
+set(image_spv ${CMAKE_CURRENT_BINARY_DIR}/image.spv)
+add_custom_command(OUTPUT ${image_spv}
+    COMMAND ${DM_GLSLC} --target-env=vulkan1.1 -O ${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/image.comp -o ${image_spv}
+    DEPENDS ../tests/fixtures/image.comp VERBATIM)
+add_custom_target(dm_vk_reflect_image_fixture DEPENDS ${image_spv})
 add_executable(dm_vulkan_test ../tests/vulkan.c)
 target_link_libraries(dm_vulkan_test PRIVATE dm_android_vk)
 target_compile_options(dm_vulkan_test PRIVATE -Wall -Wextra -Werror)
@@ -173,15 +181,16 @@ endif()
 # #12 reflection consumer regression: real-GPU positive run with an independent oracle, negatives rejected before
 # any Vulkan object exists.
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/reflect-tmp)
-add_executable(dm_vulkan_reflect_test ../tests/vulkan_reflect.c vk_shader_reflect.c)
+add_executable(dm_vulkan_reflect_test ../tests/vulkan_reflect.c)
 target_link_libraries(dm_vulkan_reflect_test PRIVATE dm_android_vk)
 target_compile_options(dm_vulkan_reflect_test PRIVATE -Wall -Wextra -Werror)
-add_dependencies(dm_vulkan_reflect_test dm_vk_reflect_fixture)
+add_dependencies(dm_vulkan_reflect_test dm_vk_reflect_fixture dm_vk_reflect_image_fixture)
 if(ANDROID)
     target_link_options(dm_vulkan_reflect_test PRIVATE "-Wl,-z,max-page-size=16384")
 else()
     add_test(NAME vulkan_reflect COMMAND dm_vulkan_reflect_test ${reflect_spv}
-        ${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/reflect.res.json ${CMAKE_CURRENT_BINARY_DIR}/reflect-tmp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/reflect.res.json ${image_spv}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/image.res.json ${CMAKE_CURRENT_BINARY_DIR}/reflect-tmp)
     set_tests_properties(vulkan_reflect PROPERTIES TIMEOUT 60)
     if(APPLE AND DM_MOLTENVK_ICD)
         set_tests_properties(vulkan_reflect PROPERTIES ENVIRONMENT "VK_DRIVER_FILES=${DM_MOLTENVK_ICD}")
