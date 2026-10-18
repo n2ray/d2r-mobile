@@ -25,8 +25,9 @@ Base: accepted `main` `8a18a23` (includes #76 and the corrected #73 note).
   instructions. `BLR`/`BR` are classified as unresolved indirect calls/tails with their register and stop that path;
   they are never treated as ordinary instructions or as evidence of absence. `CAP_HIT` is reported explicitly.
 - Address dataflow uses correct operand fields (`Rd = w & 31`, `Rn = (w >> 5) & 31` for ADD/LDR), matches ADRP on the
-  source register used, and clears tracked registers after a call. Printable `adrp`+`add` targets are recorded as
-  string/REF candidates; unsupported chains stay unknown.
+  source register used. Root review narrowed address tracking to contiguous supported ADRP/ADD/LDR chains; every
+  other instruction clears tracked state, including calls, branches and unknown writes. This deliberately loses
+  candidates rather than retaining stale provenance. Printable targets are static string/REF candidates only.
 - Owned synthetic microchecks (`selftest_analyzer.py`, 13 checks, all pass): 10 instruction-level vectors (ADRP x17 /
   LDR x0 / BR x0 decoding, lazy add!=disp shape, LDR base-register mismatch, BR-register mismatch, ADD-register
   mismatch, BLR/BR word recognition, 1026-sym0 / 1027 / 1025 relocation classification) plus 3 trace-level integration
@@ -35,6 +36,9 @@ Base: accepted `main` `8a18a23` (includes #76 and the corrected #73 note).
 - Limits: per-function extent only; visited-instruction cap (1200); indirect calls stop the path. Absence inside scanned
   bodies is not global absence, and an unresolved edge is a stop, not a proof of no edge. Published counts are
   **visited instructions**, never symbol extent size; unvisited instructions remain unknown.
+- Root independently reran the 13 checks plus distinct-destination, register-MOV and unsupported-EOR clobber probes.
+  The earlier selective write-kill missed unrecognized register writes. All five selected functions were rescanned
+  with the conservative tracer; old APM/applet logs from a different scan method are not reused.
 - No other SDK family was enumerated.
 
 ## 2. Selected path and what is proven
@@ -43,24 +47,25 @@ Base: accepted `main` `8a18a23` (includes #76 and the corrected #73 note).
 |---|---|
 | `nninitInitializeSdkModule` | 9 `BL` + one final `B`; no `RET`; resolves to the nine initializers recorded in the corrected #73 note (oe, aoc, err, fs×3, pctl, os VAM, diag startup) |
 | `nn::oe::Initialize` | direct calls `os::SdkMutexType::Lock`, `apm::Initialize`, `oe::InitializeApplet`; body ends in a tail branch (no `RET`); no `SVC`, no indirect call in the scanned body |
-| `nn::apm::Initialize` (selected candidate) | 35 instructions visited of a 236-byte extent: only `os::LockMutex` / `os::UnlockMutex`; no `SVC`, no string, no session/CMIF call; returns. It is **not** a service path. |
-| `nn::oe::InitializeApplet` | direct calls to `am::InitializeApplicationInterfaces`, `am::GetCommonStateGetter`, `am::GetSelfController`, `os::AttachReadableHandleToSystemEvent`, `oe::SetupGpuErrorHandler`, `os::WaitSystemEvent`, os mutex; no indirect call in the visited set |
-| `nn::am::InitializeApplicationInterfaces` | reachable service-name literal **`appletOE`** via `adrp`+`add`; `am::InitializeCommonInterfaces(proxy)`; diag `AbortImpl`; process-handle helpers; one `BL` through a JUMP_SLOT (1026) with symbol index 0 (**unresolved**); **four `BLR x8` indirect calls**; 137 instructions visited of a 776-byte extent, cap not hit |
+| `nn::apm::Initialize` (selected candidate) | 58 instructions visited of a 236-byte extent: mutex lock/unlock, one unresolved symbol-index-0 JUMP_SLOT, one `BLR x8`; static address candidate `apm`. No direct `SVC` in the visited set; no service acquisition or return of the indirect call is proven. The earlier “not a service path” conclusion is withdrawn. |
+| `nn::oe::InitializeApplet` | 26 instructions visited of a 464-byte extent: mutex lock/unlock, `am::InitializeApplicationInterfaces`, `am::GetCommonStateGetter`, then one `BLR x8` frontier. The old longer direct-call list came from scanning beyond an unresolved indirect call and is withdrawn. |
+| `nn::am::InitializeApplicationInterfaces` | static address candidate **`appletOE`** via `adrp`+`add`; `am::InitializeCommonInterfaces(proxy)`; diag `AbortImpl`; process-handle helpers; one `BL` through a JUMP_SLOT (1026) with symbol index 0 (**unresolved**); **four `BLR x8` indirect calls**; 137 instructions visited of a 776-byte extent, cap not hit |
 | `nn::am::InitializeCommonInterfaces(IStackableAppletProxy*)` | 1436-byte symbol extent, **184 instructions visited** (cap not hit): mutex operations and diag `AbortImpl`, plus **seven `BLR x8` indirect calls**; no direct `SVC`, `GetServiceHandle`, `ConnectToNamedPort` or CMIF request/reply call in the visited set |
 
 ## 3. First unsupported indirection — stop point
 
-The corrected trace reaches a service-name literal (`appletOE`) as a static address candidate in
-`am::InitializeApplicationInterfaces` (it is not an executed service acquisition and not proof of one). The actual
+The corrected trace identifies `apm` and `appletOE` as static address candidates. `appletOE` appears in
+`am::InitializeApplicationInterfaces` (this is not an executed service acquisition and not proof of one). The actual
 service acquisition is not a direct call in the visited bodies. The first frontier is the `BLR x8` virtual dispatch on
 the `IStackableAppletProxy` interface (seven sites in `InitializeCommonInterfaces`, four in
 `InitializeApplicationInterfaces`) together with the unresolved symbol-index-0 JUMP_SLOT. The receiver/vtable provenance
 of `x8` is not established by the visited instructions, and the symbol-0 slot has no name or defined target under this
 method.
 
-No port-to-command mapping, command number, request layout, reply layout or reply consumer is proven. The earlier claim
-that these bodies contain no virtual calls or service strings was an artifact of the previous tracer (dropped
-`BLR`/`BR`, wrong operand fields, incomplete thunk validation) and is retracted.
+No port-to-command mapping, command number, request layout, reply layout or reply consumer is proven. The earlier claims
+that these bodies contain no virtual calls or service strings, that APM is not a service path, and that the longer
+applet call list was reached are retracted. Old logs mixed linear and CFG scans; root rescanning corrects those
+claims. APM and InitializeApplet each also stop at their own unresolved `BLR x8` frontier.
 
 ## 4. Concrete blocker / next bounded step
 
