@@ -80,8 +80,11 @@ typedef struct {
 
 typedef struct dm_audio dm_audio;
 
-// 创建并立即 open/验证协商格式；失败不返回半初始化对象。api==NULL 在 Android 使用真实 AAudio。
-// Creates and opens/validates negotiated format immediately; failures return no half-initialized object.
+// 创建并立即 open/验证协商格式。普通失败 out=NULL 且已回滚。唯一例外：协商失败后的回滚 close 失败，
+// 返回 -EAGAIN 且 *out 为 cleanup handle；调用者拥有它，必须调用 dm_audio_destroy 直到 0。
+// Creates and opens/validates negotiated format. Normal failures return out=NULL after rollback.
+// Sole exception: rollback close fails after negotiation mismatch; returns -EAGAIN and *out is a cleanup handle
+// owned by the caller, which must call dm_audio_destroy until it returns 0.
 int dm_audio_create(const dm_audio_options *options, dm_audio **out);
 int dm_audio_start(dm_audio *audio);
 int dm_audio_pause(dm_audio *audio);

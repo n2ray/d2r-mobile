@@ -4,6 +4,8 @@
 
 `dm/android/audio/dm_aaudio.{h,c}` 是独立于 guest 音频、App focus、路由和 WSI 的自有 Android AAudio 输出切片。只接受 interleaved PCM16、双声道、48 kHz；其他格式在 open 后协商校验失败时关闭并返回 `-EPROTO`，不静默降级。
 
+创建回滚所有权：open 后协商失败且 `close` 成功时释放对象、`out=NULL`、返回 `-EPROTO`。若回滚 `close` 失败，stream 仍持有 callback userdata，**不能**释放对象；此时返回 `-EAGAIN`，`*out` 是调用者拥有的 cleanup handle，必须串行调用 `dm_audio_destroy` 直到返回 0。失败的 destroy 返回 `-EIO` 并保留 handle；不会 NULL 二次 close 或丢弃资源。
+
 ## AAudio 边界
 
 生产默认表在 Android 指向真实 `libaaudio`：`AAudio_createStreamBuilder`、format/channel/rate/direction/data+error callback 设置、`AAudioStreamBuilder_openStream`、`getFormat/getChannelCount/getSampleRate`、`requestStart/requestPause/requestStop`、`getState/waitForStateChange`、`close`。宿主测试只替换这张窄表；不做 Apple 声卡或 silent sink 验收。

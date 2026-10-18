@@ -177,6 +177,26 @@ int main(void) {
     CHECK(dm_audio_create(&o, &a) == -EPROTO && a == NULL && g_close_calls == 1);
     reset(); g_open_fail = 1; a = NULL; CHECK(dm_audio_create(&o, &a) == -EIO && a == NULL);
 
+    // Mismatch + failed rollback close: callback userdata must stay alive; handle retries to final free.
+    reset(); g_mismatch = 1; g_close_fail = 1; o = options(4); a = (dm_audio *)0x1;
+    CHECK(dm_audio_create(&o, &a) == -EAGAIN && a != NULL && g_close_calls == 1);
+    CHECK(g_err != NULL && g_err_user == a);
+    g_err(NULL, g_err_user, -3); // earlier bug: UAF here after create freed a
+    dm_audio_stats mismatch_stats; dm_audio_get_stats(a, &mismatch_stats);
+    CHECK(mismatch_stats.disconnected == 1 && mismatch_stats.closing == 1);
+    CHECK(dm_audio_write(a, frames, 1) == 0);
+    g_close_fail = 0;
+    CHECK(dm_audio_destroy(a) == 0 && g_close_calls == 2);
+
+    // Repeated rollback close failures retain the handle; recovery makes one final close and free.
+    reset(); g_mismatch = 1; g_close_fail = 1; o = options(4); a = NULL;
+    CHECK(dm_audio_create(&o, &a) == -EAGAIN && a != NULL && g_close_calls == 1);
+    CHECK(dm_audio_destroy(a) == -EIO && g_close_calls == 2);
+    if (g_err) g_err(NULL, g_err_user, -3);
+    CHECK(dm_audio_destroy(a) == -EIO && g_close_calls == 3);
+    g_close_fail = 0;
+    CHECK(dm_audio_destroy(a) == 0 && g_close_calls == 4);
+
     // Lifecycle and disconnect/error paths.
     reset(); g_start_fail = 1; o = options(4); a = NULL;
     CHECK(dm_audio_create(&o, &a) == 0 && dm_audio_start(a) == -EIO);

@@ -68,6 +68,8 @@ static uint32_t round_pow2(uint32_t n) {
     return p;
 }
 
+static void dm_audio_free(dm_audio *a);
+
 static dm_audio_callback_result data_callback(dm_aaudio_stream *stream, void *user, void *data, int32_t num_frames) {
     (void)stream;
     dm_audio *a = user;
@@ -146,8 +148,22 @@ int dm_audio_create(const dm_audio_options *options, dm_audio **out) {
     if (api->get_format(a->stream) != DM_AUDIO_FORMAT_PCM16 ||
         api->get_channel_count(a->stream) != DM_AUDIO_CHANNELS ||
         api->get_sample_rate(a->stream) != DM_AUDIO_RATE) {
-        (void)api->close(a->stream);
-        pthread_mutex_destroy(&a->lifecycle); free(a->ring); free(a); return -EPROTO;
+        dm_audio_result close = api->close(a->stream);
+        if (close == DM_AUDIO_OK) {
+            a->stream = NULL;
+            dm_audio_free(a);
+            return -EPROTO;
+        }
+        // 回滚 close 失败：stream 仍注册 a 为 callback userdata，不能释放 a。
+        // 调用者通过返回的 cleanup handle 继续 retry；见头文件 -EAGAIN 契约。
+        // Rollback close failed: the stream still holds a as callback userdata, so a cannot be freed.
+        // The caller owns the returned cleanup handle and retries destroy; see the -EAGAIN header contract.
+        atomic_store_explicit(&a->closing, 1, memory_order_release);
+        a->stop_ok = 1; // opened but never started; rollback cleanup only needs close retry
+        a->wait_ok = 1;
+        atomic_store_explicit(&a->teardown, DM_TEARDOWN_CLOSE_FAILED, memory_order_release);
+        *out = a;
+        return -EAGAIN;
     }
     *out = a;
     return 0;
