@@ -185,6 +185,14 @@ void dm_touch_bridge_destroy(dm_touch_bridge *bridge, dm_npad_state *neutral_out
 
 int dm_touch_bridge_attach_game(dm_touch_bridge *bridge, const dm_tgp_provider *provider) {
     if (!bridge || !provider) return 0;
+    /* A provider has no portal consumer. Disable any binding/request/arm from
+       before attach (and its unread mask edges) before provider input exists,
+       and keep the outer cache coherent with the adapter. */
+    (void)dm_android_touch_set_portal_context(bridge->touch, 0, 0, 0, 0);
+    bridge->portal_available = 0;
+    bridge->portal_mask = 0;
+    bridge->portal_identity = 0;
+    bridge->portal_scene = 0;
     if (bridge->game) {
         dm_touch_game_bridge_destroy(bridge->game);
         bridge->game = NULL;

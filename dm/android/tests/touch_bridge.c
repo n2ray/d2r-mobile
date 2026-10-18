@@ -773,6 +773,56 @@ static void portal_bridge_invalid_same_repeat_provider(void) {
     dm_touch_bridge_destroy(b, NULL);
 }
 
+static void portal_provider_attach_disables_latent_binding(void) {
+    dm_touch_bridge *b = dm_touch_bridge_create(667, 375, 2.0f);
+    dm_tc_layout layout;
+    dm_android_portal_request r;
+    dm_npad_state s;
+    provider_fixture f1, f2;
+    uint64_t mask = DM_BTN_ZL | DM_BTN_B;
+    CHECK(b != NULL);
+    dm_tc_layout_make(&layout, 667, 375);
+    float px = layout.target[DM_TC_PORTAL].x, py = layout.target[DM_TC_PORTAL].y;
+    /* Pending (unacked) arm before attach must not survive into provider input. */
+    CHECK(dm_touch_bridge_set_portal_context(b, 1, mask, 7, 1));
+    down(b, 50, px, py, 22000000000);
+    s = read_state(b); CHECK(s.buttons == DM_BTN_ZL);
+    provider_reset(&f1);
+    f1.now = 22010000000;
+    dm_tgp_provider p1 = provider_from(&f1);
+    CHECK(dm_touch_bridge_attach_game(b, &p1));
+    down(b, 51, px, py, 22010000000);
+    s = read_state(b); CHECK(!(s.buttons & (DM_BTN_ZL | DM_BTN_B)));
+    CHECK(!dm_touch_bridge_take_portal_request(b, &r));
+    CHECK(!dm_touch_bridge_portal_ack(b, 1, 7, 1));
+    dm_touch_bridge_destroy(b, NULL);
+
+    /* Armed/acked before attach, then replacement provider: still unavailable. */
+    b = dm_touch_bridge_create(667, 375, 2.0f);
+    CHECK(dm_touch_bridge_set_portal_context(b, 1, mask, 9, 2));
+    down(b, 60, px, py, 22100000000);
+    CHECK(dm_touch_bridge_take_portal_request(b, &r));
+    uint64_t epoch = r.gesture_epoch;
+    CHECK(dm_touch_bridge_portal_ack(b, epoch, 9, 2));
+    s = read_state(b); CHECK(s.buttons == mask);
+    provider_reset(&f1);
+    f1.now = 22110000000;
+    p1 = provider_from(&f1);
+    CHECK(dm_touch_bridge_attach_game(b, &p1));
+    down(b, 61, px, py, 22110000000);
+    s = read_state(b); CHECK(!(s.buttons & (DM_BTN_ZL | DM_BTN_B)));
+    CHECK(!dm_touch_bridge_take_portal_request(b, &r));
+    CHECK(!dm_touch_bridge_portal_ack(b, epoch, 9, 2));
+    provider_reset(&f2);
+    f2.now = 22120000000;
+    dm_tgp_provider p2 = provider_from(&f2);
+    CHECK(dm_touch_bridge_attach_game(b, &p2));   /* replacement */
+    down(b, 62, px, py, 22120000000);
+    s = read_state(b); CHECK(!(s.buttons & (DM_BTN_ZL | DM_BTN_B)));
+    CHECK(!dm_touch_bridge_take_portal_request(b, &r));
+    dm_touch_bridge_destroy(b, NULL);
+}
+
 int main(void) {
     CASE(density_and_noncontiguous_ids);
     CASE(action_index_multifinger);
@@ -792,6 +842,7 @@ int main(void) {
     CASE(belt_action_null_and_context_retention);
     CASE(portal_bridge_request_ack_and_release);
     CASE(portal_bridge_invalid_same_repeat_provider);
+    CASE(portal_provider_attach_disables_latent_binding);
     CASE(provider_belt_action_exactly_once);
     CASE(provider_action_reject_not_acked);
     CASE(provider_stale_action_not_retagged);

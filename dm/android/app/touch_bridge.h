@@ -91,7 +91,10 @@ int dm_touch_bridge_set_belt_context(dm_touch_bridge *bridge, int rows, int open
 // portal owners), preserving unrelated joystick/skill pointers, and consumes
 // the resulting snapshot. With a #33 game provider attached these return 0:
 // the provider path is not a proven portal consumer, so the portal stays
-// explicitly unavailable instead of competing for actions.
+// explicitly unavailable instead of competing for actions. Attaching or
+// replacing a provider also disables any binding/request/arm configured
+// earlier (and its unread edges), with the outer cache reset to unavailable
+// before provider input is accepted.
 int dm_touch_bridge_set_portal_context(dm_touch_bridge *bridge, int available,
                                        uint64_t mask, uint64_t binding_identity,
                                        uint64_t scene_epoch);
