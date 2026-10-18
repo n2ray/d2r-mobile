@@ -828,6 +828,69 @@ static void portal_context_changes_cancel_stale_request(fixture *f) {
     CHECK(!dm_android_touch_portal_ack(f->touch, epoch, 79, 5));
 }
 
+/* Root probe case: a portal binding change cancels the core portal finger; the
+   adapter must release that ID while keeping unrelated joystick/skill owners.
+   A stale MOVE/UP is then rejected and the same ID can press again. */
+static void portal_context_change_releases_pointer_ownership(fixture *f) {
+    dm_npad_state s;
+    dm_android_portal_request r;
+    uint64_t mask = DM_BTN_ZL | DM_BTN_B;
+    float px = f->layout.target[DM_TC_PORTAL].x;
+    float py = f->layout.target[DM_TC_PORTAL].y;
+    CHECK(dm_android_touch_set_portal_context(f->touch, 1, mask, 77, 3));
+    CHECK(dm_android_touch_down(f->touch, 80, 90, 275, 18200000000));
+    CHECK(dm_android_touch_move(f->touch, 80, 150, 275, 18201000000));
+    CHECK(dm_android_touch_down(f->touch, 81, f->layout.target[DM_TC_SKILL2].x,
+                                f->layout.target[DM_TC_SKILL2].y, 18202000000));
+    CHECK(dm_android_touch_tick(f->touch, 18302000000));   /* skill settle */
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_X && s.lx == DM_STICK_MAX);
+    CHECK(dm_android_touch_down(f->touch, 82, px, py, 18310000000));
+    s = read_pad(f); CHECK(s.buttons == (DM_BTN_ZL | DM_BTN_X) && s.lx == DM_STICK_MAX);
+    CHECK(dm_android_touch_take_portal_request(f->touch, &r));
+    uint64_t epoch = r.gesture_epoch;
+    /* Identity change cancels only the portal finger. */
+    CHECK(dm_android_touch_set_portal_context(f->touch, 1, mask, 78, 3));
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_X && s.lx == DM_STICK_MAX);
+    CHECK(!dm_android_touch_move(f->touch, 82, px, py, 18311000000));   /* stale rejected */
+    CHECK(!dm_android_touch_up(f->touch, 82, 18312000000));
+    CHECK(!dm_android_touch_portal_ack(f->touch, epoch, 77, 3));
+    /* Same ID is free again and arms against the new identity. */
+    CHECK(dm_android_touch_down(f->touch, 82, px, py, 18320000000));
+    s = read_pad(f); CHECK(s.buttons == (DM_BTN_ZL | DM_BTN_X) && s.lx == DM_STICK_MAX);
+    CHECK(dm_android_touch_take_portal_request(f->touch, &r));
+    CHECK(r.binding_identity == 78 && r.scene_epoch == 3);
+    CHECK(dm_android_touch_portal_ack(f->touch, r.gesture_epoch, 78, 3));
+    s = read_pad(f); CHECK(s.buttons == (mask | DM_BTN_X) && s.lx == DM_STICK_MAX);
+    CHECK(dm_android_touch_up(f->touch, 82, 18330000000));
+    s = read_pad(f); CHECK(s.buttons == DM_BTN_X && s.lx == DM_STICK_MAX);
+    CHECK(dm_android_touch_up(f->touch, 81, 18340000000));
+    CHECK(dm_android_touch_up(f->touch, 80, 18350000000));
+    s = read_pad(f); CHECK(s.buttons == 0 && s.lx == 0 && s.ly == 0);
+}
+
+/* Repeated binding changes beyond the 16-slot pointer table must not leak
+   adapter ownership; each canceled portal ID is reusable. */
+static void portal_context_repeated_changes_no_slot_leak(fixture *f) {
+    dm_android_portal_request r;
+    uint64_t mask = DM_BTN_ZL | DM_BTN_B;
+    float px = f->layout.target[DM_TC_PORTAL].x;
+    float py = f->layout.target[DM_TC_PORTAL].y;
+    for (int i = 0; i < 20; ++i) {
+        CHECK(dm_android_touch_set_portal_context(f->touch, 1, mask, 1000 + (uint64_t)i, 3));
+        CHECK(dm_android_touch_down(f->touch, 200 + i, px, py,
+                                    19000000000 + (int64_t)i * 20000000));
+        CHECK(dm_android_touch_take_portal_request(f->touch, &r));
+        CHECK(r.binding_identity == 1000 + (uint64_t)i);
+    }
+    CHECK(dm_android_touch_set_portal_context(f->touch, 1, mask, 2000, 3));
+    CHECK(!dm_android_touch_move(f->touch, 219, px, py, 19500000000));   /* canceled portal */
+    CHECK(dm_android_touch_down(f->touch, 300, px, py, 19510000000));
+    CHECK(dm_android_touch_take_portal_request(f->touch, &r));
+    CHECK(r.binding_identity == 2000);
+    CHECK(dm_android_touch_up(f->touch, 300, 19520000000));
+    CHECK(!dm_android_touch_take_portal_request(f->touch, &r));
+}
+
 int main(void) {
     CASE(two_ids_live);
     CASE(ids_are_not_slots);
@@ -861,6 +924,8 @@ int main(void) {
     CASE(belt_context_requests_validation_and_reset);
     CASE(portal_sequence_request_ack);
     CASE(portal_context_changes_cancel_stale_request);
+    CASE(portal_context_change_releases_pointer_ownership);
+    CASE(portal_context_repeated_changes_no_slot_leak);
     printf("PASS %d/%d cases; %d/%d checks\n", cases, cases, checks, checks);
     return 0;
 }

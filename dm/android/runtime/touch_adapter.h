@@ -98,13 +98,14 @@ int dm_android_touch_set_game_context(dm_android_touch *touch, int navigation_mo
 // dm_android_touch_take_action.
 int dm_android_touch_set_belt_context(dm_android_touch *touch, int rows, int open);
 // Host-supplied town-portal context over the existing core portal state
-// (dm_tc_set_portal_binding / dm_tc_portal_ack). available must be 0/1 and a
-// ready context needs a non-zero host-verified mask: mask 0 or available=0
-// leaves the portal unavailable/unarmed, and no original-game key is invented
-// here. Validation happens before mutation; invalid input returns 0 and
-// changes nothing. Same values are a no-op returning 1. A real mask, identity
-// or scene change cancels the core portal arm (releases the portal finger and
-// invalidates the gesture epoch), so a stale request cannot be acked.
+// (dm_tc_set_portal_binding / dm_tc_portal_ack). available must be 0/1. An
+// explicit available=0 disables the portal. available=1 with mask 0 is invalid
+// input: it returns 0 before any mutation and leaves the previous context in
+// place (it is not an implicit disable). A ready context needs a non-zero
+// host-verified mask; no original-game key is invented here. Same values are a
+// no-op returning 1. A real mask, identity or scene change cancels the core
+// portal arm (releases the portal finger, drops its adapter pointer ownership
+// and invalidates the gesture epoch), so a stale request cannot be acked.
 // Defaults are unavailable (0/0/0/0).
 int dm_android_touch_set_portal_context(dm_android_touch *touch, int available,
                                         uint64_t mask, uint64_t binding_identity,

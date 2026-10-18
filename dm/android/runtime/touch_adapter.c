@@ -116,7 +116,21 @@ static void portal_sync(dm_android_touch *touch) {
     }
 }
 
+static void sync_pointer_slots(dm_android_touch *touch) {
+    /* Core-owned cancellation (e.g. dm_tc_set_portal_binding clearing portal
+       fingers) must release the matching adapter IDs exactly once. Unrelated
+       active fingers keep their slots; a stale MOVE/UP then finds no owner and
+       a reused ID can press again instead of being a duplicate. */
+    for (int i = 0; i < DM_TC_MAX_TOUCH; ++i) {
+        if (touch->used[i] && !touch->state.finger[i].active) {
+            touch->used[i] = 0;
+            touch->pointer_id[i] = -1;
+        }
+    }
+}
+
 static void publish(dm_android_touch *touch) {
+    sync_pointer_slots(touch);
     portal_sync(touch);
     dm_tc_state *s = &touch->state;
     if (s->pulse_button) {
