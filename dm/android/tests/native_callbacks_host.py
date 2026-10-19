@@ -114,6 +114,7 @@ typedef int VkResult;
 #define AKEY_EVENT_ACTION_DOWN 0
 #define AKEY_EVENT_ACTION_UP 1
 #define AKEYCODE_BACK 4
+#define AKEYCODE_T 48
 #define AKEYCODE_BUTTON_A 96
 #define AKEYCODE_BUTTON_B 97
 #define AMOTION_EVENT_ACTION_MASK 0xff
@@ -186,6 +187,9 @@ typedef struct {
     int gamepad_admitted;
     int64_t gamepad_after_ns;
     uint64_t controller_session;
+    int text_active;
+    int text_bridge;
+    uint64_t text_session;
     uint64_t last_touch_buttons;
     int32_t last_touch_lx, last_touch_ly, last_touch_rx, last_touch_ry;
     int64_t last_touch_log_ns;
@@ -206,6 +210,8 @@ static dm_diag_scene_mismatch mismatch;
 
 static void update_touch_state(app_state *s) { (void)s; update_calls++; }
 static int input_ready(int fd, int events, void *data);
+static int text_begin(app_state *s) { if (s) s->text_active = 1; return 1; }
+static void text_end(app_state *s, const char *reason) { (void)reason; if (s) s->text_active = 0; }
 static void stop_frame_timer(app_state *s) { if (s && s->frame_fd >= 0) { s->frame_fd = -1; stop_calls++; } }
 static int start_frame_timer(app_state *s) {
     start_calls++;
@@ -328,7 +334,7 @@ static void opened_observed(void *ctx, uint32_t w, uint32_t h) {
 
 MAIN = r'''
 static int input_cases(void) {
-    app_state s;
+    app_state s = {0};
     memset(&s, 0, sizeof s);
     s.density = 1.0f;
     s.touch_allowed = 1;
@@ -586,7 +592,7 @@ static void queue_gamepad_motion(AInputQueue *q, int action, int source, int dev
     q->event.time_ns = time_ns;
 }
 static int gamepad_cases(void) {
-    app_state s;
+    app_state s = {0};
     memset(&s, 0, sizeof s);
     s.density = 1.0f;
     s.touch_allowed = 1;
@@ -795,7 +801,7 @@ static int gamepad_cases(void) {
 }
 
 static int controller_hotplug_cases(void) {
-    app_state s;
+    app_state s = {0};
     memset(&s, 0, sizeof s);
     s.density = 1.0f;
     s.touch_allowed = 1;
@@ -804,7 +810,7 @@ static int controller_hotplug_cases(void) {
     AInputQueue q;
     memset(&q, 0, sizeof q);
     s.input = &q;
-    app_state b;
+    app_state b = {0};
     memset(&b, 0, sizeof b);
     g_controller_app = NULL;
     CHECK(controller_hotplug_acquire_owner(&s));
@@ -866,7 +872,7 @@ int main(void) {
     if (gamepad_cases()) return 1;
     if (controller_hotplug_cases()) return 1;
     if (input_cases()) return 1;
-    app_state s;
+    app_state s = {0};
     memset(&s, 0, sizeof s);
     s.frame_fd = -1;
     ANativeActivity activity = {&s};
@@ -1192,7 +1198,7 @@ def main() -> int:
          'stop_frame_timer(s);\n        if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}',
          "s.frame_fd"),
         ("omit-source-guard",
-         "&&\n                 (AInputEvent_getSource(event)&AINPUT_SOURCE_TOUCHSCREEN)==AINPUT_SOURCE_TOUCHSCREEN",
+         "&&\n                 (source&AINPUT_SOURCE_TOUCHSCREEN)==AINPUT_SOURCE_TOUCHSCREEN",
          "",
          "s.gamepad_admitted && s.gamepad_id == 42"),
         ("omit-queue-invalidation",
@@ -1200,7 +1206,7 @@ def main() -> int:
          "/* mutant: queue change does not retire arbiter sources */",
          "dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_NONE"),
         ("omit-gamepad-route",
-         "}else if(gamepad_source(AInputEvent_getSource(event))){",
+         "}else if(gamepad_source(source)){",
          "}else if(0){",
          "q.finish_calls == 1 && q.last_handled == 1"),
         ("omit-pause-gamepad-rearm",
