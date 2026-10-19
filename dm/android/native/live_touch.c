@@ -171,6 +171,8 @@ int dm_live_touch_needs_work(const dm_live_touch *touch) {
 int dm_live_touch_scheduler_step(dm_live_touch *touch, int64_t time_ns) {
     if (!touch || time_ns < 0) return 0;
     dm_tc_tick(&touch->state, now_s(touch, time_ns));
+    if (!touch->state.pulse_button && touch->state.pointer_pulse_pending)
+        dm_tc_pulse_resume(&touch->state);
     if (touch->state.pulse_button) {
         if (touch->pulse_started_ns == 0) touch->pulse_started_ns = time_ns;
         int64_t hold_ns = (int64_t)(touch->state.pulse_hold_s * 1000000000.0);
