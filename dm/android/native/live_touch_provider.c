@@ -30,16 +30,19 @@ static int provider_action(void *context, const dm_tgp_action *action, uint64_t 
     return 0;
 }
 
-static int sync_generic_identity(dm_live_touch_provider *provider) {
-    dm_module_identity identity;
-    if (!dm_module_identity_get("main", &identity)) return 0;
-    if (identity.size == 0 || identity.size > DM_TGP_MAX_MODULE_BYTES ||
-        identity.base > UINT64_MAX - identity.size) return 0;
+static int valid_identity(const dm_module_identity *identity) {
+    return identity && identity->name[0] && identity->generation != 0 &&
+           identity->size != 0 && identity->size <= DM_TGP_MAX_MODULE_BYTES &&
+           identity->base != 0 && identity->base <= UINT64_MAX - identity->size;
+}
+
+static void apply_identity(dm_live_touch_provider *provider,
+                           const dm_module_identity *identity) {
     provider->iface.abi_version = DM_TGP_ABI_VERSION;
-    provider->iface.module_id = module_name_id(identity.name);
-    provider->iface.generation = identity.generation;
-    provider->iface.module_base = identity.base;
-    provider->iface.module_size = identity.size;
+    provider->iface.module_id = module_name_id(identity->name);
+    provider->iface.generation = identity->generation;
+    provider->iface.module_base = identity->base;
+    provider->iface.module_size = identity->size;
     // The loader does not provide an object range. Keep it unknown; hit/action
     // stay unavailable and the existing bridge range validation is untouched.
     provider->iface.object_range_base = 0;
@@ -48,6 +51,13 @@ static int sync_generic_identity(dm_live_touch_provider *provider) {
     provider->iface.snapshot = provider_snapshot;
     provider->iface.hit = provider_hit;
     provider->iface.action = provider_action;
+}
+
+static int sync_generic_identity(dm_live_touch_provider *provider) {
+    dm_module_identity identity;
+    if (!dm_module_identity_get("main", &identity) || !valid_identity(&identity))
+        return 0;
+    apply_identity(provider, &identity);
     return 1;
 }
 
@@ -55,9 +65,23 @@ static int provider_snapshot(void *context, dm_tgp_snapshot *out) {
     dm_live_touch_provider *provider = context;
     if (!provider || !out) return 0;
     memset(out, 0, sizeof(*out));
-    if (!sync_generic_identity(provider)) return 0;
+
+    dm_module_identity before, after;
+    if (!dm_module_identity_get("main", &before) || !valid_identity(&before))
+        return 0;
+
+    // Scene host callbacks may invalidate or replace the loader identity. Do
+    // not hold the identity mutex across them; revalidate the exact same
+    // generation/base/size/name after observation and fail closed on any
+    // change. An old scene is never relabeled as a new module generation.
     dm_live_touch_scene_observation observation;
     if (!dm_live_touch_provider_observe(provider, &observation)) return 0;
+    if (!dm_module_identity_get("main", &after) || !valid_identity(&after)) return 0;
+    if (before.generation != after.generation || before.base != after.base ||
+        before.size != after.size || strcmp(before.name, after.name) != 0)
+        return 0;
+
+    apply_identity(provider, &after);
     out->abi_version = DM_TGP_ABI_VERSION;
     out->module_id = provider->iface.module_id;
     out->generation = provider->iface.generation;

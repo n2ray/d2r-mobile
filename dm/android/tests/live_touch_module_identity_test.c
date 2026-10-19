@@ -22,7 +22,17 @@ static int f_ingame(void *ctx) { (void)ctx; return 1; }
 static int f_panel_open(void *ctx) { (void)ctx; return 0; }
 static int f_panel_bits(void *ctx) { (void)ctx; return 0; }
 static uint32_t f_ui_gen(void *ctx) { (void)ctx; return 3; }
-static void f_hud(void *ctx, dm_hud_info *out) { (void)ctx; memset(out, 0, sizeof(*out)); out->valid = 1; out->area = 1; }
+static int hud_invalidate, hud_republish;
+static module_t hud_modules[2];
+static void f_hud(void *ctx, dm_hud_info *out) {
+    (void)ctx;
+    memset(out, 0, sizeof(*out)); out->valid = 1; out->area = 1;
+    if (hud_invalidate) {
+        dm_module_identity_invalidate();
+        if (hud_republish) (void)dm_module_identity_publish(hud_modules, 2);
+        hud_invalidate = hud_republish = 0;
+    }
+}
 static uint64_t f_now(void *ctx) { (void)ctx; return 1000000000; }
 
 static module_t module_at(const char *name, uintptr_t base, size_t size) {
@@ -77,6 +87,30 @@ int main(void) {
     CHECK(snapshot.available && snapshot.scene == DM_TGP_SCENE_GAME);
     CHECK(snapshot.module_id == iface->module_id && snapshot.generation == iface->generation);
     CHECK(snapshot.object_generation == 0);
+
+    // Invalidation during scene/HUD observation must fail closed and zero the
+    // snapshot, even though the old provider interface pointer remains valid.
+    hud_modules[0] = modules[0];
+    hud_modules[1] = modules[1];
+    hud_invalidate = 1;
+    CHECK(!iface->snapshot(iface->context, &snapshot));
+    CHECK(!snapshot.available && snapshot.generation == 0 && snapshot.module_id == 0);
+    CHECK(dm_live_touch_provider_generic_interface(&provider) == NULL);
+    CHECK(dm_module_identity_publish(modules, 2));
+    CHECK(dm_live_touch_provider_generic_interface(&provider) != NULL);
+
+    // Invalidate plus a new publication during observation is a new generation;
+    // the old scene must not be relabeled with it.
+    hud_modules[0] = module_at("main", 0x300000, 0x4000);
+    hud_invalidate = 1; hud_republish = 1;
+    CHECK(!iface->snapshot(iface->context, &snapshot));
+    CHECK(!snapshot.available && snapshot.generation == 0);
+    CHECK(dm_live_touch_provider_generic_interface(&provider) != NULL);
+    CHECK(dm_module_identity_publish(modules, 2));
+
+    // Unchanged identity remains usable after the interleaving cases.
+    CHECK(iface->snapshot(iface->context, &snapshot));
+    CHECK(snapshot.available && snapshot.generation != 0);
 
     // A next load invalidates the old snapshot. The old provider copy keeps the
     // old generation; a new publication must not make that identity current.
