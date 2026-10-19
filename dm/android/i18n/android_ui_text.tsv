@@ -70,8 +70,6 @@ dmAndroidMenuOn	开	On	Android 游戏内菜单
 dmAndroidMenuOff	关	Off	Android 游戏内菜单
 dmAndroidMenuQualityAuto	自动	Auto	Android 游戏内菜单
 dmAndroidMenuQualityHigh	高质量	High	Android 游戏内菜单
-dmAndroidMenuQualityBalanced	平衡	Balanced	Android 游戏内菜单
-dmAndroidMenuQualityPerformance	性能	Performance	Android 游戏内菜单
 dmAndroidSaveExport	导出存档	Export save	Android 存档
 dmAndroidSaveImport	导入存档	Import save	Android 存档
 dmAndroidSaveExported	已导出 %d 个文件	Exported %d files	Android 存档

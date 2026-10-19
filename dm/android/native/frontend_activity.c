@@ -25,39 +25,17 @@
 #include <limits.h>
 #include <float.h>
 #include <math.h>
+#include "frontend_pad.h"
 
 // Current host exposes resumed directly but not its declaration in dm.h; keep the
 // frontend contract local rather than editing the host header owned by H1.
 void dm_3d_scale_resumed(void);
 void dm_3d_quality_mode_set(int mode);
 
-// D-pad HAT and analogue trigger mapping live in the reference frontend. The
-// current host dm_input.h has the same button bits but not these two pure
-// helpers, so keep the minimal implementation beside its only Android caller.
-static inline uint64_t dm_pad_hat_buttons(float hat_x, float hat_y) {
-    uint64_t buttons = 0;
-    if (hat_x <= -0.5f) buttons |= DM_BTN_LEFT; else if (hat_x >= 0.5f) buttons |= DM_BTN_RIGHT;
-    if (hat_y <= -0.5f) buttons |= DM_BTN_UP; else if (hat_y >= 0.5f) buttons |= DM_BTN_DOWN;
-    return buttons;
-}
-
-static inline uint64_t dm_pad_trigger_buttons(float left, float right) {
-    uint64_t buttons = 0;
-    if (left >= 0.5f) buttons |= DM_BTN_ZL;
-    if (right >= 0.5f) buttons |= DM_BTN_ZR;
-    return buttons;
-}
-
 // The current accepted host exposes only the automatic/high-quality switch.
-// Keep the reference symbol available from the frontend as a weak fallback:
-// if the host scale controller later provides the fixed ratios, its strong
-// definition replaces this one instead of creating a duplicate.
-__attribute__((weak)) void dm_3d_scale_set_preset(int preset) {
-    if (preset < -1 || preset > 2) return;
-    dm_3d_quality_mode_set(preset < 0 ? 0 : 1);
-    LOG("[android-quality] preset=%d applied as %s; fixed balanced/performance ratios await host scale API",
-        preset, preset < 0 ? "automatic" : "quality-first");
-}
+// No fixed-ratio fallback lives here: a menu choice must not silently mean a
+// different quality level than the one the user selected.
+
 
 typedef struct {
     ANativeActivity *activity; ANativeWindow *window; AInputQueue *input;
@@ -402,7 +380,11 @@ __attribute__((visibility("default"))) void Java_org_d2r_android_port_D2RActivit
     (void)env;(void)klass;atomic_store(&debug_overlay_enabled,enabled?1:0);
 }
 __attribute__((visibility("default"))) void Java_org_d2r_android_port_D2RActivity_setQualityPreset(JNIEnv *env,jclass klass,jint preset) {
-    (void)env;(void)klass;dm_3d_scale_set_preset((int)preset);
+    (void)env;(void)klass;
+    // The current host supports exactly auto (-1) and high quality (0). Reject
+    // balanced/performance and every other value instead of pretending they work.
+    if(preset!=-1&&preset!=0){LOG("[android-quality] rejected unsupported preset %d (accepted: -1 auto, 0 high)",(int)preset);return;}
+    dm_3d_quality_mode_set(preset<0?0:1);
 }
 __attribute__((visibility("default"))) void Java_org_d2r_android_port_D2RActivity_setMenuOpen(JNIEnv *env,jclass klass,jboolean open) {
     (void)env;(void)klass;atomic_store(&menu_open,open?1:0);

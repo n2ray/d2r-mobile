@@ -56,6 +56,15 @@ if __name__ == "__main__":
     subprocess.run([sys.executable, str(ROOT / "android/tools/generate_entry.py"), str(entry)], check=True)
     subprocess.run([sys.executable, str(ROOT / "android/tools/generate_nvn.py"), str(OUT)], check=True)
     sources = [(p, []) for p in sorted((ROOT / "host").glob("*.c"))]
+    # Existing touch-core dependencies, kept explicit even though the host
+    # wildcard currently includes them: hle_touch.c defines dm_touch_set,
+    # dm_world.c defines dm_world_click/dm_world_walk/dm_world_tap_result, and
+    # dm_update.c defines dm_update_click_at. touch_mac.c is the existing Mac
+    # consumer of those symbols; the Android front end keeps its own touch core.
+    touch_sources = [ROOT / "host" / name for name in
+                     ("hle_touch.c", "dm_world.c", "dm_update.c", "touch_mac.c")]
+    known = {source for source, _ in sources}
+    sources += [(source, []) for source in touch_sources if source not in known]
     sources += [(ROOT / "android/native" / name, []) for name in ["runtime.c", "host_posix.c", "host_tls.c", "host_sections.c", "legacy_digest.c", "pending_ranges.c", "performance_hint.c", "launch_settings.c", "frontend_activity.c" if args.activity else "frontend_headless.c", "nvn_vulkan.c", "gpu_driver.c"]]
     sources += [(ROOT / "ios/Sources/dm_touch_controls.c", []), (entry, [])]
     sources += [(ROOT / "gfx" / name, []) for name in ["hle_nv.c", "hle_vi.c"]]
