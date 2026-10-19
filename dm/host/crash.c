@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <dlfcn.h>
 #include <sys/ucontext.h>
+#include "dm_ucontext.h"
 #include <unistd.h>
 #include <sys/mman.h>
 #include <libkern/OSCacheControl.h>
@@ -133,28 +134,18 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     ucontext_t *uc = uc_;
     if (sig == SIGTRAP && g_trap_hook && g_trap_hook(uc)) return;
     if (sig == SIGSEGV || sig == SIGBUS) {
-#ifdef __ANDROID__
-        // Bionic exposes a struct sigcontext here (no Mach ESR field); fault hooks still get address/write intent best-effort.
-        int is_write = 0;
-#else
-        int is_write = (int)((uc->uc_mcontext->__es.__esr >> 6) & 1);   // ESR 的 WnR 位 | The WnR bit of ESR
-#endif
-        for (int i = 0; i < g_nfault_hook; i++) if (g_fault_hook[i](si->si_addr, is_write, uc)) return;
+        int is_write = dm_uc_is_write(uc);
+        // Unknown/truncated/malformed ESR records are not a successful write classification: skip the
+        // write-protection hooks rather than inventing a read or a handled write.
+        if (is_write >= 0)
+            for (int i = 0; i < g_nfault_hook; i++) if (g_fault_hook[i](si->si_addr, is_write, uc)) return;
     }
     fprintf(stderr, "[dm] CRASH sig=%d", sig);
-#ifdef __ANDROID__
-    off("addr", (uint64_t)si->si_addr); off("pc", uc->uc_mcontext.pc); off("lr", uc->uc_mcontext.regs[30]);
-    fprintf(stderr, " sp=%#llx\n", uc->uc_mcontext.sp);
-    for (int i = 0; i < 29; i++) fprintf(stderr, "x%d=%#llx%s", i, uc->uc_mcontext.regs[i], i % 6 == 5 ? "\n" : " ");
+    off("addr", (uint64_t)si->si_addr); off("pc", (uint64_t)DM_UC_PC(uc)); off("lr", (uint64_t)DM_UC_LR(uc));
+    fprintf(stderr, " sp=%#llx\n", (unsigned long long)DM_UC_SP(uc));
+    for (int i = 0; i < 29; i++) fprintf(stderr, "x%d=%#llx%s", i, (unsigned long long)DM_UC_REG(uc, i), i % 6 == 5 ? "\n" : " ");
     fprintf(stderr, "\n");
-    dm_backtrace((uint64_t)uc->uc_mcontext.regs[29]);
-#else
-    off("addr", (uint64_t)si->si_addr); off("pc", uc->uc_mcontext->__ss.__pc); off("lr", uc->uc_mcontext->__ss.__lr);
-    fprintf(stderr, " sp=%#llx\n", uc->uc_mcontext->__ss.__sp);
-    for (int i = 0; i < 29; i++) fprintf(stderr, "x%d=%#llx%s", i, uc->uc_mcontext->__ss.__x[i], i % 6 == 5 ? "\n" : " ");
-    fprintf(stderr, "\n");
-    dm_backtrace(uc->uc_mcontext->__ss.__fp);
-#endif
+    dm_backtrace((uint64_t)DM_UC_FP(uc));
     if (g_dump_hook) g_dump_hook();
     _exit(128 + sig);
 }
