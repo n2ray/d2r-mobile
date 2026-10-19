@@ -411,9 +411,11 @@ static int test_success_and_events(JNIEnv *env) {
     native_text_event(env, NULL, (jlong)a.text_session, EVENT_COMMIT, (jstring)&mismatch, 1);
     CHECK(a.text_commit_events == 1 && a.text_event_total == 2);
     FakeString large = {512, {0}};
-    for (int i = 0; i < 512; i++) large.data[i] = 0x0041;
+    for (int i = 0; i < 510; i++) large.data[i] = 0x0041;
+    large.data[510] = 0xD83D; large.data[511] = 0xDE00;
     native_text_event(env, NULL, (jlong)a.text_session, EVENT_COMMIT, (jstring)&large, 512);
     CHECK(a.text_commit_events == 2 && a.text_payload_units == 512);
+    CHECK(a.text_payload[510] == 0xD83D && a.text_payload[511] == 0xDE00);
     CHECK(a.text_payload_event == EVENT_COMMIT && a.text_payload_sequence == 3);
     native_text_event(env, NULL, (jlong)a.text_session, EVENT_COMMIT, (jstring)&submitted, 3);
     CHECK(a.text_commit_events == 2 && a.text_event_total == 3);
