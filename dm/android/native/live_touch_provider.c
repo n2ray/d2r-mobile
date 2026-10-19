@@ -115,7 +115,7 @@ int dm_live_touch_provider_refresh(dm_live_touch_provider *provider,
     out->generation = provider->generation;
     out->scene_epoch = provider->scene_epoch;
     out->world_epoch = provider->world_epoch;
-    out->object_generation = ui_gen;
+    out->object_generation = 0;   // no object cohort/hit model in this slice
     out->captured_ns = now;
     out->ui_identity = ui_gen;
     out->panel_bits = (uint32_t)panel_bits;
