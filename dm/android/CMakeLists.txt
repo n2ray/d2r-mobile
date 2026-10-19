@@ -924,6 +924,16 @@ if(NOT ANDROID)
     set_tests_properties(guest_snapshot_guard PROPERTIES TIMEOUT 30)
 
     if(APPLE)
+        add_executable(dm_nvn_dirty_transaction_test tests/nvn_dirty_transaction.c)
+        target_include_directories(dm_nvn_dirty_transaction_test PRIVATE ../gfx/nvn ../host)
+        target_compile_definitions(dm_nvn_dirty_transaction_test PRIVATE DM_NVN_DIRTY_TEST)
+        target_compile_options(dm_nvn_dirty_transaction_test PRIVATE -Wall -Wextra -Werror)
+        target_link_libraries(dm_nvn_dirty_transaction_test PRIVATE Threads::Threads)
+        add_test(NAME nvn_dirty_transaction COMMAND dm_nvn_dirty_transaction_test)
+        set_tests_properties(nvn_dirty_transaction PROPERTIES TIMEOUT 30)
+    endif()
+
+    if(APPLE)
         add_test(NAME hle_heap_apple_symbol
             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/hle_heap_apple_symbol.sh
                 ${CMAKE_C_COMPILER} ${CMAKE_CURRENT_SOURCE_DIR}/../.. ${CMAKE_CURRENT_BINARY_DIR}/hle_heap_apple_symbol.o)
