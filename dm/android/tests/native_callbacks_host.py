@@ -21,6 +21,7 @@ FUNCTIONS = ["wsi_report_now", "wsi_report_progress", "wsi_report_snapshot", "ws
              "host_stop",
              "touch_refresh_hud", "touch_consume",
              "gamepad_rearm", "gamepad_next_generation", "gamepad_source", "gamepad_sample_from_state",
+             "controller_hotplug_acquire_owner", "controller_hotplug_release_owner",
              "controller_hotplug_dispatch",
              "touch_cancel", "touch_resize_window",
              "window_ready", "window_resized", "window_destroyed",
@@ -192,6 +193,7 @@ typedef struct {
     dm_vk vk;
     char vertex[8], fragment[8];
 } app_state;
+static app_state *g_controller_app;
 
 static int touch_resize_calls, bad_touch_reads, update_calls, stop_calls, start_calls;
 static int lock_calls, frame_calls, fail_open, fail_close, fail_start, frame_status = DM_WSI_OK;
@@ -802,6 +804,14 @@ static int controller_hotplug_cases(void) {
     AInputQueue q;
     memset(&q, 0, sizeof q);
     s.input = &q;
+    app_state b;
+    memset(&b, 0, sizeof b);
+    g_controller_app = NULL;
+    CHECK(controller_hotplug_acquire_owner(&s));
+    CHECK(!controller_hotplug_acquire_owner(&b));
+    CHECK(g_controller_app == &s);
+    controller_hotplug_release_owner(&b);
+    CHECK(g_controller_app == &s);
     s.controller_session = 77;
 
     queue_gamepad_key(&q, AKEY_EVENT_ACTION_DOWN, AKEYCODE_BUTTON_A, 42, 1);
@@ -841,6 +851,11 @@ static int controller_hotplug_cases(void) {
     CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_NONE);
     controller_hotplug_dispatch(&s, 0, 1, 55);
     CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_NONE);
+    controller_hotplug_release_owner(&s);
+    CHECK(g_controller_app == NULL);
+    CHECK(controller_hotplug_acquire_owner(&b));
+    controller_hotplug_release_owner(&b);
+    CHECK(g_controller_app == NULL);
 
     dm_npad_state neutral;
     dm_input_arbiter_destroy(s.arbiter, &neutral);
@@ -1200,6 +1215,10 @@ def main() -> int:
          "if(!s->gamepad_admitted||device_id<0||(uint32_t)device_id!=s->gamepad_id)return;",
          "if(0)return;",
          "dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_GAMEPAD"),
+        ("omit-owner-busy",
+         "if(g_controller_app&&g_controller_app!=s)return 0;",
+         "if(0)return 0;",
+         "!controller_hotplug_acquire_owner(&b)"),
     ]
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)

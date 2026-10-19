@@ -65,15 +65,18 @@ public final class ControllerHotplugBoundary implements InputManager.InputDevice
      */
     public boolean release() {
         requireMainLooper();
-        if (released) return true;
-        released = true;
-        session = 0;
+        if (!released) {
+            released = true;
+            session = 0;
+        }
         if (!registered) return true;
-        registered = false;
         try {
             inputManager.unregisterInputDeviceListener(this);
+            registered = false;
             return true;
         } catch (RuntimeException failure) {
+            // Keep registered=true: the platform may still retain us, so a
+            // later release retries honestly instead of claiming success.
             return false;
         }
     }

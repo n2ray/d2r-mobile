@@ -310,6 +310,15 @@ static void gamepad_rearm(app_state*s){
     int64_t now=monotonic_ns();
     s->gamepad_after_ns=now>0?now:0;
 }
+static int controller_hotplug_acquire_owner(app_state*s){
+    if(!s||s->controller_session)return 0;
+    if(g_controller_app&&g_controller_app!=s)return 0;
+    g_controller_app=s;
+    return 1;
+}
+static void controller_hotplug_release_owner(app_state*s){
+    if(s&&g_controller_app==s)g_controller_app=NULL;
+}
 static void controller_hotplug_dispatch(app_state*s,uint64_t session,int event,int device_id){
     if(!s||!s->controller_session||session!=s->controller_session)return;
     if(event!=dm_controller_removed&&event!=dm_controller_changed)return;
@@ -912,6 +921,10 @@ static void native_controller_event(JNIEnv*env,jclass cls,jlong session,jint eve
    reported and leaves no claimed registration. */
 static int controller_hotplug_start(app_state*s){
     if(!s||!s->activity||!s->activity->env||!s->activity->clazz)return 0;
+    if(!controller_hotplug_acquire_owner(s)){
+        LOG("controller hotplug owner busy; registration rejected");
+        return 0;
+    }
     JNIEnv*env=s->activity->env;
     jobject activity_class=NULL,class_class=NULL,loader=NULL,loader_class=NULL;
     jstring class_name=NULL;
@@ -958,7 +971,7 @@ fail:
         (void)(*env)->CallBooleanMethod(env,boundary,release_method);
         if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
     }
-    if(g_controller_app==s)g_controller_app=NULL;
+    controller_hotplug_release_owner(s);
     s->controller_session=0;
     if(s->controller_boundary){(*env)->DeleteGlobalRef(env,s->controller_boundary);s->controller_boundary=NULL;}
     if(s->controller_class){(*env)->DeleteGlobalRef(env,s->controller_class);s->controller_class=NULL;}
@@ -976,7 +989,7 @@ done:
 }
 static void controller_hotplug_stop(app_state*s){
     if(!s)return;
-    if(g_controller_app==s)g_controller_app=NULL;
+    controller_hotplug_release_owner(s);
     s->controller_session=0;
     JNIEnv*env=(s->activity&&s->activity->env)?s->activity->env:NULL;
     if(s->controller_boundary&&env){

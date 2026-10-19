@@ -81,12 +81,21 @@ public final class ControllerHotplugBoundaryTest {
 
         InputManager unregisterFails = new InputManager();
         unregisterFails.failUnregister = true;
+        Recorder unregisterRecorder = new Recorder();
         ControllerHotplugBoundary unregisterFailed = new ControllerHotplugBoundary(
-                new TestActivity(unregisterFails), 8L, new Recorder());
+                new TestActivity(unregisterFails), 8L, unregisterRecorder);
         check(unregisterFailed.register(), "unregister-failure fixture registers");
+        InputManager.InputDeviceListener lateUnregister = unregisterFails.listener;
         check(!unregisterFailed.release(), "platform unregister failure is surfaced");
-        check(unregisterFailed.release(), "second release is harmless");
-        check(unregisterFails.unregisterCalls == 1, "failed unregister is not repeated");
+        check(unregisterFailed.isRegistered(), "failed unregister retains pending registration");
+        lateUnregister.onInputDeviceRemoved(42);
+        check(unregisterRecorder.calls == 0, "late callback during failed unregister is inert");
+        unregisterFails.failUnregister = false;
+        check(unregisterFailed.release(), "release retry succeeds after platform recovery");
+        check(!unregisterFailed.isRegistered(), "successful retry clears pending registration");
+        check(unregisterFails.unregisterCalls == 2, "failed unregister is retried once");
+        check(unregisterFailed.release(), "repeat success is idempotent");
+        check(unregisterFails.unregisterCalls == 2, "successful unregister is not repeated");
 
         final boolean[] offMain = new boolean[2];
         Thread thread = new Thread(() -> {
