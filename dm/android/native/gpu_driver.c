@@ -3,7 +3,7 @@
 #define _GNU_SOURCE
 #include "gpu_driver.h"
 #ifndef DM_NO_ADRENOTOOLS
-#include <adrenotools/driver.h>
+#include "gpu_driver_adrenotools.h"
 #else
 #ifndef ADRENOTOOLS_DRIVER_CUSTOM
 #define ADRENOTOOLS_DRIVER_CUSTOM 1
