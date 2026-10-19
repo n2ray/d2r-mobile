@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-int dm_android_display_hz(void);
+int dm_android_display_hz(void) __attribute__((weak));
 
 // hle_nvn.c registers its actual providers in this pair from its constructor.
 // Define the storage it declared; do not synthesize timing values.
@@ -20,8 +20,8 @@ double dm_pace_hz(double screen_hz, double floor_hz) {
 }
 
 double front_display_refresh(char *name, size_t n) {
-    int hz = dm_android_display_hz();
-    if (name && n) snprintf(name, n, "Android display");
+    int hz = dm_android_display_hz ? dm_android_display_hz() : 0;
+    if (name && n) snprintf(name, n, "%s", dm_android_display_hz ? "Android display" : "unknown (no display)");
     return hz > 0 ? hz : 0;
 }
 
