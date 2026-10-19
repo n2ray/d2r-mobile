@@ -367,6 +367,7 @@ static void text_payload_clear(app_state*s){
     s->text_payload_session=0;
     s->text_payload_sequence=0;
     s->text_payload_units=0;
+    memset(s->text_payload,0,sizeof(s->text_payload));
 }
 static void native_text_event(JNIEnv*env,jclass cls,jlong session,jint event,jstring text,jint code_units){
     (void)cls;
@@ -398,6 +399,7 @@ static void native_text_event(JNIEnv*env,jclass cls,jlong session,jint event,jst
     }
     s->text_event_total++;
     s->text_last_units=code_units;
+    memset(s->text_payload,0,sizeof(s->text_payload));
     s->text_payload_event=event;
     s->text_payload_session=(uint64_t)session;
     s->text_payload_sequence++;

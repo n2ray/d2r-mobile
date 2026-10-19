@@ -153,6 +153,11 @@ static void dm_vk_destroy(dm_vk *v) { (void)v; }
 #define LOG(...) do { } while (0)
 #define CHECK(c) do { if (!(c)) { \
     fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
+static int payload_tail_zero(const app_state *a, int from) {
+    for (int i = from; i < DM_TEXT_MAX_UTF16_UNITS; i++)
+        if (a->text_payload[i] != 0) return 0;
+    return 1;
+}
 
 typedef struct { int id; } FakeObject;
 static FakeObject activity_obj = {1}, activity2_obj = {2}, activity_class = {3},
@@ -391,15 +396,18 @@ static int test_success_and_events(JNIEnv *env) {
     CHECK(a.text_last_units == 2 && a.text_payload_units == 2);
     CHECK(a.text_payload_event == EVENT_DELETE && a.text_payload_sequence == 2);
     CHECK(a.text_payload[0] == 0xD83D && a.text_payload[1] == 0xDE00);
+    CHECK(payload_tail_zero(&a, 2));
     string_region_throws = 1;
     native_text_event(env, NULL, (jlong)a.text_session, EVENT_COMMIT, (jstring)&commit, 4);
     CHECK(a.text_commit_events == 1 && a.text_event_total == 2 && !pending);
     CHECK(a.text_payload_event == EVENT_DELETE && a.text_payload_sequence == 2);
+    CHECK(payload_tail_zero(&a, 2) && a.text_payload[0] == 0xD83D);
     string_region_throws = 0;
     string_length_throws = 1;
     native_text_event(env, NULL, (jlong)a.text_session, EVENT_COMMIT, (jstring)&commit, 4);
     CHECK(a.text_commit_events == 1 && a.text_event_total == 2 && !pending);
     CHECK(a.text_payload_event == EVENT_DELETE && a.text_payload_sequence == 2);
+    CHECK(payload_tail_zero(&a, 2) && a.text_payload[0] == 0xD83D);
     string_length_throws = 0;
     native_text_event(env, NULL, (jlong)a.text_session, EVENT_COMMIT, NULL, 513);
     native_text_event(env, NULL, (jlong)a.text_session, 4, NULL, 0);
@@ -423,19 +431,30 @@ static int test_success_and_events(JNIEnv *env) {
     CHECK(!a.text_active && a.text_session == 0 && a.text_submit_events == 1);
     CHECK(a.text_payload_event == EVENT_SUBMIT && a.text_payload_units == 2);
     CHECK(a.text_payload[0] == 0x0041 && a.text_payload[1] == 0x4F60);
+    CHECK(payload_tail_zero(&a, 2));
     native_text_event(env, NULL, (jlong)constructed_session, EVENT_COMMIT, NULL, 0);
     CHECK(a.text_commit_events == 2);
     text_end(&a, "test_end");
     CHECK(release_calls == 1 && a.text_bridge == NULL && a.text_class == NULL);
     CHECK(g_text_app == NULL && touch_cancel_calls >= 2);
     CHECK(a.text_payload_units == 0 && a.text_payload_event == -1 && a.text_payload_sequence == 0);
+    CHECK(payload_tail_zero(&a, 0));
     native_text_event(env, NULL, (jlong)constructed_session, EVENT_COMMIT, NULL, 0);
     CHECK(a.text_commit_events == 2);
     CHECK(text_begin(&a) == 1);
+    CHECK(payload_tail_zero(&a, 0));
+    native_text_event(env, NULL, (jlong)a.text_session, EVENT_COMMIT, (jstring)&submitted, 2);
+    CHECK(a.text_payload_units == 2 && a.text_payload_sequence == 1);
+    CHECK(payload_tail_zero(&a, 2));
+    native_text_event(env, NULL, (jlong)a.text_session, EVENT_COMMIT, NULL, 0);
+    CHECK(a.text_payload_units == 0 && a.text_payload_sequence == 2);
+    CHECK(payload_tail_zero(&a, 0));
     native_text_event(env, NULL, (jlong)a.text_session, EVENT_CANCEL, NULL, 0);
     CHECK(!a.text_active && a.text_payload_event == EVENT_CANCEL);
-    CHECK(a.text_payload_units == 0 && a.text_payload_sequence == 1);
+    CHECK(a.text_payload_units == 0 && a.text_payload_sequence == 3);
+    CHECK(payload_tail_zero(&a, 0));
     text_end(&a, "cancel_end");
+    CHECK(payload_tail_zero(&a, 0));
     return 0;
 }
 
