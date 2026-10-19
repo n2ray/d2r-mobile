@@ -14,6 +14,22 @@ static size_t g_heap_cap;
 #define __ANDROID__ 1
 #include "hle_heap_snapshot.h"
 
+typedef struct { pthread_mutex_t mutex; pthread_cond_t condition; int waiting; } gate;
+static void gate_wait(gate *g) {
+    pthread_mutex_lock(&g->mutex);
+    if (++g->waiting == 2) pthread_cond_broadcast(&g->condition);
+    else while (g->waiting < 2) pthread_cond_wait(&g->condition, &g->mutex);
+    pthread_mutex_unlock(&g->mutex);
+}
+static gate copy_gate;
+static int threaded_copy_result;
+static void *copy_under_writer(void *arg) {
+    (void)arg;
+    gate_wait(&copy_gate);
+    threaded_copy_result = dm_android_guest_heap_copy_owned((uintptr_t)g_heap, (uint8_t[8]){0}, 8);
+    return NULL;
+}
+
 static int failures;
 #define CHECK(c) do { if (!(c)) { failures++; fprintf(stderr, "FAIL %d: %s\n", __LINE__, #c); } } while (0)
 
@@ -54,12 +70,16 @@ int main(void) {
     CHECK(destination[0] == 0xa5);
     CHECK(dm_android_guest_heap_copy_owned((uintptr_t)base, destination, sizeof destination) == 1);
 
-    // A concurrent writer holding the lifecycle lock makes the snapshot try-lock
-    // refuse rather than race a resize/protection transition.
+    // Genuine cross-thread contention: the writer owns the lifecycle lock in
+    // this thread while another thread attempts the snapshot copy. The gate is
+    // cond/barrier based; no sleep or timing assumption.
+    copy_gate = (gate){PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0};
+    pthread_t copy_thread;
     CHECK(pthread_rwlock_wrlock(&g_heap_map_lock) == 0);
-    memset(destination, 0xa5, sizeof destination);
-    CHECK(dm_android_guest_heap_copy_owned((uintptr_t)base, destination, sizeof destination) == 0);
-    CHECK(destination[0] == 0xa5);
+    CHECK(pthread_create(&copy_thread, NULL, copy_under_writer, NULL) == 0);
+    gate_wait(&copy_gate);
+    CHECK(pthread_join(copy_thread, NULL) == 0);
+    CHECK(threaded_copy_result == 0);
     CHECK(pthread_rwlock_unlock(&g_heap_map_lock) == 0);
 
     // Protection failure closes leases permanently; no later copy is accepted.

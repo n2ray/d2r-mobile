@@ -79,5 +79,12 @@ int dm_heap_snapshot_resize(size_t size) {
 #else
 static size_t g_heap_cur;
 static size_t dm_heap_snapshot_size(void) { return g_heap_cur; }
+// Apple host keeps the original range observation used by diag.c. It is not a
+// permission lease and must not be used to authorize an unguarded copy.
+int dm_guest_heap_readable(uint64_t address, size_t size) {
+    uint64_t base = (uint64_t)(uintptr_t)g_heap;
+    size_t current = dm_heap_snapshot_size();
+    return g_heap && address >= base && size <= current && address - base <= current - size;
+}
 #endif
 #endif
