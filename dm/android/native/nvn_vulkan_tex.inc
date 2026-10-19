@@ -1,4 +1,5 @@
 // 贴图创建、Tegra 解排布、上传与渲染目标清除。| Texture creation, Tegra deswizzling, uploads and render-target clears.
+#include "texture_diag.h"
 typedef struct cached_image_view { VkImageViewType type; VkImageSubresourceRange range; VkImageView view; struct cached_image_view *next; } cached_image_view;
 typedef struct image_entry {
     uint64_t serial; tex_t texture; VkImage image; VkImageView view; VkDeviceMemory memory;
@@ -17,6 +18,82 @@ static int texture_capacity, sampler_capacity;
 static pthread_mutex_t descriptor_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t texture_uploads, render_passes, draw_count;
 static uint64_t image_barriers;
+static VkFormat vk_format(int format);
+
+// DM_VK_TEX_DIAG=N 时只记录前 N 个真实采样绑定，默认关闭；不计时、不读客体内存。
+// DM_VK_TEX_DIAG=N logs only the first N real sampled binds, off by default, without timing or guest reads.
+typedef struct {
+    unsigned limit, seen, emitted;
+    unsigned ok, unbound, missing, unsupported, unsampled, view_format, depth, linear;
+    int initialized;
+} texture_diag_state;
+static texture_diag_state texture_diag;
+static void texture_diag_init(void) {
+    if (texture_diag.initialized) return;
+    texture_diag.initialized = 1;
+    const char *setting = getenv("DM_VK_TEX_DIAG");
+    int n = setting ? atoi(setting) : 0;
+    if (n < 0) n = 0;
+    if (n > 48) n = 48;
+    texture_diag.limit = (unsigned)n;
+}
+static void texture_diag_count(unsigned kind) {
+    switch (kind) {
+        case TEXTURE_DIAG_UNBOUND: texture_diag.unbound++; break;
+        case TEXTURE_DIAG_MISSING: texture_diag.missing++; break;
+        case TEXTURE_DIAG_UNSUPPORTED_FORMAT: texture_diag.unsupported++; break;
+        case TEXTURE_DIAG_UNSAMPLED_FORMAT: texture_diag.unsampled++; break;
+        case TEXTURE_DIAG_VIEW_FORMAT: texture_diag.view_format++; break;
+        case TEXTURE_DIAG_DEPTH: texture_diag.depth++; break;
+        case TEXTURE_DIAG_LINEAR: texture_diag.linear++; break;
+        default: texture_diag.ok++; break;
+    }
+}
+static void texture_diag_unsupported(unsigned format) {
+    texture_diag_init();
+    if (!texture_diag.limit || texture_diag.emitted >= texture_diag.limit) return;
+    texture_diag.emitted++;
+    texture_diag_count(TEXTURE_DIAG_UNSUPPORTED_FORMAT);
+    LOG("[vulkan-tex-diag] kind=unsupported_format format=%#x (texture creation refused)", format);
+}
+// 只在真实采样绑定处记录，区分缺映射、未绑定、格式/视图/布局，不触碰资源字节。
+// Record only at real sampled binds, distinguishing missing/unbound/format/view/layout without resource bytes.
+static void texture_diag_bind(const texture_descriptor *descriptor, unsigned handle, uint32_t type, int slot, int stage) {
+    texture_diag_init();
+    if (!texture_diag.limit || texture_diag.seen >= texture_diag.limit) return;
+    unsigned format = descriptor->valid ? (unsigned)descriptor->texture.d.format : 0;
+    VkFormat vf = vk_format((int)format);
+    int sampled = 0;
+    if (vf != VK_FORMAT_UNDEFINED) {
+        VkFormatProperties properties;
+        vkGetPhysicalDeviceFormatProperties(physical, vf, &properties);
+        sampled = !!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+    }
+    unsigned kind = texture_diag_classify(descriptor->valid, handle, format, vf != VK_FORMAT_UNDEFINED, sampled,
+                                          descriptor->valid && descriptor->view.set_format,
+                                          descriptor->valid ? (unsigned)descriptor->view.format : 0,
+                                          descriptor->valid ? descriptor->texture.d.flags : 0);
+    texture_diag.seen++;
+    texture_diag.emitted++;
+    texture_diag_count(kind);
+    if (descriptor->valid) {
+        LOG("[vulkan-tex-diag] n=%u kind=%s id=%u stage=%d slot=%d type=%#x format=%#x view=%#x size=%ux%u levels=%u layers=%u flags=%#x",
+            texture_diag.seen, texture_diag_name(kind), handle & 0xfffff, stage, slot, (unsigned)type,
+            format, descriptor->view.set_format ? (unsigned)descriptor->view.format : 0,
+            descriptor->texture.d.width, descriptor->texture.d.height, descriptor->texture.d.levels,
+            descriptor->texture.L.layers, descriptor->texture.d.flags);
+    } else {
+        LOG("[vulkan-tex-diag] n=%u kind=%s id=%u stage=%d slot=%d type=%#x (1x1 stand-in, whole quad samples zero)",
+            texture_diag.seen, texture_diag_name(kind), handle & 0xfffff, stage, slot, (unsigned)type);
+    }
+}
+static void texture_diag_report(uint64_t ticket) {
+    if (!texture_diag.initialized || !texture_diag.limit) return;
+    LOG("[vulkan-tex-diag] frame=%llu sampled_binds=%u ok=%u unbound=%u missing=%u unsupported=%u unsampled=%u view=%u depth=%u linear=%u",
+        (unsigned long long)ticket, texture_diag.seen, texture_diag.ok, texture_diag.unbound, texture_diag.missing,
+        texture_diag.unsupported, texture_diag.unsampled, texture_diag.view_format, texture_diag.depth, texture_diag.linear);
+}
+
 static VkImageView image_view_get(image_entry *e,VkImageViewType type,VkImageSubresourceRange range) {
     for(cached_image_view *v=e->views;v;v=v->next)if(v->type==type&&!memcmp(&v->range,&range,sizeof range))return v->view;
     cached_image_view *v=calloc(1,sizeof *v);if(!v)die("Vulkan image view cache allocation");v->type=type;v->range=range;
@@ -69,7 +146,7 @@ static image_entry *image_get(const tex_t *t) {
     unsigned bucket=t->serial&4095;for(image_entry *e=image_index[bucket];e;e=e->hash_next)if(e->serial==t->serial)return e;
     if (t->d.target==NVN_TEXTURE_TARGET_BUFFER || t->d.samples>1) die("Vulkan texture target/samples pending: %d/%d",t->d.target,t->d.samples);
     image_entry *e=calloc(1,sizeof *e); if(!e) die("Vulkan texture allocation"); e->serial=t->serial;e->texture=*t;e->format=vk_format(t->d.format);graphics_pass_end();
-    if(e->format==VK_FORMAT_UNDEFINED) die("Unknown Vulkan NVN format %#x",t->d.format);
+    if(e->format==VK_FORMAT_UNDEFINED) {texture_diag_unsupported((unsigned)t->d.format);die("Unknown Vulkan NVN format %#x",t->d.format);}
     e->aspect=VK_IMAGE_ASPECT_COLOR_BIT;
     if(t->d.format>=0x31 && t->d.format<=0x36) {e->aspect=0;if(t->d.format!=0x31)e->aspect|=VK_IMAGE_ASPECT_DEPTH_BIT;if(t->d.format==0x31||t->d.format==0x35||t->d.format==0x36)e->aspect|=VK_IMAGE_ASPECT_STENCIL_BIT;}
     VkFormatProperties fp;vkGetPhysicalDeviceFormatProperties(physical,e->format,&fp);
