@@ -446,6 +446,7 @@ static void native_ime_insets(JNIEnv*env,jclass cls,jlong session,jlong generati
     app_state*s=g_text_app;
     if(!s||!s->text_active||(uint64_t)session!=s->text_session)return;
     if(generation<=0||sequence<=0)return;
+    if((known!=0&&known!=1)||(visible!=0&&visible!=1))return;
     if(s->text_ime_generation&&(uint64_t)generation!=s->text_ime_generation)return;
     if(s->text_ime_sequence&&(uint64_t)sequence<=s->text_ime_sequence)return;
     if(!known&&(visible||left||top||right||bottom))return;
