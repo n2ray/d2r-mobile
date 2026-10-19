@@ -906,13 +906,15 @@ static void controller_hotplug_stop(app_state*s);
 static int text_begin(app_state*s);
 static void text_end(app_state*s,const char*reason);
 static void destroy(ANativeActivity*a){app_state*s=a->instance;if(s){
+    s->resumed=s->focused=s->touch_allowed=0;
+    stop_input_timer(s);stop_frame_timer(s);
+    (void)native_audio_pause(s->audio);
+    if(s->text_bridge)text_end(s,"destroy");
     ime_entry_uninstall(s);
     if(s->ime_entry_class){
         LOG("IME touch entry cleanup pending; App state retained for retry");
         return;
     }
-    if(s->text_bridge)text_end(s,"destroy");
-    stop_input_timer(s);stop_frame_timer(s);
     if(s->audio&&native_audio_destroy(&s->audio,a->env)!=0){
         LOG("audio session cleanup retained; retry required before freeing app state");
         return;   // 保留 App/JNI/AAudio handle，绝不带着未证明的清理释放

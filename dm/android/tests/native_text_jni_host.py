@@ -78,6 +78,8 @@ typedef struct { int unused; } dm_input_arbiter;
 typedef struct { int buttons; } dm_npad_state;
 typedef struct { int unused; } AInputQueue;
 typedef struct { int unused; } native_audio;
+static int audio_pause_calls;
+static int native_audio_pause(native_audio *audio) { (void)audio; audio_pause_calls++; return 0; }
 static int native_audio_destroy(native_audio **audio, JNIEnv *env) { (void)audio; (void)env; return 0; }
 typedef struct ANativeActivity { JNIEnv *env; jobject clazz; void *instance; } ANativeActivity;
 
@@ -125,8 +127,8 @@ static void touch_cancel(app_state *s, const char *reason, int64_t now) {
 static int64_t monotonic_ns(void) { return 1000000000LL; }
 static int dm_app_lifecycle_state(const dm_app_lifecycle *l) { return l ? l->state : 0; }
 static void *dm_app_lifecycle_surface(const dm_app_lifecycle *l) { return l ? l->surface : NULL; }
-static void stop_input_timer(app_state *s) { (void)s; }
-static void stop_frame_timer(app_state *s) { (void)s; }
+static void stop_input_timer(app_state *s) { s->timer_fd = -1; }
+static void stop_frame_timer(app_state *s) { s->frame_fd = -1; }
 static int dm_wsi_stop(dm_wsi *w) { (void)w; return 0; }
 static void dm_wsi_report_event(dm_wsi_report *r, int event) { (void)r; (void)event; }
 static void wsi_report_fail(app_state *s, int stage, int code, int unsupported, int open_failure) {
@@ -561,13 +563,17 @@ static int test_destroy_cleanup_retry(JNIEnv *env) {
     CHECK(a != NULL);
     a->activity = &act; a->lifecycle = &life; a->window = &window;
     a->resumed = a->focused = a->touch_allowed = 1;
-    a->timer_fd = a->frame_fd = -1;
+    a->timer_fd = 41; a->frame_fd = 42;
     life.surface = &window;
     act.instance = a;
     CHECK(ime_entry_install(a) == 1);
     entry_uninstall_result = 0;
+    int pauses_before = audio_pause_calls;
     destroy(&act);
     CHECK(act.instance == a);
+    CHECK(a->timer_fd == -1 && a->frame_fd == -1);
+    CHECK(!a->resumed && !a->focused && !a->touch_allowed);
+    CHECK(audio_pause_calls == pauses_before + 1);
     CHECK(a->ime_entry_class == &entry_class && a->ime_entry_token != 0);
     CHECK(!a->ime_entry_installed && entry_uninstall_calls == 1);
     CHECK(native_ime_entry_request(env, NULL, (jlong)a->ime_entry_token) == JNI_FALSE);
