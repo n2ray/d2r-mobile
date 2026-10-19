@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/timerfd.h>
+#include <sys/system_properties.h>
 #include <unistd.h>
 #include <stdatomic.h>
 #include <limits.h>
@@ -395,7 +396,11 @@ int dm_thermal_now(void) {
 }
 static int live_touch_mode_enabled(void) {
     static int enabled=-1;
-    if(enabled<0){const char *value=getenv("DM_LIVE_TOUCH");enabled=value&&!strcmp(value,"1");}
+    if(enabled<0){
+        char property[PROP_VALUE_MAX]={0};
+        enabled=__system_property_get("debug.d2r.live_touch",property)>0&&!strcmp(property,"1");
+        if(!enabled){const char *value=getenv("DM_LIVE_TOUCH");enabled=value&&!strcmp(value,"1");}
+    }
     return enabled;
 }
 static void live_touch_sync(game_app *s) {
