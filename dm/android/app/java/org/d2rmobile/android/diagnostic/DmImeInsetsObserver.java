@@ -16,6 +16,11 @@ import android.view.WindowInsets;
  * window height or any layout heuristic.</p>
  */
 public final class DmImeInsetsObserver {
+    /** Optional owner notified only after a real observation update. */
+    public interface Listener {
+        void onImeInsets(DmImeInsetsObservation observation);
+    }
+
     private final Looper mainLooper;
     private View view;
     private long sessionGeneration;
@@ -23,10 +28,15 @@ public final class DmImeInsetsObserver {
     private long attachToken;
     private boolean attached;
     private DmImeInsetsObservation observation = DmImeInsetsObservation.none();
+    private Listener listener;
 
     public DmImeInsetsObserver(Looper mainLooper) {
         if (mainLooper == null) throw new IllegalArgumentException("mainLooper == null");
         this.mainLooper = mainLooper;
+    }
+
+    public void setListener(Listener listener) {
+        this.listener = listener;
     }
 
     /** Attaches to the owned editor after an accepted show. */
@@ -69,13 +79,20 @@ public final class DmImeInsetsObserver {
         sequence++;
         if (Build.VERSION.SDK_INT < 30) {
             observation = DmImeInsetsObservation.unknown(sessionGeneration, sequence);
+            publish();
             return insets;
         }
         View root = source.getRootView();
         int width = root == null ? 0 : root.getWidth();
         int height = root == null ? 0 : root.getHeight();
         observation = DmImeInsetsApi30.observe(insets, width, height, sessionGeneration, sequence);
+        publish();
         return insets;
+    }
+
+    private void publish() {
+        Listener current = listener;
+        if (current != null) current.onImeInsets(observation);
     }
 
     private void requireMainLooper() {

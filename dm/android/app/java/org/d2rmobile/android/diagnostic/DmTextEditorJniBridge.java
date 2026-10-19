@@ -23,6 +23,12 @@ public final class DmTextEditorJniBridge implements DmInputConnection.Sink {
     /** Test seam only; production passes null and calls the registered native method. */
     interface EventSink {
         void onTextEvent(long session, int event, String payload, int codeUnits);
+
+        default void onImeInsets(long session, long generation, long sequence,
+                                 boolean known, boolean visible,
+                                 int left, int top, int right, int bottom) { }
+
+        default void onImeInsetsClear(long session) { }
     }
 
     private final DmTextEditorHost host;
@@ -50,6 +56,7 @@ public final class DmTextEditorJniBridge implements DmInputConnection.Sink {
         this.session = session;
         this.eventSink = eventSink;
         this.host = new DmTextEditorHost(activity, inputMethodManager);
+        this.host.setImeInsetsListener(this::emitImeInsets);
     }
 
     public boolean show() {
@@ -61,6 +68,7 @@ public final class DmTextEditorJniBridge implements DmInputConnection.Sink {
     public boolean hide() {
         requireMainLooper();
         if (released) return false;
+        emitImeInsetsClear();
         return host.hide();
     }
 
@@ -68,6 +76,7 @@ public final class DmTextEditorJniBridge implements DmInputConnection.Sink {
     public boolean release() {
         requireMainLooper();
         if (released) return false;
+        emitImeInsetsClear();
         released = true;
         session = 0;
         return host.release();
@@ -113,6 +122,26 @@ public final class DmTextEditorJniBridge implements DmInputConnection.Sink {
         else nativeTextEvent(session, EVENT_CANCEL, null, 0);
     }
 
+    private void emitImeInsets(DmImeInsetsObservation observation) {
+        if (released || session == 0 || observation == null) return;
+        if (observation.sessionGeneration <= 0 || observation.sequence <= 0) return;
+        if (eventSink != null) {
+            eventSink.onImeInsets(session, observation.sessionGeneration, observation.sequence,
+                    observation.known, observation.imeVisible,
+                    observation.left, observation.top, observation.right, observation.bottom);
+        } else {
+            nativeImeInsets(session, observation.sessionGeneration, observation.sequence,
+                    observation.known, observation.imeVisible,
+                    observation.left, observation.top, observation.right, observation.bottom);
+        }
+    }
+
+    private void emitImeInsetsClear() {
+        if (released || session == 0) return;
+        if (eventSink != null) eventSink.onImeInsetsClear(session);
+        else nativeImeInsetsClear(session);
+    }
+
     private static int length(CharSequence text) {
         return text == null ? 0 : text.length();
     }
@@ -124,4 +153,8 @@ public final class DmTextEditorJniBridge implements DmInputConnection.Sink {
     }
 
     private static native void nativeTextEvent(long session, int event, String text, int codeUnits);
+    private static native void nativeImeInsets(long session, long generation, long sequence,
+                                               boolean known, boolean visible,
+                                               int left, int top, int right, int bottom);
+    private static native void nativeImeInsetsClear(long session);
 }

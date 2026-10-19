@@ -32,6 +32,7 @@ static int64_t monotonic_ns(void) { return 0; }
 static void touch_cancel(app_state *s, const char *reason, int64_t now) {
     (void)s; (void)reason; (void)now;
 }
+static void text_ime_clear(app_state *s) { (void)s; }
 '''
 suffix = r'''
 JNIEXPORT void JNICALL Java_org_d2rmobile_android_diagnostic_DmTextEditorJniBridge_nativeTextEvent

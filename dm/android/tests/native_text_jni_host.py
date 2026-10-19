@@ -19,6 +19,7 @@ from pathlib import Path
 from native_callbacks_host import extract_function
 
 FUNCTIONS = ["text_jni_stage_failed", "text_payload_valid", "text_payload_clear",
+             "text_ime_clear", "native_ime_insets", "native_ime_insets_clear",
              "native_text_event", "text_end", "text_begin_ready", "text_begin",
              "ime_entry_load_class", "ime_entry_install", "ime_entry_uninstall",
              "native_ime_entry_request", "destroy"]
@@ -68,6 +69,18 @@ struct JNINativeInterface {
 enum { DM_APP_STATE_CREATED = 0, DM_APP_STATE_OWNED_DIAGNOSTIC = 3 };
 enum { DM_WSI_EVENT_STOP = 0, DM_WSI_OK = 0, DM_WSI_STAGE_DRAIN = 0, DM_WSI_CODE_UNKNOWN = 0 };
 #define DM_TEXT_MAX_UTF16_UNITS 512
+typedef enum dm_ime_insets_state {
+    DM_IME_INSETS_UNKNOWN = 0, DM_IME_INSETS_HIDDEN = 1, DM_IME_INSETS_VISIBLE = 2
+} dm_ime_insets_state;
+typedef struct dm_view_policy {
+    uint32_t view_width_px, view_height_px;
+    uint32_t buffer_width_px, buffer_height_px, buffer_generation;
+    float density, view_width_pt, view_height_pt;
+    dm_ime_insets_state ime_state;
+    int32_t ime_left_px, ime_top_px, ime_right_px, ime_bottom_px;
+    uint32_t ime_available_width_px, ime_available_height_px;
+    uint64_t ime_session, ime_generation, ime_sequence;
+} dm_view_policy;
 #define EVENT_COMMIT 0
 #define EVENT_DELETE 1
 #define EVENT_SUBMIT 2
@@ -107,6 +120,10 @@ typedef struct {
     uint64_t text_payload_session, text_payload_sequence;
     int text_payload_units;
     jchar text_payload[DM_TEXT_MAX_UTF16_UNITS];
+    uint64_t text_ime_generation, text_ime_sequence;
+    int text_ime_known, text_ime_visible;
+    int32_t text_ime_left, text_ime_top, text_ime_right, text_ime_bottom;
+    dm_view_policy view;
     jclass ime_entry_class;
     uint64_t ime_entry_token;
     int ime_entry_installed;
@@ -158,6 +175,17 @@ static int payload_tail_zero(const app_state *a, int from) {
         if (a->text_payload[i] != 0) return 0;
     return 1;
 }
+void dm_view_policy_init(dm_view_policy *policy);
+int dm_view_policy_set_view(dm_view_policy *policy, uint32_t width_px, uint32_t height_px, float density);
+int dm_view_policy_set_ime_insets(dm_view_policy *policy, uint64_t session, uint64_t generation,
+                                  uint64_t sequence, int known, int visible, int32_t left,
+                                  int32_t top, int32_t right, int32_t bottom);
+void dm_view_policy_clear_ime_insets(dm_view_policy *policy);
+static void text_ime_clear(app_state *s);
+static void native_ime_insets(JNIEnv *env, jclass cls, jlong session, jlong generation,
+                              jlong sequence, jboolean known, jboolean visible, jint left,
+                              jint top, jint right, jint bottom);
+static void native_ime_insets_clear(JNIEnv *env, jclass cls, jlong session);
 
 typedef struct { int id; } FakeObject;
 static FakeObject activity_obj = {1}, activity2_obj = {2}, activity_class = {3},
@@ -262,11 +290,20 @@ static jstring fake_new_string(JNIEnv *env, const char *s) {
     return &string_obj;
 }
 static jint fake_register_natives(JNIEnv *env, jclass cls, const JNINativeMethod *m, jint n) {
-    (void)env; (void)cls; (void)n;
+    (void)env; (void)cls;
     native_registers++;
-    register_signature_ok = m && m[0].signature
-            && (strcmp(m[0].signature, "(JILjava/lang/String;I)V") == 0
-                || strcmp(m[0].signature, "(J)Z") == 0);
+    if (m && n == 1 && m[0].signature && strcmp(m[0].signature, "(J)Z") == 0) {
+        register_signature_ok = 1;
+    } else if (m && n == 3) {
+        register_signature_ok = m[0].name && strcmp(m[0].name, "nativeTextEvent") == 0
+                && m[0].signature && strcmp(m[0].signature, "(JILjava/lang/String;I)V") == 0
+                && m[1].name && strcmp(m[1].name, "nativeImeInsets") == 0
+                && m[1].signature && strcmp(m[1].signature, "(JJJZZIIII)V") == 0
+                && m[2].name && strcmp(m[2].name, "nativeImeInsetsClear") == 0
+                && m[2].signature && strcmp(m[2].signature, "(J)V") == 0;
+    } else {
+        register_signature_ok = 0;
+    }
     return register_signature_ok ? 0 : -1;
 }
 static jobject fake_new_object(JNIEnv *env, jclass cls, jmethodID mid, ...) {
@@ -380,6 +417,8 @@ static int test_success_and_events(JNIEnv *env) {
     a.resumed = a.focused = a.touch_allowed = 1;
     a.arbiter = (void *)1;
     life.surface = &window;
+    dm_view_policy_init(&a.view);
+    CHECK(dm_view_policy_set_view(&a.view, 1000, 800, 1.0f) == 1);
     CHECK(text_begin(&a) == 1);
     CHECK(loader_receiver == &activity_obj && loaded_from == &app_loader && loaded_from_app_loader);
     CHECK(native_registers == 1 && register_signature_ok && show_calls == 1);
@@ -387,6 +426,35 @@ static int test_success_and_events(JNIEnv *env) {
     CHECK(a.text_active && a.text_show_accepted && a.text_bridge == &bridge_obj);
     CHECK(a.text_class == &bridge_class && a.text_release == MID_RELEASE);
     CHECK(touch_cancel_calls == 1);
+    native_ime_insets(env, NULL, (jlong)a.text_session, 1, 1, 1, 1, 10, 20, 30, 40);
+    CHECK(a.text_ime_known && a.text_ime_visible && a.text_ime_sequence == 1);
+    CHECK(a.view.ime_state == DM_IME_INSETS_VISIBLE
+            && a.view.ime_available_width_px == 960
+            && a.view.ime_available_height_px == 740);
+    native_ime_insets(env, NULL, (jlong)a.text_session, 1, 2, 1, 0, 0, 0, 0, 0);
+    CHECK(a.text_ime_known && !a.text_ime_visible && a.view.ime_state == DM_IME_INSETS_HIDDEN);
+    CHECK(a.view.ime_available_width_px == 1000 && a.view.ime_available_height_px == 800);
+    native_ime_insets(env, NULL, (jlong)a.text_session, 1, 3, 0, 0, 0, 0, 0, 0);
+    CHECK(!a.text_ime_known && a.view.ime_state == DM_IME_INSETS_UNKNOWN);
+    CHECK(a.view.ime_available_width_px == 0 && a.view.ime_available_height_px == 0);
+    native_ime_insets(env, NULL, (jlong)a.text_session, 1, 3, 1, 1, 10, 20, 30, 40);
+    CHECK(a.text_ime_sequence == 3 && a.view.ime_state == DM_IME_INSETS_UNKNOWN);
+    native_ime_insets(env, NULL, (jlong)a.text_session, 2, 4, 1, 1, 10, 20, 30, 40);
+    CHECK(a.text_ime_generation == 1 && a.view.ime_state == DM_IME_INSETS_UNKNOWN);
+    native_ime_insets(env, NULL, (jlong)a.text_session, 1, 4, 1, 1, 1000, 0, 1000, 0);
+    CHECK(a.text_ime_sequence == 3 && a.view.ime_state == DM_IME_INSETS_UNKNOWN);
+    native_ime_insets(env, NULL, (jlong)a.text_session + 1, 1, 4, 1, 1, 10, 20, 30, 40);
+    CHECK(a.view.ime_state == DM_IME_INSETS_UNKNOWN);
+    native_ime_insets_clear(env, NULL, (jlong)a.text_session);
+    CHECK(a.text_ime_sequence == 0 && a.view.ime_state == DM_IME_INSETS_UNKNOWN);
+    native_ime_insets(env, NULL, (jlong)a.text_session, 1, 4, 1, 1, 10, 20, 30, 40);
+    CHECK(a.view.ime_state == DM_IME_INSETS_VISIBLE);
+    native_ime_insets_clear(env, NULL, (jlong)a.text_session);
+    CHECK(a.text_ime_sequence == 0 && a.view.ime_state == DM_IME_INSETS_UNKNOWN);
+    CHECK(dm_view_policy_set_view(&a.view, 900, 700, 1.0f) == 1);
+    CHECK(a.view.ime_state == DM_IME_INSETS_UNKNOWN);
+    text_ime_clear(&a);
+    CHECK(a.text_ime_sequence == 0 && a.view.ime_state == DM_IME_INSETS_UNKNOWN);
     FakeString commit = {4, {0x0041, 0x4F60, 0xD83D, 0xDE00}};
     FakeString deleted = {2, {0xD83D, 0xDE00}};
     FakeString submitted = {2, {0x0041, 0x4F60}};
@@ -694,8 +762,8 @@ int main(void) {
 '''
 
 
-def build(text: str) -> str:
-    return PRELUDE + "\n".join(extract_function(text, name) for name in FUNCTIONS)
+def build(text: str, view_policy: str) -> str:
+    return PRELUDE + "\n" + view_policy + "\n".join(extract_function(text, name) for name in FUNCTIONS)
 
 
 def run(cc: str, source: str, work: Path, label: str) -> int:
@@ -718,6 +786,8 @@ def main() -> int:
     ap.add_argument("--mutants", action="store_true")
     args = ap.parse_args()
     text = Path(args.native).read_text()
+    view_policy = Path(args.native).with_name("view_policy.c").read_text()
+    view_policy = view_policy.replace('#include "view_policy.h"\n', "")
     text = text.replace("static int text_begin(app_state*s);\n", "")
     text = text.replace("static void text_end(app_state*s,const char*reason);\n", "")
     text = text.replace("static int ime_entry_install(app_state*s);\n", "")
@@ -725,7 +795,7 @@ def main() -> int:
     text = text.replace("static jboolean native_ime_entry_request(JNIEnv*env,jclass cls,jlong token);\n", "")
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
-        if run(args.cc, build(text), work, "text-jni") != 0:
+        if run(args.cc, build(text, view_policy), work, "text-jni") != 0:
             print("FAIL: actual text JNI start/event/end", file=sys.stderr)
             return 1
         if args.mutants:
@@ -745,12 +815,15 @@ def main() -> int:
                 ("omit-clear-buffer",
                  "s->text_payload_units=0;\n    memset(s->text_payload,0,sizeof(s->text_payload));",
                  "s->text_payload_units=0;"),
+                ("bypass-ime-generation",
+                 "if(s->text_ime_generation&&(uint64_t)generation!=s->text_ime_generation)return;",
+                 "if(0)return;"),
             ]
             for name, old, new in mutants:
                 if old not in text:
                     print(f"fail closed: mutant anchor missing: {name}", file=sys.stderr)
                     return 1
-                if run(args.cc, build(text.replace(old, new, 1)), work, f"mutant-{name}") == 0:
+                if run(args.cc, build(text.replace(old, new, 1), view_policy), work, f"mutant-{name}") == 0:
                     print(f"FAIL: mutant survived: {name}", file=sys.stderr)
                     return 1
     return 0

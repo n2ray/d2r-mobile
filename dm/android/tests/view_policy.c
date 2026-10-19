@@ -40,6 +40,23 @@ int main(void) {
     CHECK(dm_view_policy_set_buffer(&policy, 256, 256));
     CHECK(policy.buffer_generation == 2);
     CHECK(policy.view_width_pt == 480.0f && policy.view_height_pt == 300.0f);
+    CHECK(policy.ime_state == DM_IME_INSETS_UNKNOWN);
+    CHECK(dm_view_policy_set_ime_insets(&policy, 7, 3, 4, 1, 1, 10, 20, 30, 40));
+    CHECK(policy.ime_state == DM_IME_INSETS_VISIBLE);
+    CHECK(policy.ime_left_px == 10 && policy.ime_right_px == 30
+          && policy.ime_available_width_px == 1400
+          && policy.ime_available_height_px == 840);
+    CHECK(policy.view_width_px == 1440 && policy.view_height_px == 900);
+    CHECK(policy.ime_session == 7 && policy.ime_generation == 3 && policy.ime_sequence == 4);
+    CHECK(dm_view_policy_set_ime_insets(&policy, 7, 3, 5, 1, 0, 0, 0, 0, 0));
+    CHECK(policy.ime_state == DM_IME_INSETS_HIDDEN);
+    CHECK(policy.ime_available_width_px == 1440 && policy.ime_available_height_px == 900);
+    CHECK(dm_view_policy_set_ime_insets(&policy, 7, 3, 6, 0, 0, 0, 0, 0, 0));
+    CHECK(policy.ime_state == DM_IME_INSETS_UNKNOWN && policy.ime_available_width_px == 0);
+    CHECK(!dm_view_policy_set_ime_insets(&policy, 7, 3, 7, 1, 1, -1, 0, 0, 0));
+    CHECK(!dm_view_policy_set_ime_insets(&policy, 7, 3, 7, 1, 1, 1000, 0, 1000, 0));
+    CHECK(!dm_view_policy_set_ime_insets(&policy, 7, 3, 7, 0, 0, 1, 0, 0, 0));
+    CHECK(policy.ime_state == DM_IME_INSETS_UNKNOWN && policy.ime_sequence == 6);
 
     dm_touch_bridge *bridge = dm_touch_bridge_create(policy.view_width_pt,
                                                      policy.view_height_pt,
@@ -51,6 +68,7 @@ int main(void) {
     /* Orientation changes the real view and must update the point domain. */
     CHECK(dm_view_policy_set_view(&policy, 900, 1440, 3.0f));
     CHECK(policy.view_width_pt == 300.0f && policy.view_height_pt == 480.0f);
+    CHECK(policy.ime_state == DM_IME_INSETS_UNKNOWN && policy.ime_available_width_px == 0);
     CHECK(!dm_view_policy_set_view(&policy, 0, 1440, 3.0f));
     CHECK(!dm_view_policy_set_view(&policy, 900, 1440, 0.0f));
 

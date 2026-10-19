@@ -38,7 +38,7 @@
 #include <time.h>
 #include <unistd.h>
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"D2R-Diagnostic",__VA_ARGS__)
-typedef struct{dm_vk vk;AInputQueue*input;dm_app_lifecycle*lifecycle;ANativeActivity*activity;ANativeWindow*window;dm_input_arbiter*arbiter;dm_view_policy view;dm_input_policy gate;ALooper*looper;int timer_fd;int resumed,focused,touch_allowed;float density,touch_width_pt,touch_height_pt,touch_density;uint64_t last_touch_buttons;int32_t last_touch_lx,last_touch_ly,last_touch_rx,last_touch_ry;int64_t last_touch_log_ns;dm_android_touch_observation hud_obs;dm_touch_hud_frame hud_frame;int hud_obs_valid;dm_gamepad_context gamepad_context;dm_npad_state gamepad_state;uint32_t gamepad_id,gamepad_generation;int gamepad_admitted;int64_t gamepad_after_ns;uint64_t controller_session;jobject controller_boundary;jclass controller_class;jmethodID controller_release;uint64_t text_session;jobject text_bridge;jclass text_class;jmethodID text_show,text_hide,text_release;int text_active;int text_back_owned;int text_show_accepted;uint32_t text_commit_events,text_delete_events,text_submit_events,text_cancel_events;uint64_t text_event_total;int text_last_units;int text_payload_event;uint64_t text_payload_session,text_payload_sequence;int text_payload_units;jchar text_payload[512];jclass ime_entry_class;uint64_t ime_entry_token;int ime_entry_installed;dm_wsi wsi;dm_wsi_bridge wsi_bridge;dm_wsi_report report;dm_vk wsi_vk;dm_vk_swapchain wsi_chain;dm_touch_hud_swapchain wsi_hud;int wsi_chain_live;int wsi_hud_live;int wsi_hud_failed;int frame_fd;int wsi_last_logged;char vertex[4096],fragment[4096],hud_vertex[4096],hud_fragment[4096];native_audio*audio;}app_state;
+typedef struct{dm_vk vk;AInputQueue*input;dm_app_lifecycle*lifecycle;ANativeActivity*activity;ANativeWindow*window;dm_input_arbiter*arbiter;dm_view_policy view;dm_input_policy gate;ALooper*looper;int timer_fd;int resumed,focused,touch_allowed;float density,touch_width_pt,touch_height_pt,touch_density;uint64_t last_touch_buttons;int32_t last_touch_lx,last_touch_ly,last_touch_rx,last_touch_ry;int64_t last_touch_log_ns;dm_android_touch_observation hud_obs;dm_touch_hud_frame hud_frame;int hud_obs_valid;dm_gamepad_context gamepad_context;dm_npad_state gamepad_state;uint32_t gamepad_id,gamepad_generation;int gamepad_admitted;int64_t gamepad_after_ns;uint64_t controller_session;jobject controller_boundary;jclass controller_class;jmethodID controller_release;uint64_t text_session;jobject text_bridge;jclass text_class;jmethodID text_show,text_hide,text_release;int text_active;int text_back_owned;int text_show_accepted;uint32_t text_commit_events,text_delete_events,text_submit_events,text_cancel_events;uint64_t text_event_total;int text_last_units;int text_payload_event;uint64_t text_payload_session,text_payload_sequence;int text_payload_units;jchar text_payload[512];uint64_t text_ime_generation,text_ime_sequence;int text_ime_known,text_ime_visible;int32_t text_ime_left,text_ime_top,text_ime_right,text_ime_bottom;jclass ime_entry_class;uint64_t ime_entry_token;int ime_entry_installed;dm_wsi wsi;dm_wsi_bridge wsi_bridge;dm_wsi_report report;dm_vk wsi_vk;dm_vk_swapchain wsi_chain;dm_touch_hud_swapchain wsi_hud;int wsi_chain_live;int wsi_hud_live;int wsi_hud_failed;int frame_fd;int wsi_last_logged;char vertex[4096],fragment[4096],hud_vertex[4096],hud_fragment[4096];native_audio*audio;}app_state;
 static app_state *g_controller_app;
 static uint64_t g_controller_next_session;
 static app_state *g_text_app;
@@ -428,6 +428,51 @@ static void text_payload_clear(app_state*s){
     s->text_payload_units=0;
     memset(s->text_payload,0,sizeof(s->text_payload));
 }
+static void text_ime_clear(app_state*s){
+    if(!s)return;
+    s->text_ime_generation=0;
+    s->text_ime_sequence=0;
+    s->text_ime_known=0;
+    s->text_ime_visible=0;
+    s->text_ime_left=0;
+    s->text_ime_top=0;
+    s->text_ime_right=0;
+    s->text_ime_bottom=0;
+    dm_view_policy_clear_ime_insets(&s->view);
+}
+static void native_ime_insets(JNIEnv*env,jclass cls,jlong session,jlong generation,jlong sequence,
+                              jboolean known,jboolean visible,jint left,jint top,jint right,jint bottom){
+    (void)env;(void)cls;
+    app_state*s=g_text_app;
+    if(!s||!s->text_active||(uint64_t)session!=s->text_session)return;
+    if(generation<=0||sequence<=0)return;
+    if(s->text_ime_generation&&(uint64_t)generation!=s->text_ime_generation)return;
+    if(s->text_ime_sequence&&(uint64_t)sequence<=s->text_ime_sequence)return;
+    if(!known&&(visible||left||top||right||bottom))return;
+    if(known&&!visible&&(left||top||right||bottom))return;
+    if(left<0||top<0||right<0||bottom<0)return;
+    if(known&&visible){
+        if((uint64_t)left+(uint64_t)right>s->view.view_width_px)return;
+        if((uint64_t)top+(uint64_t)bottom>s->view.view_height_px)return;
+    }
+    if(!dm_view_policy_set_ime_insets(&s->view,(uint64_t)session,(uint64_t)generation,
+                                      (uint64_t)sequence,known?1:0,visible?1:0,
+                                      left,top,right,bottom))return;
+    s->text_ime_generation=(uint64_t)generation;
+    s->text_ime_sequence=(uint64_t)sequence;
+    s->text_ime_known=known?1:0;
+    s->text_ime_visible=visible?1:0;
+    s->text_ime_left=left;
+    s->text_ime_top=top;
+    s->text_ime_right=right;
+    s->text_ime_bottom=bottom;
+}
+static void native_ime_insets_clear(JNIEnv*env,jclass cls,jlong session){
+    (void)env;(void)cls;
+    app_state*s=g_text_app;
+    if(!s||(uint64_t)session!=s->text_session)return;
+    text_ime_clear(s);
+}
 static void native_text_event(JNIEnv*env,jclass cls,jlong session,jint event,jstring text,jint code_units){
     (void)cls;
     app_state*s=g_text_app;
@@ -468,6 +513,7 @@ static void native_text_event(JNIEnv*env,jclass cls,jlong session,jint event,jst
         s->text_active=0;
         s->text_show_accepted=0;
         s->text_session=0;
+        text_ime_clear(s);
         if(s->arbiter)touch_cancel(s,event==2?"text_submit":"text_cancel",monotonic_ns());
     }
 }
@@ -490,7 +536,9 @@ static void touch_resize_window(app_state*s,ANativeWindow*window){
     if(!s||!s->arbiter||!window)return;
     int width=ANativeWindow_getWidth(window),height=ANativeWindow_getHeight(window);
     if(width<=0||height<=0||s->density<=0)return;
+    uint32_t old_width=s->view.view_width_px,old_height=s->view.view_height_px;
     if(!dm_view_policy_set_view(&s->view,(uint32_t)width,(uint32_t)height,s->density))return;
+    if(old_width!=(uint32_t)width||old_height!=(uint32_t)height)text_ime_clear(s);
     float width_pt=s->view.view_width_pt,height_pt=s->view.view_height_pt;
     if(width_pt==s->touch_width_pt&&height_pt==s->touch_height_pt&&s->density==s->touch_density)return;
     int64_t now=monotonic_ns();if(now<0)now=0;
@@ -551,8 +599,11 @@ static void draw_diagnostic(ANativeActivity*a,ANativeWindow*window,int external_
         free(pixels);return;
     }
     int window_width=ANativeWindow_getWidth(window),window_height=ANativeWindow_getHeight(window);
-    if(window_width>0&&window_height>0)
+    if(window_width>0&&window_height>0){
+        uint32_t old_width=s->view.view_width_px,old_height=s->view.view_height_px;
         (void)dm_view_policy_set_view(&s->view,(uint32_t)window_width,(uint32_t)window_height,s->density);
+        if(old_width!=(uint32_t)window_width||old_height!=(uint32_t)window_height)text_ime_clear(s);
+    }
     ANativeWindow_Buffer buffer;
     if(ANativeWindow_lock(window,&buffer,NULL)){LOG("window lock failed");free(pixels);return;}
     dm_present_source source={.pixels=pixels,.width=target.width,.height=target.height,.capacity=target.capacity};
@@ -1219,6 +1270,7 @@ static int text_begin(app_state*s){
     if(s->text_active)return 1;
     if(s->text_bridge)text_end(s,"text_restart");
     text_payload_clear(s);
+    text_ime_clear(s);
     if(!text_begin_ready(s)){
         LOG("text input request ignored: App is not active/focused with a usable window");
         return 0;
@@ -1244,8 +1296,12 @@ static int text_begin(app_state*s){
     if(!(class_name=(*env)->NewStringUTF(env,"org.d2rmobile.android.diagnostic.DmTextEditorJniBridge")))goto fail;
     if(!(bridge_class=(jclass)(*env)->CallObjectMethod(env,loader,load_class,class_name))||text_jni_stage_failed(env,"text bridge class load"))goto fail;
     {
-        JNINativeMethod method={"nativeTextEvent","(JILjava/lang/String;I)V",(void*)native_text_event};
-        if((*env)->RegisterNatives(env,bridge_class,&method,1)!=0||text_jni_stage_failed(env,"text native registration"))goto fail;
+        JNINativeMethod methods[3]={
+            {"nativeTextEvent","(JILjava/lang/String;I)V",(void*)native_text_event},
+            {"nativeImeInsets","(JJJZZIIII)V",(void*)native_ime_insets},
+            {"nativeImeInsetsClear","(J)V",(void*)native_ime_insets_clear}
+        };
+        if((*env)->RegisterNatives(env,bridge_class,methods,3)!=0||text_jni_stage_failed(env,"text native registration"))goto fail;
     }
     if(!(constructor=(*env)->GetMethodID(env,bridge_class,"<init>","(Landroid/app/Activity;J)V"))||text_jni_stage_failed(env,"text constructor signature"))goto fail;
     if(!(show_method=(*env)->GetMethodID(env,bridge_class,"show","()Z"))||text_jni_stage_failed(env,"text show signature"))goto fail;
@@ -1334,6 +1390,7 @@ static void text_end(app_state*s,const char*reason){
         if(s->arbiter)touch_cancel(s,reason,monotonic_ns());
     }
     text_payload_clear(s);
+    text_ime_clear(s);
 }
 static jclass ime_entry_load_class(JNIEnv*env,ANativeActivity*activity){
     if(!env||!activity||!activity->clazz)return NULL;

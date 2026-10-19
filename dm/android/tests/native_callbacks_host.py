@@ -201,6 +201,7 @@ typedef struct {
     native_audio *audio;
 } app_state;
 static app_state *g_controller_app;
+static void text_ime_clear(app_state *s) { (void)s; }
 
 static int audio_pause_calls, audio_resume_calls, audio_focus_calls, audio_key_calls, audio_tick_calls;
 static int native_audio_key(native_audio *a, void *env, int32_t key, int32_t action, int32_t repeat,

@@ -23,8 +23,9 @@ import android.view.inputmethod.InputMethodManager;
  * The host delegates composition/connection/session behavior to the accepted
  * {@link DmTextEditorView}; it does not add a second editor or JNI queue.</p>
  *
- * <p>This is still not native App wiring: no JNI caller, keyboard insets,
- * occlusion handling or guest text consumer is introduced here.</p>
+ * <p>This is still not guest text input acceptance: the host exposes the
+ * additive IME inset observation and leaves layout/occlusion decisions to the
+ * narrow native diagnostic consumer.</p>
  */
 public final class DmTextEditorHost {
     private static final int EDITOR_WIDTH = 1;
@@ -143,6 +144,11 @@ public final class DmTextEditorHost {
     /** Additive immutable IME inset observation for the current session. */
     public DmImeInsetsObservation imeInsetsObservation() {
         return imeInsetsObserver.observation();
+    }
+
+    /** Attaches the bridge to real observer updates; null clears the listener. */
+    public void setImeInsetsListener(DmImeInsetsObserver.Listener listener) {
+        imeInsetsObserver.setListener(listener);
     }
 
     private boolean attachEditor() {
