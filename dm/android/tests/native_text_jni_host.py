@@ -77,6 +77,8 @@ typedef struct { int unused; } dm_wsi_report;
 typedef struct { int unused; } dm_input_arbiter;
 typedef struct { int buttons; } dm_npad_state;
 typedef struct { int unused; } AInputQueue;
+typedef struct { int unused; } native_audio;
+static int native_audio_destroy(native_audio **audio, JNIEnv *env) { (void)audio; (void)env; return 0; }
 typedef struct ANativeActivity { JNIEnv *env; jobject clazz; void *instance; } ANativeActivity;
 
 typedef struct {
@@ -103,6 +105,7 @@ typedef struct {
     dm_wsi wsi;
     dm_wsi_report report;
     AInputQueue *input;
+    native_audio *audio;
 } app_state;
 
 static app_state *g_text_app;

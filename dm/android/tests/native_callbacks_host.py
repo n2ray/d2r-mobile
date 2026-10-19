@@ -143,7 +143,7 @@ typedef struct AInputQueue {
     int finish_calls, last_handled, pre_calls;
 } AInputQueue;
 typedef struct { int width, height, refs; } ANativeWindow;
-typedef struct { void *instance; float density; } ANativeActivity;
+typedef struct { void *instance; float density; void *env; } ANativeActivity;
 typedef struct { int unused; } ALooper;
 typedef struct { void *bits; int width, height, stride, format; } ANativeWindow_Buffer;
 typedef struct { int device; } dm_vk;
@@ -159,6 +159,7 @@ typedef struct {
     const char *vertex_spv, *fragment_spv;
 } dm_vk_indexed_textured_draw;
 typedef struct { int dirty; } dm_touch_hud_frame;
+typedef struct native_audio native_audio;
 
 typedef struct {
     ANativeActivity *activity;
@@ -197,8 +198,25 @@ typedef struct {
     dm_view_policy view;
     dm_vk vk;
     char vertex[8], fragment[8];
+    native_audio *audio;
 } app_state;
 static app_state *g_controller_app;
+
+static int audio_pause_calls, audio_resume_calls, audio_focus_calls, audio_key_calls, audio_tick_calls;
+static int native_audio_key(native_audio *a, void *env, int32_t key, int32_t action, int32_t repeat,
+                            int keyboard) {
+    (void)a; (void)env; (void)action; (void)repeat;
+    audio_key_calls++;
+    return keyboard && (key == 44 || key == 47);
+}
+static int native_audio_pause(native_audio *a) { (void)a; audio_pause_calls++; return 0; }
+static int native_audio_resume(native_audio *a) { (void)a; audio_resume_calls++; return 0; }
+static void native_audio_set_focus(native_audio *a, int focused) {
+    (void)a; (void)focused; audio_focus_calls++;
+}
+static int native_audio_tick(native_audio *a, void *env) {
+    (void)a; (void)env; audio_tick_calls++; return 0;
+}
 
 static int touch_resize_calls, bad_touch_reads, update_calls, stop_calls, start_calls;
 static int lock_calls, frame_calls, fail_open, fail_close, fail_start, frame_status = DM_WSI_OK;
@@ -574,7 +592,9 @@ static int input_cases(void) {
     q2.has_event = 1;
     q2.event.action = AMOTION_EVENT_ACTION_UP;
     CHECK(input_ready(0, 0, &activity) == 1);
+    audio_pause_calls = 0;
     pause_app(&activity);
+    CHECK(audio_pause_calls == 1);                    /* lifecycle pause reaches the App audio owner */
     CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_NONE);
     CHECK(dm_input_arbiter_requires_fresh(s.arbiter));
     q2.finish_calls = q2.last_handled = 0;
@@ -587,7 +607,9 @@ static int input_cases(void) {
     q2.event.action = AMOTION_EVENT_ACTION_DOWN;
     CHECK(input_ready(0, 0, &activity) == 1);
     CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_NONE);
+    audio_resume_calls = 0;
     resume_app(&activity);
+    CHECK(audio_resume_calls == 1);                   /* resume reaches the same App audio owner, no autoplay */
     q2.finish_calls = q2.last_handled = 0;
     q2.has_event = 1;
     CHECK(input_ready(0, 0, &activity) == 1);
@@ -625,7 +647,24 @@ static int input_cases(void) {
     /* Queue loss keeps the owned arbiter alive and invalidates it; recreating
        the queue reuses that same arbiter. */
     dm_input_arbiter *same = s.arbiter;
+    AInputQueue stale_queue = {0};
+    audio_pause_calls = 0;
+    input_destroyed(&activity, &stale_queue);
+    CHECK(s.input == &q2 && audio_pause_calls == 0);   /* stale queue: zero audio side effects */
+    /* Keyboard P reaches the App audio seam; gamepad keys keep their existing route. */
+    q2.finish_calls = q2.last_handled = 0;
+    q2.has_event = 1;
+    q2.event.type = AINPUT_EVENT_TYPE_KEY;
+    q2.event.source = AINPUT_SOURCE_KEYBOARD;
+    q2.event.keycode = 44;
+    q2.event.action = AKEY_EVENT_ACTION_DOWN;
+    q2.event.repeat = 0;
+    audio_key_calls = 0;
+    CHECK(input_ready(0, 0, &activity) == 1);
+    CHECK(audio_key_calls == 1 && q2.last_handled == 1);
+    q2.has_event = 0;
     input_destroyed(&activity, &q2);
+    CHECK(audio_pause_calls == 1);                    /* live queue retires the owner once */
     CHECK(s.arbiter == same);
     CHECK(s.input == NULL);
     CHECK(dm_input_arbiter_source(s.arbiter) == DM_INPUT_SOURCE_NONE);
@@ -1022,7 +1061,9 @@ int main(void) {
     int stops = stop_calls;
     uint32_t b_width = s.wsi.width;
     int frame_fd_before = s.frame_fd;
+    audio_pause_calls = 0;
     window_destroyed(&activity, &A);
+    CHECK(audio_pause_calls == 0);                    /* stale window: zero audio side effects */
     window_resized(&activity, &A);
     CHECK(s.frame_fd == frame_fd_before);
     CHECK(stop_calls == stops);
@@ -1036,7 +1077,9 @@ int main(void) {
     s.touch_allowed = 1;
     lock_calls = 0;
     s.wsi.enabled = 1;
+    audio_tick_calls = 0;
     CHECK(input_timer(devnull, 0, &s) == 1);
+    CHECK(audio_tick_calls == 1);                     /* serialized timer drives the audio seam once */
     CHECK(lock_calls == 0);
     s.wsi.enabled = 0;
     s.vertex[0] = 'v'; s.fragment[0] = 'f';
@@ -1046,7 +1089,9 @@ int main(void) {
     /* Close failure keeps the lifecycle reference and cached live window. */
     s.wsi.enabled = 1;
     fail_close = 1;
+    audio_pause_calls = 0;
     window_destroyed(&activity, &B);
+    CHECK(audio_pause_calls == 1);                    /* live window pauses the current owner once */
     CHECK(B.refs == 1);
     CHECK(s.window == &B);
     fail_close = 0;
@@ -1268,8 +1313,8 @@ def main() -> int:
         ("cached-window", "s->window=dm_app_lifecycle_surface(s->lifecycle);",
          "/* mutant: omit cached-window synchronization */", "s.window"),
         ("stale-timer",
-         'if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}\n        ime_entry_uninstall(s);\n        stop_frame_timer(s);',
-         'stop_frame_timer(s);\n        if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}\n        ime_entry_uninstall(s);',
+         'if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}\n        ime_entry_uninstall(s);\n        (void)native_audio_pause(s->audio);   // 仅当前 WSI 窗口丢失才暂停音频；陈旧回调零副作用\n        stop_frame_timer(s);',
+         'stop_frame_timer(s);\n        if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}\n        ime_entry_uninstall(s);\n        (void)native_audio_pause(s->audio);',
          "s.frame_fd"),
         ("omit-source-guard",
          "&&\n                 (source&AINPUT_SOURCE_TOUCHSCREEN)==AINPUT_SOURCE_TOUCHSCREEN",
