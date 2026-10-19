@@ -16,6 +16,9 @@ static int event(dm_live_touch *t, int action, int index, int count,
                               (int)W, (int)H, 0, 0, W, H, ns);
 }
 
+static int ui_cancel_count;
+static void ui_cancel(void) { ++ui_cancel_count; }
+
 int main(void) {
     dm_live_touch *t = dm_live_touch_create(W, H);
     CHECK(t != NULL);
@@ -27,11 +30,22 @@ int main(void) {
     dm_live_touch_set_mode(t, 1, dm_tc_nav_mask(1));
     CHECK(event(t, DM_LIVE_ACTION_DOWN, 0, 1, &id, &x, &y, 1000000000) == 1);
     CHECK(dm_live_touch_has_pointer(t, id));
+    CHECK(dm_live_touch_active(t) == 1);
     CHECK(event(t, DM_LIVE_ACTION_UP, 0, 1, &id, &x, &y, 1010000000) == 1);
     CHECK(!dm_live_touch_has_pointer(t, id));
     CHECK((dm_live_touch_buttons(t) & DM_BTN_A) != 0);
     CHECK(dm_live_touch_end_released_pulse(t) == 1);
     CHECK(dm_live_touch_buttons(t) == 0);
+
+    // No further MotionEvent: the owner tick must advance the core's stationary
+    // long-hold timer.
+    CHECK(event(t, DM_LIVE_ACTION_DOWN, 0, 1, &id, &x, &y, 2000000000) == 1);
+    CHECK(dm_live_touch_active(t) == 1);
+    CHECK(dm_live_touch_pointer_long(t) == 0);
+    dm_live_touch_tick(t, 3000000000);
+    CHECK(dm_live_touch_pointer_long(t) == 1);
+    CHECK(event(t, DM_LIVE_ACTION_UP, 0, 1, &id, &x, &y, 3010000000) == 1);
+    CHECK(!dm_live_touch_has_pointer(t, id));
 
     // Game path: the original core's floating stick publishes a real axis.
     dm_live_touch_set_mode(t, 0, ((1u << DM_TC_COUNT) - 1) & ~(1u << DM_TC_MAP));
@@ -45,6 +59,16 @@ int main(void) {
     CHECK(dm_live_touch_lx(t) == 0 && dm_live_touch_ly(t) == 0);
     CHECK(dm_live_touch_buttons(t) == 0);
 
+    // Actual pause/focus/input-destruction boundary: UI phase-3 cancellation
+    // and core ownership are invoked together; touch-only cancel does not
+    // publish a physical-controller mask.
+    x = 100; y = 300;
+    CHECK(event(t, DM_LIVE_ACTION_DOWN, 0, 1, &id, &x, &y, 2500000000) == 1);
+    dm_live_touch_cancel_sources(t, 2510000000, ui_cancel);
+    CHECK(ui_cancel_count == 1);
+    CHECK(!dm_live_touch_active(t));
+    CHECK(dm_live_touch_buttons(t) == 0);
+
     // Pointer identity is retained: the same numeric id is usable after a
     // complete up and cannot be confused with a slot index.
     x = 100; y = 300;
@@ -54,6 +78,6 @@ int main(void) {
     CHECK(event(t, DM_LIVE_ACTION_UP, 0, 1, &id, &x, &y, 3030000000) == 1);
 
     dm_live_touch_destroy(t);
-    puts("PASS: live touch menu A pulse, movement axis and cancel reached the real core");
+    puts("PASS: live touch menu A pulse, stationary tick/long-hold, movement axis and cancel reached the real core");
     return 0;
 }

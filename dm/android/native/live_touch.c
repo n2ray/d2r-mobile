@@ -34,6 +34,14 @@ static float point_y(const dm_live_touch *touch, float y_px, float top, float he
     return n * touch->height;
 }
 
+static void sync_pointers(dm_live_touch *touch) {
+    for (int i = 0; i < DM_TC_MAX_TOUCH; ++i) {
+        if (touch->pointers.platform[i] >= 0 && !touch->state.finger[i].active) {
+            touch->pointers.platform[i] = -1;
+        }
+    }
+}
+
 dm_live_touch *dm_live_touch_create(float width_pt, float height_pt) {
     if (!isfinite(width_pt) || !isfinite(height_pt) || width_pt <= 0 || height_pt <= 0) return NULL;
     dm_live_touch *touch = calloc(1, sizeof *touch);
@@ -51,12 +59,22 @@ void dm_live_touch_destroy(dm_live_touch *touch) {
     free(touch);
 }
 
+void dm_live_touch_resize(dm_live_touch *touch, float width_pt, float height_pt) {
+    if (!touch || !isfinite(width_pt) || !isfinite(height_pt) || width_pt <= 0 || height_pt <= 0) return;
+    if (touch->width == width_pt && touch->height == height_pt) return;
+    dm_tc_resize(&touch->state, width_pt, height_pt);
+    touch->width = width_pt;
+    touch->height = height_pt;
+    dm_touch_pointer_clear(&touch->pointers);
+}
+
 void dm_live_touch_set_mode(dm_live_touch *touch, int navigation, uint32_t mask) {
     if (!touch) return;
     navigation = !!navigation;
     if (navigation != touch->state.navigation_mode) dm_tc_set_navigation_mode(&touch->state, navigation);
     mask &= (1u << DM_TC_COUNT) - 1;
     if (mask != touch->state.enabled_targets) dm_tc_enable_targets(&touch->state, mask);
+    sync_pointers(touch);
 }
 
 int dm_live_touch_event(dm_live_touch *touch, int action, int action_index,
@@ -114,6 +132,7 @@ int dm_live_touch_event(dm_live_touch *touch, int action, int action_index,
         return 0;
     }
     if (changed) dm_tc_tick(&touch->state, t);
+    sync_pointers(touch);
     return changed;
 }
 
@@ -125,9 +144,16 @@ int dm_live_touch_cancel_all(dm_live_touch *touch, int64_t time_ns) {
     return 1;
 }
 
+void dm_live_touch_cancel_sources(dm_live_touch *touch, int64_t time_ns,
+                                  void (*ui_cancel)(void)) {
+    if (ui_cancel) ui_cancel();
+    if (touch) dm_live_touch_cancel_all(touch, time_ns < 0 ? 0 : time_ns);
+}
+
 void dm_live_touch_tick(dm_live_touch *touch, int64_t time_ns) {
     if (!touch || time_ns < 0) return;
     dm_tc_tick(&touch->state, now_s(touch, time_ns));
+    sync_pointers(touch);
 }
 
 uint64_t dm_live_touch_buttons(const dm_live_touch *touch) { return touch ? touch->state.buttons : 0; }
@@ -138,6 +164,20 @@ int32_t dm_live_touch_ry(const dm_live_touch *touch) { return touch ? touch->sta
 
 int dm_live_touch_has_pointer(const dm_live_touch *touch, int32_t id) {
     return touch && id >= 0 && dm_touch_pointer_slot(&touch->pointers, id) >= 0;
+}
+
+int dm_live_touch_active(const dm_live_touch *touch) {
+    if (!touch) return 0;
+    for (int i = 0; i < DM_TC_MAX_TOUCH; ++i)
+        if (touch->pointers.platform[i] >= 0 && touch->state.finger[i].active) return 1;
+    return 0;
+}
+
+int dm_live_touch_pointer_long(const dm_live_touch *touch) {
+    if (!touch) return 0;
+    int slot = touch->state.pointer_slot;
+    return slot >= 0 && slot < DM_TC_MAX_TOUCH && touch->state.finger[slot].active &&
+           touch->state.finger[slot].pointer_long;
 }
 
 int dm_live_touch_end_released_pulse(dm_live_touch *touch) {
