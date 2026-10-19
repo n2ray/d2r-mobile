@@ -681,7 +681,10 @@ if(NOT ANDROID)
         add_library(dm_audio_focus_jni_host SHARED tests/audio_focus_jni_test.c app/audio_focus_jni.c)
         target_include_directories(dm_audio_focus_jni_host PRIVATE app ${JNI_INCLUDE_DIRS})
         target_link_libraries(dm_audio_focus_jni_host PRIVATE pthread)
-        target_compile_options(dm_audio_focus_jni_host PRIVATE -Wall -Wextra -Werror)
+        # JVM 加载的插件不能依赖 ASAN/UBSAN 运行时；CI host 的全局 sanitizer 标志在此目标上关闭。
+        # A JVM-loaded plugin cannot depend on the ASAN/UBSAN runtime; disable the global sanitizer flags here.
+        target_compile_options(dm_audio_focus_jni_host PRIVATE -Wall -Wextra -Werror -fno-sanitize=all)
+        target_link_options(dm_audio_focus_jni_host PRIVATE -fno-sanitize=all)
         add_test(NAME audio_focus_jni
             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_focus_jni_host.sh
                 $<TARGET_FILE:dm_audio_focus_jni_host>
