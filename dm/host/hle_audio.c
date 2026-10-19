@@ -11,9 +11,34 @@
 //       If the sound card cannot be opened (no output device etc.) it no longer exits: logs red, and this channel is consumed in real time by the silent sink while the game runs on.
 // The contents of AudioOut / AudioOutBuffer / AudioOutParameter are read and written only through the interfaces below; the host defines its own internal layout and writes only the front part of each struct.
 #include "hle.h"
+#ifdef __ANDROID__
+#include <aaudio/AAudio.h>
+#include <semaphore.h>
+#include <errno.h>
+typedef AAudioStream *AudioUnit;
+typedef int OSStatus;
+typedef sem_t *dispatch_semaphore_t;
+#define DISPATCH_TIME_FOREVER UINT64_MAX
+static dispatch_semaphore_t dispatch_semaphore_create(long initial) {
+    sem_t *s = malloc(sizeof *s); if (!s) return NULL;
+    if (sem_init(s, 0, initial)) { free(s); return NULL; } return s;
+}
+static void dispatch_semaphore_signal(dispatch_semaphore_t s) { sem_post(s); }
+static void dispatch_semaphore_wait(dispatch_semaphore_t s, uint64_t timeout) { (void)timeout; while (sem_wait(s) && errno == EINTR) {} }
+static void dispatch_release(dispatch_semaphore_t s) { sem_destroy(s); free(s); }
+#else
 #include <AudioToolbox/AudioToolbox.h>
 #include <TargetConditionals.h>
 #include <dispatch/dispatch.h>
+#endif
+#ifdef __ANDROID__
+typedef int qos_class_t;
+#define QOS_CLASS_UNSPECIFIED 0
+#define QOS_CLASS_USER_INTERACTIVE 1
+#define QOS_CLASS_DEFAULT 2
+static qos_class_t qos_class_self(void) { return QOS_CLASS_DEFAULT; }
+static int pthread_set_qos_class_self_np(qos_class_t c, int p) { (void)c; (void)p; return 0; }   // Android has no pthread QoS; keep the accounting path, no fabricated scheduling change.
+#endif
 #include <stdatomic.h>
 #include <unistd.h>
 
@@ -141,26 +166,82 @@ static void downmix51(const int16_t *in, int16_t *out, unsigned frames) {
         int32_t l = (23170 * in[0] + 16384 * in[2] + 16384 * in[4]) >> 15, r = (23170 * in[1] + 16384 * in[2] + 16384 * in[5]) >> 15;
         out[0] = (int16_t)(l > 32767 ? 32767 : l < -32768 ? -32768 : l); out[1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r); }
 }
+#ifdef __ANDROID__
+static aaudio_data_callback_result_t au_render(AAudioStream *stream, void *user, void *data, int32_t frames) {
+    (void)stream;
+    aout *a = user;
+    atomic_fetch_add_explicit(&g_render_calls, 1, memory_order_relaxed);
+    a->dry = 0;
+    if (!a->mix) pull(a, data, (uint64_t)frames * a->ch * 2);
+    else { int16_t *o = data; int32_t left = frames;
+        while (left > 0) { int32_t k = left < (int32_t)MIXMAX ? left : (int32_t)MIXMAX; pull(a, (uint8_t *)a->mixbuf, (uint64_t)k * 12); downmix51(a->mixbuf, o, (unsigned)k); o += 2 * k; left -= k; } }
+    { int q = nq_phase(); atomic_fetch_add_explicit(&g_nq_calls[q], 1, memory_order_relaxed); if (a->dry) atomic_fetch_add_explicit(&g_nq_dry[q], 1, memory_order_relaxed); }
+    return AAUDIO_CALLBACK_RESULT_CONTINUE;
+}
+#else
 static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *bl) {
     (void)f; (void)ts; (void)bus; (void)frames;
     aout *a = ctx;
     atomic_fetch_add_explicit(&g_render_calls, 1, memory_order_relaxed);
     a->dry = 0;
     if (!a->mix) pull(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
-    else { int16_t *o = bl->mBuffers[0].mData; unsigned left = bl->mBuffers[0].mDataByteSize / 4;   // 双声道 16 位：每帧 4 字节 | stereo 16-bit: 4 bytes per frame
+    else { int16_t *o = bl->mBuffers[0].mData; unsigned left = bl->mBuffers[0].mDataByteSize / 4;
         while (left) { unsigned k = left < MIXMAX ? left : MIXMAX; pull(a, (uint8_t *)a->mixbuf, (uint64_t)k * 12); downmix51(a->mixbuf, o, k); o += 2 * k; left -= k; } }
-    // 诊断开关 DM_AUDIO_OUT_DUMP=<文件>：交给 CoreAudio 的那份数据原样续写（下混后是双声道）。本机没有回环设备录不到系统输出，判「对白有没有交出去」看这份
-    // Diagnostic switch DM_AUDIO_OUT_DUMP=<file>: append the data handed to CoreAudio as is (stereo after the downmix). This machine has no loopback device and cannot record the system output; to tell whether the dialogue was handed over, look at this file
     { static FILE *df; static int on = -1; if (on < 0) { const char *e = getenv("DM_AUDIO_OUT_DUMP"); on = e != NULL; if (on && !(df = fopen(e, "wb"))) LOG("【红】DM_AUDIO_OUT_DUMP 打不开 %s", e); }
       if (df) fwrite(bl->mBuffers[0].mData, 1, bl->mBuffers[0].mDataByteSize, df); }
-    { int q = nq_phase(); atomic_fetch_add_explicit(&g_nq_calls[q], 1, memory_order_relaxed); if (a->dry) atomic_fetch_add_explicit(&g_nq_dry[q], 1, memory_order_relaxed); }   // 通知线程 QoS 对照：按当前相记 | Notification thread QoS comparison: recorded per current phase
+    { int q = nq_phase(); atomic_fetch_add_explicit(&g_nq_calls[q], 1, memory_order_relaxed); if (a->dry) atomic_fetch_add_explicit(&g_nq_dry[q], 1, memory_order_relaxed); }
     return noErr;
 }
-#if !TARGET_OS_IPHONE
+#endif
+#if !defined(__ANDROID__) && !TARGET_OS_IPHONE
 static void dev_name(AudioObjectID id, char *o, size_t n) {   // 输出设备名（日志用） | output device name (for the log)
     CFStringRef nm = NULL; UInt32 sz = sizeof nm; AudioObjectPropertyAddress pa = { kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
     o[0] = 0; if (!AudioObjectGetPropertyData(id, &pa, 0, NULL, &sz, &nm) && nm) { CFStringGetCString(nm, o, (CFIndex)n, kCFStringEncodingUTF8); CFRelease(nm); } }
 #endif
+#ifdef __ANDROID__
+static OSStatus AudioOutputUnitStart(AudioUnit unit) { return AAudioStream_requestStart(unit); }
+static OSStatus AudioOutputUnitStop(AudioUnit unit) {
+    if (AAudioStream_getState(unit) == AAUDIO_STREAM_STATE_DISCONNECTED) return AAUDIO_OK;
+    aaudio_result_t result = AAudioStream_requestStop(unit);
+    if (result != AAUDIO_OK) return result;
+    for (unsigned i = 0; i < 10; ++i) {
+        aaudio_stream_state_t state = AAudioStream_getState(unit), next;
+        if (state == AAUDIO_STREAM_STATE_STOPPED || state == AAUDIO_STREAM_STATE_DISCONNECTED) return AAUDIO_OK;
+        result = AAudioStream_waitForStateChange(unit, state, &next, 100000000);
+        if (result != AAUDIO_OK && result != AAUDIO_ERROR_TIMEOUT) return result;
+    }
+    return AAUDIO_ERROR_TIMEOUT;
+}
+static void AudioUnitUninitialize(AudioUnit unit) { (void)unit; }
+static void AudioComponentInstanceDispose(AudioUnit unit) { AAudioStream_close(unit); }
+static int au_open(aout *a) {
+    AAudioStreamBuilder *builder = NULL;
+    if (AAudio_createStreamBuilder(&builder) != AAUDIO_OK) { LOG("【红】AAudio builder 建不出来"); return -1; }
+    if (a->ch < 1 || a->ch > 8 || (a->ch > 2 && a->ch != 6)) { AAudioStreamBuilder_delete(builder); LOG("【红】不支持的声道数 %d", a->ch); return -1; }
+    a->mix = a->ch == 6;
+    if (a->mix && !a->mixbuf) a->mixbuf = malloc(MIXMAX * 12);
+    if (a->mix && !a->mixbuf) { AAudioStreamBuilder_delete(builder); LOG("【红】下混暂存申请不到"); return -1; }
+    int och = a->mix ? 2 : a->ch;
+    AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
+    AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
+    AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
+    AAudioStreamBuilder_setSampleRate(builder, RATE);
+    AAudioStreamBuilder_setChannelCount(builder, och);
+    AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_GAME);
+    AAudioStreamBuilder_setDataCallback(builder, au_render, a);
+    aaudio_result_t result = AAudioStreamBuilder_openStream(builder, &a->au);
+    AAudioStreamBuilder_delete(builder);
+    if (result != AAUDIO_OK || !a->au) { a->au = NULL; LOG("【红】AAudio 打开失败：%s", AAudio_convertResultToText(result)); return -1; }
+    if (AAudioStream_getSampleRate(a->au) != RATE || AAudioStream_getChannelCount(a->au) != och ||
+        AAudioStream_getFormat(a->au) != AAUDIO_FORMAT_PCM_I16) {
+        LOG("【红】AAudio 协商到不支持的 PCM 格式"); AudioUnitUninitialize(a->au); AudioComponentInstanceDispose(a->au); a->au = NULL; return -1;
+    }
+    LOG("audio：AAudio 设备=%d %d Hz %d 声道 burst=%d", AAudioStream_getDeviceId(a->au), AAudioStream_getSampleRate(a->au),
+        AAudioStream_getChannelCount(a->au), AAudioStream_getFramesPerBurst(a->au));
+    return 0;
+}
+#else
 static int au_open(aout *a) {   // 0 = 声卡开好了；-1 = 开不了（a->au 置空，调用方走静音接收端） | 0 = the sound card is open; -1 = it cannot be opened (a->au set to null, the caller uses the silent sink)
     AudioComponentDescription d = {.componentType = kAudioUnitType_Output,
 #if TARGET_OS_IPHONE
@@ -193,6 +274,7 @@ static int au_open(aout *a) {   // 0 = 声卡开好了；-1 = 开不了（a->au 
 #endif
     return 0;
 }
+#endif
 // 静音接收端：每 5 ms 按 48 kHz 实时消耗
 // Silent sink: consumes in real time at 48 kHz every 5 ms
 static void *null_sink(void *p) {
@@ -204,7 +286,15 @@ static void *null_sink(void *p) {
     }
     return NULL;
 }
-static int real_audio(void) { const char *e = getenv("DM_AUDIO"); return e ? atoi(e) != 0 : TARGET_OS_IPHONE; }
+static int real_audio(void) {
+    const char *e = getenv("DM_AUDIO");
+    if (e) return atoi(e) != 0;
+#ifdef __ANDROID__
+    return 1;
+#else
+    return TARGET_OS_IPHONE;
+#endif
+}
 
 // AudioOutParameter = { int32 sampleRate; uint16 channelCount; uint16 _r; ... }，0 = 系统默认（48 kHz / 2 声道）
 // AudioOutParameter = { int32 sampleRate; uint16 channelCount; uint16 _r; ... }, 0 = system default (48 kHz / 2 channels)
