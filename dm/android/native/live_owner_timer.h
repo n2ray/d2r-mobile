@@ -10,6 +10,17 @@ static inline int dm_live_owner_interval_ms(int needs_work) {
 }
 
 static inline int dm_live_owner_should_stop(int live_present, int mode_enabled,
-                                             int input_attached, int activity_alive) {
-    return !live_present || !mode_enabled || !input_attached || !activity_alive;
+                                             int input_attached, int activity_resumed,
+                                             int window_present, int destroyed) {
+    return !live_present || !mode_enabled || !input_attached || !activity_resumed ||
+           !window_present || destroyed;
+}
+
+static inline int dm_live_owner_can_start(int live_present, int mode_enabled,
+                                           int input_attached, int activity_resumed,
+                                           int window_present, int destroyed,
+                                           int geometry_valid) {
+    return !dm_live_owner_should_stop(live_present, mode_enabled, input_attached,
+                                      activity_resumed, window_present, destroyed) &&
+           geometry_valid;
 }
