@@ -55,18 +55,12 @@ if __name__ == "__main__":
     entry = OUT / "entry_elf.S"
     subprocess.run([sys.executable, str(ROOT / "android/tools/generate_entry.py"), str(entry)], check=True)
     subprocess.run([sys.executable, str(ROOT / "android/tools/generate_nvn.py"), str(OUT)], check=True)
-    sources = [(p, []) for p in sorted((ROOT / "host").glob("*.c"))]
-    # Existing touch-core dependencies, kept explicit even though the host
-    # wildcard currently includes them: hle_touch.c defines dm_touch_set,
-    # dm_world.c defines dm_world_click/dm_world_walk/dm_world_tap_result, and
-    # dm_update.c defines dm_update_click_at. Those definitions sit in the
-    # current platform-gated branches; no stub or Objective-C source is added
-    # here. touch_mac.c is the existing Mac consumer; Android keeps its own
-    # front-end touch core.
-    touch_sources = [ROOT / "host" / name for name in
-                     ("hle_touch.c", "dm_world.c", "dm_update.c", "touch_mac.c")]
-    known = {source for source, _ in sources}
-    sources += [(source, []) for source in touch_sources if source not in known]
+    # The desktop mouse consumer is Mac-only: touch_mac.c references
+    # dm_update_click_at / dm_world_click / dm_world_walk, while the Android
+    # dm_update/dm_world objects compile those definitions out. Keep the real
+    # mobile touch core (hle_touch.c + ios/Sources/dm_touch_controls.c) and
+    # never stub the desktop interfaces.
+    sources = [(p, []) for p in sorted((ROOT / "host").glob("*.c")) if p.name != "touch_mac.c"]
     sources += [(ROOT / "android/native" / name, []) for name in ["runtime.c", "host_posix.c", "host_tls.c", "host_sections.c", "legacy_digest.c", "pending_ranges.c", "performance_hint.c", "launch_settings.c", "frontend_activity.c" if args.activity else "frontend_headless.c", "nvn_vulkan.c", "gpu_driver.c"]]
     sources += [(ROOT / "ios/Sources/dm_touch_controls.c", []), (entry, [])]
     sources += [(ROOT / "gfx" / name, []) for name in ["hle_nv.c", "hle_vi.c"]]
