@@ -873,6 +873,11 @@ static void padmode_release_touch(game_app *s) {
     dm_touch_pointer_clear(&s->touch_map);
     dm_touch_set(NULL, 0);
     s->tap_a = 0;
+    // Legacy Java on-screen controls are a separate touch source: retire their
+    // published buttons and axes too, or pad_publish will keep feeding them
+    // after a real controller takes the layout back.
+    s->touch_buttons = 0;
+    s->touch_lx = s->touch_ly = s->touch_rx = s->touch_ry = 0;
 }
 static void padmode_request_touch(game_app *s) {
     if (s->padmode_requested == 0 && dm_padmode_current() == 0) return;
