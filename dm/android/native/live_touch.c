@@ -401,6 +401,30 @@ int32_t dm_live_touch_lx(const dm_live_touch *touch) { return touch ? touch->sta
 int32_t dm_live_touch_ly(const dm_live_touch *touch) { return touch ? touch->state.ly : 0; }
 int32_t dm_live_touch_rx(const dm_live_touch *touch) { return touch ? touch->state.rx : 0; }
 int32_t dm_live_touch_ry(const dm_live_touch *touch) { return touch ? touch->state.ry : 0; }
+int dm_live_touch_visual_snapshot(const dm_live_touch *touch, dm_live_touch_visual *out) {
+    if (!touch || !out) return 0;
+    memset(out, 0, sizeof *out);
+    const dm_tc_layout *l = &touch->state.layout;
+    if (!(l->width > 0 && l->height > 0)) return 0;
+    out->valid = 1;
+    out->width = l->width; out->height = l->height;
+    out->joy_x = l->joy_x; out->joy_y = l->joy_y; out->joy_radius = l->joy_radius;
+    out->swap_x = l->swap.x; out->swap_y = l->swap.y; out->swap_radius = l->swap.r;
+    out->diff_x = l->diff.x; out->diff_y = l->diff.y; out->diff_radius = l->diff.r;
+    for (int i = 0; i < 8; ++i) {
+        out->pick_x[i] = l->pick[i].x; out->pick_y[i] = l->pick[i].y; out->pick_r[i] = l->pick[i].r;
+    }
+    for (int i = 0; i < DM_TC_COUNT; ++i) {
+        out->target_x[i] = l->target[i].x; out->target_y[i] = l->target[i].y; out->target_r[i] = l->target[i].r;
+    }
+    out->enabled_targets = touch->state.enabled_targets;
+    out->buttons = touch->state.buttons;
+    out->skill_set = touch->state.skill_set;
+    out->diff_open = touch->state.diff_open;
+    out->navigation_mode = touch->state.navigation_mode;
+    out->lx = touch->state.lx; out->ly = touch->state.ly;
+    return 1;
+}
 
 int dm_live_touch_has_pointer(const dm_live_touch *touch, int32_t id) {
     return touch && id >= 0 && dm_touch_pointer_slot(&touch->pointers, id) >= 0;
