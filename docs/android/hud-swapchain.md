@@ -15,6 +15,11 @@ present to the accepted `dm_vk_swapchain_*` path.
   `chain->commands[chain->image_index]` with the chain clear value.
 - The default clear-only command path and public swapchain API are unchanged.
   HUD is an explicit caller opt-in.
+- Partial creation failures (either shader, pipeline layout/pipeline, vertex
+  array allocation, or a later per-image buffer) return the original error and
+  clean only resources actually created. The cleanup loop is guarded by the
+  allocated vertex-buffer array, so a failure before that allocation cannot
+  dereference a null/small pointer; no double-destroy path is used.
 - Reconfigure is rejected while any acquire/submit/present fence is pending.
   Destroy requires the caller to have completed the chain's presentation
   retirement; no `vkDeviceWaitIdle` is introduced.

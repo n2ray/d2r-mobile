@@ -465,7 +465,8 @@ if(DM_ANDROID_VULKAN)
     add_executable(dm_touch_hud_swapchain_test tests/touch_hud_swapchain.c vulkan/vk_swapchain.c runtime/touch_hud_swapchain.c runtime/touch_hud.c)
     target_include_directories(dm_touch_hud_swapchain_test PRIVATE runtime ../ios/Sources vulkan)
     target_compile_options(dm_touch_hud_swapchain_test PRIVATE -Wall -Wextra -Werror)
-    target_compile_definitions(dm_touch_hud_swapchain_test PRIVATE DM_TOUCH_HUD_GEOMETRY_ONLY)
+    target_compile_definitions(dm_touch_hud_swapchain_test PRIVATE
+        DM_TOUCH_HUD_GEOMETRY_ONLY DM_TOUCH_HUD_TEST_CALLOC=hud_test_calloc)
     target_link_libraries(dm_touch_hud_swapchain_test PRIVATE dm_android_touch_core m)
     foreach(symbol vkGetPhysicalDeviceSurfaceCapabilitiesKHR vkGetPhysicalDeviceSurfaceFormatsKHR
         vkGetPhysicalDeviceSurfacePresentModesKHR vkGetPhysicalDeviceFormatProperties vkCreateSwapchainKHR
@@ -488,7 +489,8 @@ if(DM_ANDROID_VULKAN)
     target_include_directories(dm_touch_hud_swapchain_mutant_test PRIVATE runtime ../ios/Sources vulkan)
     target_compile_options(dm_touch_hud_swapchain_mutant_test PRIVATE -Wall -Wextra -Werror)
     target_compile_definitions(dm_touch_hud_swapchain_mutant_test PRIVATE
-        DM_TOUCH_HUD_GEOMETRY_ONLY vkCmdDraw=mutant_vkCmdDraw DM_HUD_TEST_MUTANT_NO_DRAW)
+        DM_TOUCH_HUD_GEOMETRY_ONLY DM_TOUCH_HUD_TEST_CALLOC=hud_test_calloc
+        vkCmdDraw=mutant_vkCmdDraw DM_HUD_TEST_MUTANT_NO_DRAW)
     target_link_libraries(dm_touch_hud_swapchain_mutant_test PRIVATE dm_android_touch_core m)
     foreach(symbol vkGetPhysicalDeviceSurfaceCapabilitiesKHR vkGetPhysicalDeviceSurfaceFormatsKHR
         vkGetPhysicalDeviceSurfacePresentModesKHR vkGetPhysicalDeviceFormatProperties vkCreateSwapchainKHR

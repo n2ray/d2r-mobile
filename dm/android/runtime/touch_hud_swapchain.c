@@ -6,6 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef DM_TOUCH_HUD_TEST_CALLOC
+#define DM_TOUCH_HUD_TEST_CALLOC calloc
+#else
+void *DM_TOUCH_HUD_TEST_CALLOC(size_t count, size_t size);
+#endif
+
 static int hud_chain_matches(const dm_vk_swapchain *chain, const dm_touch_hud_swapchain *p)
 {
     return chain && p && chain->render_pass && chain->format &&
@@ -22,7 +28,7 @@ static void destroy_owned(dm_vk *vk, dm_touch_hud_swapchain *p)
 {
     if (!p) return;
     if (vk && vk->device) {
-        for (uint32_t i = 0; i < p->image_count; i++)
+        for (uint32_t i = 0; p->vertex_buffers && i < p->image_count; i++)
             dm_vk_buffer_destroy(vk, &p->vertex_buffers[i]);
         if (p->pipeline) vkDestroyPipeline(vk->device, p->pipeline, NULL);
         if (p->pipeline_layout) vkDestroyPipelineLayout(vk->device, p->pipeline_layout, NULL);
@@ -116,7 +122,7 @@ VkResult dm_touch_hud_swapchain_create(dm_vk *vk, const dm_vk_swapchain *chain,
                                         NULL, &out->pipeline);
     if (result != VK_SUCCESS) goto fail;
 
-    out->vertex_buffers = calloc(out->image_count, sizeof(*out->vertex_buffers));
+    out->vertex_buffers = DM_TOUCH_HUD_TEST_CALLOC(out->image_count, sizeof(*out->vertex_buffers));
     if (!out->vertex_buffers) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail; }
     dm_vk_buffer_info info = {.size = (VkDeviceSize)out->vertex_capacity * sizeof(dm_touch_hud_vertex),
         .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT};
