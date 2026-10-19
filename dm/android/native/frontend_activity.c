@@ -328,9 +328,11 @@ uint64_t front_game_res(int docked) {
     // proportional to the phone, capped at 1920. A 16:9/narrower/invalid surface keeps the original
     // constants; explicit DM_GAME_RES remains the compatibility/high-resolution entry.
     if(!have_env&&!phone_w){
-        unsigned sw=0,sh=0;
-        if(application){pthread_mutex_lock(&application->lock);ANativeWindow *win=application->window;if(win){sw=(unsigned)ANativeWindow_getWidth(win);sh=(unsigned)ANativeWindow_getHeight(win);}pthread_mutex_unlock(&application->lock);}
-        if(dm_game_output_phone(sw,sh,&phone_w,&phone_h)){w=phone_w;h=phone_h;}
+        int sw=0,sh=0;
+        if(application){pthread_mutex_lock(&application->lock);ANativeWindow *win=application->window;if(win){sw=ANativeWindow_getWidth(win);sh=ANativeWindow_getHeight(win);}pthread_mutex_unlock(&application->lock);}
+        // 先按有符号值拒绝负/零/过小尺寸，绝不把负值转成巨大的 unsigned。
+        // Reject negative/zero/undersized signed dimensions before any unsigned conversion.
+        if(sw>=320&&sh>=240&&sw>sh&&dm_game_output_phone((unsigned)sw,(unsigned)sh,&phone_w,&phone_h)){w=phone_w;h=phone_h;}
     } else if(!have_env&&phone_w){w=phone_w;h=phone_h;}
     // 手机比例对主机/掌机两档都给同一张 720 级画面；不能再按 0.8 缩一遍，否则掌机档又回到 16:9 高度。
     // The phone-aspect path gives both docked and handheld profiles the same 720-level picture; the

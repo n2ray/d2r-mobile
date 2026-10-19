@@ -30,6 +30,10 @@ int main(void) {
     CHECK(fallback(0, 0));                          // no window
     CHECK(fallback(319, 240));                      // invalid tiny surface
     CHECK(fallback(320, 239));
+    CHECK(fallback(0xffffffffu, 240));              // UINT_MAX: no float-cast overflow
+    CHECK(fallback(0xffffffffu, 1080));
+    CHECK(fallback(16385, 720));                    // absurd surface bound
+    CHECK(fallback(240, 0xffffffffu));
     puts("PASS: phone-aspect output bounded at 720 height; 16:9/invalid/portrait fall back");
     return 0;
 }
