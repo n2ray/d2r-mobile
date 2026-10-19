@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "dm_touch_game_identity.h"
 #include <string.h>
 #ifdef __APPLE__
