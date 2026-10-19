@@ -1098,7 +1098,7 @@ static int text_begin(app_state*s){
     jstring class_name=NULL;
     jclass bridge_class=NULL;
     jmethodID get_loader=NULL,load_class=NULL,constructor=NULL,show_method=NULL,hide_method=NULL,release_method=NULL;
-    int result=0,shown=0,released=0;
+    int result=0,released=0;
     uint64_t session=++g_text_next_session;
     if(!session)session=++g_text_next_session;
     if(!(activity_class=(*env)->GetObjectClass(env,s->activity->clazz)))goto fail;
@@ -1128,7 +1128,6 @@ static int text_begin(app_state*s){
         LOG("text input session show rejected");
         goto fail;
     }
-    shown=1;
     if(!s->text_active||s->text_session!=session){
         LOG("text input session became terminal during show; not claiming display");
         if(release_method){
@@ -1158,7 +1157,7 @@ static int text_begin(app_state*s){
     goto done;
 fail:
     if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
-    if(bridge&&shown&&release_method&&!released){
+    if(bridge&&release_method&&!released){
         (void)(*env)->CallBooleanMethod(env,bridge,release_method);
         if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
     }

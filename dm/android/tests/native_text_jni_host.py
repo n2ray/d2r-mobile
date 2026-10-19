@@ -282,7 +282,7 @@ static int test_show_failure_and_exception(JNIEnv *env) {
     show_result = 0;
     CHECK(text_begin(&a) == 0);
     CHECK(!a.text_active && !a.text_show_accepted && a.text_bridge == NULL && a.text_class == NULL);
-    CHECK(g_text_app == NULL && show_calls == 1 && release_calls == 0);
+    CHECK(g_text_app == NULL && show_calls == 1 && release_calls == 1);
     show_result = 1; show_exception = 1;
     CHECK(text_begin(&a) == 0);
     CHECK(!pending && !a.text_active && a.text_bridge == NULL && g_text_app == NULL);
