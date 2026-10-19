@@ -20,6 +20,7 @@ public final class DmImeInsetsObserver {
     private View view;
     private long sessionGeneration;
     private long sequence;
+    private long attachToken;
     private boolean attached;
     private DmImeInsetsObservation observation = DmImeInsetsObservation.none();
 
@@ -38,7 +39,8 @@ public final class DmImeInsetsObserver {
         sequence++;
         observation = DmImeInsetsObservation.none();
         attached = true;
-        view.setOnApplyWindowInsetsListener(this::onApplyWindowInsets);
+        final long token = ++attachToken;
+        view.setOnApplyWindowInsetsListener((source, insets) -> onApplyWindowInsets(token, source, insets));
         view.requestApplyInsets();
     }
 
@@ -50,6 +52,7 @@ public final class DmImeInsetsObserver {
         }
         view = null;
         attached = false;
+        attachToken++;
         sessionGeneration = 0;
         sequence++;
         observation = DmImeInsetsObservation.none();
@@ -60,15 +63,18 @@ public final class DmImeInsetsObserver {
         return observation;
     }
 
-    private WindowInsets onApplyWindowInsets(View source, WindowInsets insets) {
-        if (!attached || source != view) return insets;
+    private WindowInsets onApplyWindowInsets(long token, View source, WindowInsets insets) {
+        if (!attached || token != attachToken || source != view) return insets;
         if (Looper.myLooper() != mainLooper) return insets;
         sequence++;
         if (Build.VERSION.SDK_INT < 30) {
             observation = DmImeInsetsObservation.unknown(sessionGeneration, sequence);
             return insets;
         }
-        observation = DmImeInsetsApi30.observe(insets, sessionGeneration, sequence);
+        View root = source.getRootView();
+        int width = root == null ? 0 : root.getWidth();
+        int height = root == null ? 0 : root.getHeight();
+        observation = DmImeInsetsApi30.observe(insets, width, height, sessionGeneration, sequence);
         return insets;
     }
 

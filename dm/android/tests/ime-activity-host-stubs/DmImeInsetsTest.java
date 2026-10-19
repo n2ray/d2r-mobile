@@ -21,6 +21,8 @@ public final class DmImeInsetsTest {
     private static Activity activityWithNativeContent() {
         Activity activity = new Activity();
         ViewGroup content = new ViewGroup(activity);
+        content.width = 1000;
+        content.height = 800;
         View nativeSurface = new View(activity);
         content.addView(nativeSurface);
         activity.setContentView(content);
@@ -85,6 +87,17 @@ public final class DmImeInsetsTest {
         check(bounded.left == 0 && bounded.top == 0 && bounded.right == 6 && bounded.bottom == 7,
                 "negative geometry safely bounded");
 
+        editor.dispatchApplyWindowInsets(visible(0, 0, Integer.MAX_VALUE, Integer.MAX_VALUE));
+        DmImeInsetsObservation overflow = host.imeInsetsObservation();
+        check(overflow.known && overflow.imeVisible
+                        && overflow.right == content.width && overflow.bottom == content.height,
+                "oversized geometry bounded by actual root extent");
+
+        editor.dispatchApplyWindowInsets(visible(900, 0, 900, 0));
+        DmImeInsetsObservation asymmetric = host.imeInsetsObservation();
+        check(asymmetric.left == 900 && asymmetric.right == 100,
+                "asymmetric compatible pair preserved and bounded");
+
         View.OnApplyWindowInsetsListener stale = editor.getOnApplyWindowInsetsListener();
         check(stale != null, "observer listener is present");
         check(host.hide(), "hide accepted");
@@ -97,6 +110,25 @@ public final class DmImeInsetsTest {
         check(!host.imeInsetsObservation().known
                         && host.imeInsetsObservation().sequence == afterHide.sequence,
                 "stale callback cannot update observation");
+
+        check(host.show(new DmInputConnection.Sink() {
+            public void onCommit(CharSequence text) { }
+            public void onDelete(CharSequence text) { }
+            public void onSubmit(CharSequence text) { }
+            public void onCancel() { }
+        }), "reattach show accepted");
+        View.OnApplyWindowInsetsListener fresh = editor.getOnApplyWindowInsetsListener();
+        check(fresh != null && fresh != stale, "reattach installs a fresh listener");
+        DmImeInsetsObservation afterReattach = host.imeInsetsObservation();
+        stale.onApplyWindowInsets(editor, new WindowInsets(true, Insets.of(0, 0, 0, 800)));
+        check(!host.imeInsetsObservation().known
+                        && host.imeInsetsObservation().sequence == afterReattach.sequence,
+                "old listener cannot overwrite new same-view session");
+        fresh.onApplyWindowInsets(editor, visible(11, 12, 13, 14));
+        DmImeInsetsObservation freshObservation = host.imeInsetsObservation();
+        check(freshObservation.known && freshObservation.left == 11
+                        && freshObservation.right == 13, "new listener still updates");
+        check(host.hide(), "reattach hide accepted");
 
         check(host.release(), "release accepted");
         check(!host.release(), "second release idempotent");
@@ -125,6 +157,24 @@ public final class DmImeInsetsTest {
         check(!unknown.known && !unknown.imeVisible, "API29 observation explicitly unknown");
         check(WindowInsets.apiCalls == 0, "API29 never calls API30 Type/isVisible/getInsets");
         legacy.hide();
+
+        // An unmeasured root extent must stay unknown instead of inventing bounds.
+        Build.VERSION.SDK_INT = 30;
+        Activity unmeasuredActivity = activityWithNativeContent();
+        ViewGroup unmeasuredContent = contentOf(unmeasuredActivity);
+        unmeasuredContent.width = 0;
+        unmeasuredContent.height = 0;
+        DmTextEditorHost unmeasured = new DmTextEditorHost(unmeasuredActivity, new InputMethodManager());
+        check(unmeasured.show(new DmInputConnection.Sink() {
+            public void onCommit(CharSequence text) { }
+            public void onDelete(CharSequence text) { }
+            public void onSubmit(CharSequence text) { }
+            public void onCancel() { }
+        }), "unmeasured show accepted");
+        editorOf(unmeasuredActivity).dispatchApplyWindowInsets(visible(1, 2, 3, 4));
+        check(!unmeasured.imeInsetsObservation().known,
+                "unmeasured root extent reports unknown");
+        unmeasured.hide();
 
         // Off-main host control is rejected before touching the observer.
         Build.VERSION.SDK_INT = 30;

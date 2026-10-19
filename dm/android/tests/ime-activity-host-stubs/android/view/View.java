@@ -25,6 +25,8 @@ public class View {
     private boolean focused;
     public static boolean rejectFocus;
     public int requestApplyInsetsCalls;
+    public int width;
+    public int height;
 
     public View(Context context) {
         this.context = context;
@@ -36,6 +38,18 @@ public class View {
 
     public final ViewParent getParent() {
         return parent;
+    }
+
+    public int getWidth() {
+        return width;
+    }
+
+    public int getHeight() {
+        return height;
+    }
+
+    public View getRootView() {
+        return parent instanceof View ? ((View) parent).getRootView() : this;
     }
 
     void setParent(ViewParent parent) {
