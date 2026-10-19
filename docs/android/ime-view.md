@@ -16,8 +16,8 @@ does not handle keyboard insets, occlusion or a guest text consumer yet.
 - `isSessionActive()` is the only gameplay gate signal in this slice. A caller
   may pause game touch while it is true; no native/guest callback is invented.
 - `onCreateInputConnection(EditorInfo)` fills a plain-text, no-suggestion
-  contract with `IME_ACTION_DONE`, no personalized learning, zero initial
-  selection and the session's one accepted `DmInputConnection`. Repeated
+  contract with `IME_ACTION_DONE`, no personalized learning and the session's one
+  accepted `DmInputConnection`. Repeated
   platform queries reuse that connection and preserve committed/composing text;
   `initialSelStart`/`initialSelEnd` report the current logical cursor. Only a new
   `show()` starts a new session and closes the old connection. The accepted
