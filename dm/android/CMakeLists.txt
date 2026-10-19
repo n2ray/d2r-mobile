@@ -588,14 +588,20 @@ if(NOT ANDROID)
                 --app ${CMAKE_CURRENT_SOURCE_DIR}/app
                 --cc ${CMAKE_C_COMPILER})
         set_tests_properties(native_callbacks PROPERTIES TIMEOUT 120)
-        # The fixture compiles actual vk_host.h/wsi_frame_result.h, so use the
-        # same CMake-resolved Vulkan include path as the native Vulkan targets.
-        if(NOT TARGET Vulkan::Vulkan)
-            find_package(Vulkan REQUIRED)
-        endif()
+        # The fixture compiles actual vk_host.h/wsi_frame_result.h. Prefer an
+        # already-resolved official Vulkan include directory; otherwise fetch
+        # only the pinned Khronos headers (types/constants), never a loader/SDK.
+        # Vulkan-OFF host CI still needs and runs these two tests.
         set(WSI_HUD_VULKAN_INCLUDE "${Vulkan_INCLUDE_DIR}")
-        if(NOT WSI_HUD_VULKAN_INCLUDE)
-            set(WSI_HUD_VULKAN_INCLUDE "${Vulkan_INCLUDE_DIRS}")
+        if(NOT WSI_HUD_VULKAN_INCLUDE OR NOT EXISTS "${WSI_HUD_VULKAN_INCLUDE}/vulkan/vulkan.h")
+            include(FetchContent)
+            FetchContent_Declare(dm_vulkan_headers
+                URL https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/c46850864f4661461b0f6cb9922c058ffea4915e
+                URL_HASH SHA256=539ff8eaa4abf22fddbd98225c68a0c5ddb940075a4048c8b7f5d04449070a4e
+                DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+                SOURCE_SUBDIR unused)
+            FetchContent_MakeAvailable(dm_vulkan_headers)
+            set(WSI_HUD_VULKAN_INCLUDE "${dm_vulkan_headers_SOURCE_DIR}/include")
         endif()
         add_test(NAME wsi_hud_caller
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/wsi_hud_host.py
