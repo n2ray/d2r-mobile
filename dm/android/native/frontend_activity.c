@@ -327,7 +327,14 @@ static void *boot(void *argument) {
     // linked to fake empty functions.
     char *args[]={"dmhost-android",metadata,"main","sdk","subsdk0",NULL};int dm_main(int,char**);dm_main(5,args);ANativeActivity_finish(s->activity);return NULL;
 }
-void front_run(void (*guest)(void)) {void mtl_init(void);mtl_init();game_app *s=application;if(!pthread_create(&s->debug_thread,NULL,progress_watch,s))s->debug_started=1;guest();}
+void front_run(void (*guest)(void)) {void mtl_init(void);mtl_init();game_app *s=application;
+    // The original guest binding bridge attaches after load_modules, on this
+    // guest thread, exactly like front_ios. Missing gate 6 or a non-main module
+    // leaves supported=0; it never fabricates readiness or player identity.
+    { void dm_touch_game_live_check(int); int dm_touch_game_attach(void);
+      dm_touch_game_live_check(1);
+      if(!dm_touch_game_attach()) LOG("[android-touch] skill binding snapshot unavailable: gate6 absent or main module mismatch"); }
+    if(!pthread_create(&s->debug_thread,NULL,progress_watch,s))s->debug_started=1;guest();}
 void *front_metal_layer(void) {if(!application)return NULL;pthread_mutex_lock(&application->lock);ANativeWindow *w=application->window;pthread_mutex_unlock(&application->lock);return w;}
 // 出图分辨率。与 Mac（front_mac.m）和 iOS（front_ios.m）同一语义：DM_GAME_RES=宽x高 覆盖主机档，
 // 掌机档按 720/900 = 0.8 同比缩放；没有该变量时保持原版 16:9 常数（1600x900 / 1280x720），行为不变。
@@ -452,6 +459,8 @@ static void live_touch_sync(game_app *s) {
     dm_live_touch_scene_observation snapshot;
     if(!dm_live_touch_provider_observe(&s->live_provider,&snapshot)){
         live_touch_set_available(s,0);
+        { void dm_touch_game_set_scene(int,uint64_t,uint64_t);
+          dm_touch_game_set_scene(0,0,0); }
         memset(&s->live_observation,0,sizeof s->live_observation);
         // Unknown identity is a real caller boundary: cancel the original UI
         // phase-3 press, the live core and the legacy raw pointer ownership.
@@ -462,6 +471,9 @@ static void live_touch_sync(game_app *s) {
         return;
     }
     s->live_observation=snapshot;
+    { void dm_touch_game_set_scene(int,uint64_t,uint64_t);
+      dm_touch_game_set_scene(snapshot.scene==DM_LIVE_TOUCH_SCENE_GAME,
+                              snapshot.scene_epoch,snapshot.world_epoch); }
     live_touch_set_available(s,1);
     int navigation=snapshot.scene!=DM_LIVE_TOUCH_SCENE_GAME||snapshot.panel_bits||atomic_load(&menu_open);
     uint32_t mask=navigation?(dm_tc_nav_mask(1)|(1u<<DM_TC_MENU)):
@@ -473,6 +485,10 @@ static void live_touch_sync(game_app *s) {
     if(s->live_items)
         (void)dm_live_touch_items_set_context(s->live_items,snapshot.scene_epoch,
             snapshot.world_epoch,snapshot.ui_identity,navigation);
+    { dm_tg_snapshot skill_snapshot; int have_skill=dm_touch_game_snapshot(&skill_snapshot);
+      dm_live_touch_set_skill_snapshot(s->live_touch,have_skill?&skill_snapshot:NULL,
+                                       snapshot.scene_epoch,snapshot.world_epoch);
+      dm_live_touch_set_skill_bind_active(s->live_touch,dm_ui_bind_active()); }
     if(!navigation){
         int expanded=0, rows=dm_belt_rows(&expanded);
         if(!dm_live_touch_set_belt(s->live_touch,rows,expanded))
@@ -528,6 +544,11 @@ static void live_touch_consume_items(game_app *s) {
         s->live_observation.scene_epoch, s->live_observation.world_epoch,
         s->live_observation.ui_identity, &actions);
 }
+static void begin_skill_bind_host(void *context, uint64_t key) {
+    (void)context;
+    dm_ui_bind_begin(key);
+    LOG("[android-touch] empty skill slot tap -> dm_ui_bind_begin key=%#llx",(unsigned long long)key);
+}
 static void live_touch_consume_belt(game_app *s) {
     if(!s->live_touch||!live_touch_mode_enabled()||!s->live_provider_available)return;
     live_touch_sync(s);
@@ -554,6 +575,14 @@ static void live_touch_consume_portal(game_app *s) {
     (void)dm_live_touch_consume_portal_request(s->live_touch,
         s->live_observation.scene_epoch,s->live_observation.world_epoch,
         s->live_observation.ui_identity,&actions);
+}
+static void live_touch_consume_skill_bind(game_app *s) {
+    if(!s->live_touch||!live_touch_mode_enabled()||!s->live_provider_available)return;
+    live_touch_sync(s);
+    if(!s->live_provider_available)return;
+    dm_live_touch_skill_bind_actions actions={s,begin_skill_bind_host};
+    (void)dm_live_touch_consume_skill_bind_request(s->live_touch,
+        s->live_observation.scene_epoch,s->live_observation.world_epoch,&actions);
 }
 static void pad_publish(game_app *s) {
     live_touch_sync(s);
@@ -593,6 +622,7 @@ static int touch_timer_tick(int fd,int events,void *data) {
     live_touch_consume_belt(s);
     live_touch_consume_difficulty(s);
     live_touch_consume_portal(s);
+    live_touch_consume_skill_bind(s);
     if(!needs)touch_timer_stop(s);
     return 1;
 }
@@ -737,6 +767,7 @@ static int input_ready(int fd,int events,void *data) {
                         live_touch_consume_belt(s);
                         live_touch_consume_difficulty(s);
                         live_touch_consume_portal(s);
+                        live_touch_consume_skill_bind(s);
                         handled=1;
                     }else handled=1;
                 }else LOG("[android-touch] pointer count %u exceeds 16; refusing the event",count);
