@@ -1094,7 +1094,7 @@ static int text_begin(app_state*s){
     if(!(class_name=(*env)->NewStringUTF(env,"org.d2rmobile.android.diagnostic.DmTextEditorJniBridge")))goto fail;
     if(!(bridge_class=(jclass)(*env)->CallObjectMethod(env,loader,load_class,class_name))||text_jni_stage_failed(env,"text bridge class load"))goto fail;
     {
-        JNINativeMethod method={"nativeTextEvent","(JIII)V",(void*)native_text_event};
+        JNINativeMethod method={"nativeTextEvent","(JII)V",(void*)native_text_event};
         if((*env)->RegisterNatives(env,bridge_class,&method,1)!=0||text_jni_stage_failed(env,"text native registration"))goto fail;
     }
     if(!(constructor=(*env)->GetMethodID(env,bridge_class,"<init>","(Landroid/app/Activity;J)V"))||text_jni_stage_failed(env,"text constructor signature"))goto fail;
