@@ -12,24 +12,27 @@ static int parse(const char *line, unsigned *slot, unsigned *index) {
 int main(void) {
     unsigned slot, index, slots[8], page_slots = 2048;
     char error[128];
-    // Exact current producer slots/order: K18 508, KTLS 509, KTLR 510, KGATE 511, KRES0 506, KRES1 507, KASPECT 505, KASPECTUI 504.
+    // Current producer contract: patch_nso.py writes KEY_INDEX, an enumerate of these eight names, so
+    // K18..KASPECTUI are emitted as 0..7 in this order (the old KEYS 504..511 table is not the output).
     static const char *const lines[8] = {
-        "# KEY_K18_IDX\t508\n", "# KEY_KTLS_IDX\t509\n", "# KEY_KTLR_IDX\t510\n", "# KEY_KGATE_IDX\t511\n",
-        "# KEY_KRES0_IDX\t506\n", "# KEY_KRES1_IDX\t507\n", "# KEY_KASPECT_IDX\t505\n", "# KEY_KASPECTUI_IDX\t504\n"
+        "# KEY_K18_IDX\t0\n", "# KEY_KTLS_IDX\t1\n", "# KEY_KTLR_IDX\t2\n", "# KEY_KGATE_IDX\t3\n",
+        "# KEY_KRES0_IDX\t4\n", "# KEY_KRES1_IDX\t5\n", "# KEY_KASPECT_IDX\t6\n", "# KEY_KASPECTUI_IDX\t7\n"
     };
     for (int i = 0; i < 8; ++i) {
         CHECK(parse(lines[i], &slot, &index) == DM_LAYOUT_KEY_OK);
+        CHECK(slot == (unsigned)i);          // each parsed line maps to its producer key slot
+        CHECK(index == (unsigned)i);         // and carries the producer's emitted index
         slots[slot] = index;
     }
     CHECK(dm_layout_slots_valid(slots, 8, page_slots, 8, error, sizeof error) == 0);
     CHECK(dm_layout_slots_valid(slots, 8, page_slots, -1, error, sizeof error) == 0);
 
-    CHECK(parse("# KEY_K18_IDX 508\n", &slot, &index) == DM_LAYOUT_KEY_MALFORMED);   // no tab
+    CHECK(parse("# KEY_K18_IDX 0\n", &slot, &index) == DM_LAYOUT_KEY_MALFORMED);   // no tab
     CHECK(parse("# KEY_K18_IDX\t-1\n", &slot, &index) == DM_LAYOUT_KEY_MALFORMED);
     CHECK(parse("# KEY_K18_IDX\t0x10\n", &slot, &index) == DM_LAYOUT_KEY_MALFORMED);
     CHECK(parse("# KEY_K18_IDX\t999999999999999999999\n", &slot, &index) == DM_LAYOUT_KEY_MALFORMED);
     CHECK(parse("# KEY_K18_IDX\t5 junk\n", &slot, &index) == DM_LAYOUT_KEY_MALFORMED);
-    CHECK(parse("# KEY_K18_IDX\t508\njunk", &slot, &index) == DM_LAYOUT_KEY_MALFORMED);
+    CHECK(parse("# KEY_K18_IDX\t0\njunk", &slot, &index) == DM_LAYOUT_KEY_MALFORMED);
     CHECK(parse("# PATCH_OFF\t0x1000\n", &slot, &index) == DM_LAYOUT_NOT_KEY);
 
     unsigned bad[8] = {0, 1, 2, 3, 4, 5, 6, 7};
