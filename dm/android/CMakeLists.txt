@@ -588,6 +588,16 @@ if(NOT ANDROID)
                 --app ${CMAKE_CURRENT_SOURCE_DIR}/app
                 --cc ${CMAKE_C_COMPILER})
         set_tests_properties(native_callbacks PROPERTIES TIMEOUT 120)
+        add_test(NAME wsi_hud_caller
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/wsi_hud_host.py
+                --native ${CMAKE_CURRENT_SOURCE_DIR}/app/native.c
+                --cc ${CMAKE_C_COMPILER})
+        set_tests_properties(wsi_hud_caller PROPERTIES TIMEOUT 120)
+        add_test(NAME wsi_hud_no_record_mutant
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/wsi_hud_host.py
+                --native ${CMAKE_CURRENT_SOURCE_DIR}/app/native.c
+                --cc ${CMAKE_C_COMPILER} --mutant)
+        set_tests_properties(wsi_hud_no_record_mutant PROPERTIES TIMEOUT 120)
         add_test(NAME native_text_jni
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/native_text_jni_host.py
                 --native ${CMAKE_CURRENT_SOURCE_DIR}/app/native.c

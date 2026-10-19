@@ -200,15 +200,21 @@ def main() -> int:
     text = Path(args.native).read_text()
     if args.mutant:
         text = text.replace("&&s->wsi_hud_live&&!wsi_record_hud(s)", "&&0")
+    root = Path(__file__).resolve().parents[3]
+    vulkan_inc = [p for p in ("/opt/homebrew/include", "/usr/local/include")
+                  if (Path(p) / "vulkan/vulkan.h").exists()]
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
         c = work / "wsi_hud.c"
         exe = work / "wsi_hud"
         c.write_text(build(text))
         cmd = [args.cc, "-std=gnu11", "-g", "-Wall", "-Wextra", "-Werror",
-               "-Wno-unused-parameter", "-I", "dm/android/app", "-I", "dm/android/runtime",
-               "-I", "dm/android/vulkan", "-I", "dm/ios/Sources", "-I", "/opt/homebrew/include",
-               "-o", str(exe), str(c), "dm/android/app/wsi_frame_result.c"]
+               "-Wno-unused-parameter", "-I", str(root / "dm/android/app"),
+               "-I", str(root / "dm/android/runtime"), "-I", str(root / "dm/android/vulkan"),
+               "-I", str(root / "dm/ios/Sources")]
+        for p in vulkan_inc:
+            cmd += ["-I", p]
+        cmd += ["-o", str(exe), str(c), str(root / "dm/android/app/wsi_frame_result.c")]
         if args.mutant:
             cmd.insert(4, "-Wno-unused-function")
         subprocess.run(cmd, check=True)
