@@ -1088,7 +1088,7 @@ static int text_begin(app_state*s){
     if(!session)session=++g_text_next_session;
     if(!(activity_class=(*env)->GetObjectClass(env,s->activity->clazz)))goto fail;
     if(!(get_loader=(*env)->GetMethodID(env,activity_class,"getClassLoader","()Ljava/lang/ClassLoader;"))||text_jni_stage_failed(env,"activity getClassLoader signature"))goto fail;
-    if(!(loader=(*env)->CallObjectMethod(env,s->activity->clazz,get_loader))||text_jni_stage_failed(env,"activity class loader"))goto fail;
+    if(!(loader=(*env)->CallObjectMethod(env, s->activity->clazz, get_loader))||text_jni_stage_failed(env,"activity class loader"))goto fail;
     if(!(loader_class=(*env)->GetObjectClass(env,loader)))goto fail;
     if(!(load_class=(*env)->GetMethodID(env,loader_class,"loadClass","(Ljava/lang/String;)Ljava/lang/Class;"))||text_jni_stage_failed(env,"loadClass signature"))goto fail;
     if(!(class_name=(*env)->NewStringUTF(env,"org.d2rmobile.android.diagnostic.DmTextEditorJniBridge")))goto fail;
