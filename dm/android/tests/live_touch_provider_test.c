@@ -4,6 +4,8 @@
 #include "live_touch_provider.h"
 #include "live_touch.h"
 #include "../ios/Sources/dm_touch_controls.h"
+#include "../runtime/touch_game_bridge.h"
+#include "../runtime/touch_adapter.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -145,6 +147,22 @@ int main(void) {
     CHECK(psnap.available && psnap.scene == DM_TGP_SCENE_GAME && psnap.ui_identity == 9);
     prod_hud_valid = 0;
     CHECK(!dm_live_touch_provider_refresh(&prod, &psnap));
+
+    // The same production provider interface is accepted by the existing
+    // runtime game bridge (scene refresh only; hit/action stay unavailable).
+    prod_hud_valid = 1; prod_ui_gen = 10; prod_now = 1900000000;
+    CHECK(dm_live_touch_provider_refresh(&prod, &psnap));
+    dm_android_pad *pad = dm_android_pad_create();
+    dm_android_touch *adapter = pad ? dm_android_touch_create(pad, 667, 375) : NULL;
+    CHECK(pad && adapter);
+    dm_touch_game_bridge *game = dm_touch_game_bridge_create(
+        adapter, dm_live_touch_provider_interface(&prod));
+    CHECK(game != NULL);
+    CHECK(dm_touch_game_bridge_refresh(game, 1900000000));
+    CHECK(dm_touch_game_bridge_available(game));
+    dm_touch_game_bridge_destroy(game);
+    dm_android_touch_destroy(adapter);
+    dm_android_pad_destroy(pad);
 
     dm_live_touch_destroy(touch);
     puts("PASS: production provider scene/identity observations cancel old context and reject unknown/late input");
