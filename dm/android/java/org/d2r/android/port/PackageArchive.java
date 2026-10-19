@@ -140,6 +140,28 @@ final class PackageArchive {
             throw new Failure("dmAndroidLaunchImportBadEntry", name);
     }
 
+    // 已安装包的只读就绪检查：manifest 在，十二个必需文件在，三个模块各自的 target 内容正确。
+    // 只读这 12 个文件（其中 marker 很小），不遍历资源、不删除任何东西。
+    // Read-only readiness check for an installed package: manifest present, the twelve required files
+    // present and each module's own target valid. Reads only these twelve files (markers are small),
+    // never walks resources and never deletes anything.
+    static boolean isReady(File assets, File modules) {
+        if (!new File(assets, MANIFEST).isFile()) return false;
+        for (String name : requiredModules()) {
+            File file = new File(modules, name);
+            if (!file.isFile()) return false;
+            if (name.endsWith(".so") && file.length() == 0) return false;
+            if (name.endsWith(TARGET_SUFFIX)) {
+                try {
+                    validateTarget(file, name);
+                } catch (IOException error) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     // 条目名必须"干净"：不许有空段、"." 或 ".."，也不许绝对路径或反斜杠。
     // 只靠规范化路径是不够的 —— `romfs/../manifest.json` 规范化后落在包目录之内，会在正常写清单**之前**
     // 就把"完成标记"放进去，绕过"最后才写 manifest"的顺序保证。

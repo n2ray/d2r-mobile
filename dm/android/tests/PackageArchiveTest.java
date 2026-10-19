@@ -66,6 +66,30 @@ public final class PackageArchiveTest {
         }
     }
 
+    private static File readyFixture(String marker) throws IOException {
+        File root = Files.createTempDirectory("package-ready-test").toFile();
+        File assets = new File(root, "assets");
+        File game = new File(root, "game");
+        assets.mkdirs();
+        game.mkdirs();
+        try (FileOutputStream out = new FileOutputStream(new File(assets, "manifest.json"))) { out.write('x'); }
+        for (String module : PackageArchive.MODULE_NAMES) {
+            try (FileOutputStream out = new FileOutputStream(new File(game, "libdmguest_" + module + ".so"))) { out.write(1); }
+            for (String kind : PackageArchive.LAYOUT_KINDS)
+                try (FileOutputStream out = new FileOutputStream(new File(game, module + "." + kind + ".tsv"))) { }
+            try (FileOutputStream out = new FileOutputStream(new File(game, module + ".target"))) {
+                out.write(marker.getBytes(StandardCharsets.US_ASCII));
+            }
+        }
+        return root;
+    }
+
+    private static void expectReady(File root, boolean expected, String what) {
+        boolean ready = PackageArchive.isReady(new File(root, "assets"), new File(root, "game"));
+        check(ready == expected, what + " (ready=" + ready + ")");
+        check(new File(root, "assets/manifest.json").isFile(), what + ": readiness must not delete manifest");
+    }
+
     public static void main(String[] args) throws Exception {
         check(PackageArchive.requiredModules().size() == 12, "requiredModules must be twelve entries");
         check(PackageArchive.requiredModules().contains("main.target"), "main.target required");
@@ -83,6 +107,23 @@ public final class PackageArchiveTest {
         expectFailure(archive(true, "apple-context-v1\n"), "dmAndroidLaunchImportBadEntry");
         expectFailure(archive(true, ""), "dmAndroidLaunchImportBadEntry");
         expectFailure(archive(true, "android-context-v1\njunk"), "dmAndroidLaunchImportBadEntry");
+
+        // Installed-package readiness (no import transaction): old/missing/wrong/malformed must be not ready,
+        // and the check must not delete the previous manifest or data.
+        File ready = readyFixture("android-context-v1\n");
+        expectReady(ready, true, "valid installed package");
+        File missing = readyFixture("android-context-v1");
+        check(new File(missing, "game/main.target").delete(), "fixture remove main.target");
+        expectReady(missing, false, "pre-upgrade package without main.target");
+        File wrong = readyFixture("apple-context-v1\n");
+        expectReady(wrong, false, "installed wrong target");
+        check(new File(wrong, "game/sdk.target").isFile(), "wrong target file must remain after readiness check");
+        File malformed = readyFixture("");
+        expectReady(malformed, false, "installed malformed/empty target");
+        File legacy = readyFixture("android-context-v1\n");
+        for (String module : PackageArchive.MODULE_NAMES)
+            check(new File(legacy, "game/" + module + ".target").delete(), "fixture remove legacy targets");
+        expectReady(legacy, false, "legacy package with nine entries only");
 
         if (failures != 0) throw new AssertionError(failures + " archive contract failures");
         System.out.println("PASS: Java package requires and validates main/sdk/subsdk0.target; rollback preserved");
