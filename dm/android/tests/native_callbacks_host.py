@@ -199,6 +199,7 @@ typedef struct {
     dm_vk vk;
     char vertex[8], fragment[8];
     native_audio *audio;
+    int audio_entry_installed;
 } app_state;
 static app_state *g_controller_app;
 
@@ -217,6 +218,9 @@ static void native_audio_set_focus(native_audio *a, int focused) {
 static int native_audio_tick(native_audio *a, void *env) {
     (void)a; (void)env; audio_tick_calls++; return 0;
 }
+static int audio_entry_install_calls, audio_entry_uninstall_calls;
+static int audio_entry_install(app_state *s) { (void)s; audio_entry_install_calls++; return 1; }
+static void audio_entry_uninstall(app_state *s) { (void)s; audio_entry_uninstall_calls++; }
 
 static int touch_resize_calls, bad_touch_reads, update_calls, stop_calls, start_calls;
 static int lock_calls, frame_calls, fail_open, fail_close, fail_start, frame_status = DM_WSI_OK;
@@ -1313,8 +1317,8 @@ def main() -> int:
         ("cached-window", "s->window=dm_app_lifecycle_surface(s->lifecycle);",
          "/* mutant: omit cached-window synchronization */", "s.window"),
         ("stale-timer",
-         'if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}\n        ime_entry_uninstall(s);\n        (void)native_audio_pause(s->audio);   // 仅当前 WSI 窗口丢失才暂停音频；陈旧回调零副作用\n        stop_frame_timer(s);',
-         'stop_frame_timer(s);\n        if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}\n        ime_entry_uninstall(s);\n        (void)native_audio_pause(s->audio);',
+         'if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}\n        ime_entry_uninstall(s);\n        (void)native_audio_pause(s->audio);   // 仅当前 WSI 窗口丢失才暂停音频；陈旧回调零副作用\n        audio_entry_uninstall(s);\n        stop_frame_timer(s);',
+         'stop_frame_timer(s);\n        if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}\n        ime_entry_uninstall(s);\n        (void)native_audio_pause(s->audio);\n        audio_entry_uninstall(s);',
          "s.frame_fd"),
         ("omit-source-guard",
          "&&\n                 (source&AINPUT_SOURCE_TOUCHSCREEN)==AINPUT_SOURCE_TOUCHSCREEN",

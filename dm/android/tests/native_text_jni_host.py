@@ -21,6 +21,8 @@ from native_callbacks_host import extract_function
 FUNCTIONS = ["text_jni_stage_failed", "native_text_event", "text_end",
              "text_begin_ready", "text_begin", "ime_entry_load_class",
              "ime_entry_install", "ime_entry_uninstall", "native_ime_entry_request",
+             "audio_entry_load_class", "audio_entry_install", "audio_entry_uninstall",
+             "native_audio_entry_play", "native_audio_entry_stop",
              "destroy"]
 
 PRELUDE = r'''
@@ -102,6 +104,9 @@ typedef struct {
     jclass ime_entry_class;
     uint64_t ime_entry_token;
     int ime_entry_installed;
+    jclass audio_entry_class;
+    uint64_t audio_entry_token;
+    int audio_entry_installed;
     int timer_fd, frame_fd;
     dm_vk vk;
     dm_wsi wsi;
@@ -114,11 +119,23 @@ static app_state *g_text_app;
 static uint64_t g_text_next_session;
 static app_state *g_ime_entry_app;
 static uint64_t g_ime_entry_next_token;
+static app_state *g_audio_entry_app;
+static uint64_t g_audio_entry_next_token;
 static int text_begin(app_state *);
 static void text_end(app_state *, const char *);
 static int ime_entry_install(app_state *);
 static void ime_entry_uninstall(app_state *);
 static jboolean native_ime_entry_request(JNIEnv *, jclass, jlong);
+static int audio_entry_install(app_state *);
+static void audio_entry_uninstall(app_state *);
+static jboolean native_audio_entry_play(JNIEnv *, jclass, jlong);
+static jboolean native_audio_entry_stop(JNIEnv *, jclass, jlong);
+#define DM_AS_OK 0
+static int native_audio_play_calls, native_audio_stop_calls;
+static int native_audio_play(native_audio *audio, JNIEnv *env) {
+    (void)audio; (void)env; native_audio_play_calls++; return 0;
+}
+static int native_audio_stop(native_audio *audio) { (void)audio; native_audio_stop_calls++; return 0; }
 static void destroy(ANativeActivity *);
 static int touch_cancel_calls;
 static void touch_cancel(app_state *s, const char *reason, int64_t now) {
@@ -149,7 +166,7 @@ static void dm_vk_destroy(dm_vk *v) { (void)v; }
 typedef struct { int id; } FakeObject;
 static FakeObject activity_obj = {1}, activity2_obj = {2}, activity_class = {3},
     loader_class = {4}, app_loader = {5}, bridge_class = {6}, bridge_obj = {7},
-    entry_class = {8}, string_obj = {9};
+    entry_class = {8}, string_obj = {9}, audio_class = {10};
 static int mid_activity_loader, mid_loadclass, mid_constructor, mid_show, mid_hide, mid_release;
 static int mid_entry_install, mid_entry_uninstall;
 #define MID_ENTRY_INSTALL ((jmethodID)&mid_entry_install)
@@ -174,6 +191,8 @@ static int entry_install_calls, entry_uninstall_calls, entry_install_result = 1;
 static int entry_uninstall_result = 1;
 static jlong entry_install_token, entry_uninstall_token;
 static void *entry_install_activity;
+static int audio_install_calls, audio_uninstall_calls, audio_install_result = 1;
+static int audio_uninstall_result = 1;
 
 static void set_exception(void) { pending = 1; }
 static void native_text_event(JNIEnv *, jclass, jlong, jint, jint);
@@ -205,6 +224,10 @@ static jmethodID fake_get_static_method_id(JNIEnv *env, jclass cls, const char *
         if (strcmp(name, "install") == 0) return MID_ENTRY_INSTALL;
         if (strcmp(name, "uninstall") == 0) return MID_ENTRY_UNINSTALL;
     }
+    if (cls == &audio_class) {
+        if (strcmp(name, "install") == 0) return MID_ENTRY_INSTALL;
+        if (strcmp(name, "uninstall") == 0) return MID_ENTRY_UNINSTALL;
+    }
     set_exception();
     return NULL;
 }
@@ -230,6 +253,7 @@ static jobject fake_load_class(JNIEnv *env, jobject receiver, jmethodID mid, va_
     loaded_from_app_loader = receiver == &app_loader;
     if (receiver != &app_loader) { set_exception(); return NULL; }
     if (last_load_name && strstr(last_load_name, "DmImeTouchEntry")) return &entry_class;
+    if (last_load_name && strstr(last_load_name, "DmAudioTouchEntry")) return &audio_class;
     return &bridge_class;
 }
 static jobject fake_call_object(JNIEnv *env, jobject receiver, jmethodID mid, ...) {
@@ -282,11 +306,17 @@ static jboolean fake_call_boolean(JNIEnv *env, jobject obj, jmethodID mid, ...) 
 }
 static jboolean fake_call_static_boolean(JNIEnv *env, jclass cls, jmethodID mid, ...) {
     (void)env;
-    if (cls != &entry_class) { set_exception(); return 0; }
+    if (cls != &entry_class && cls != &audio_class) { set_exception(); return 0; }
     va_list ap; va_start(ap, mid);
     jobject activity = va_arg(ap, jobject);
     jlong token = va_arg(ap, jlong);
     va_end(ap);
+    if (cls == &audio_class) {
+        if (mid == MID_ENTRY_INSTALL) { (void)activity; (void)token; audio_install_calls++; return (jboolean)audio_install_result; }
+        if (mid == MID_ENTRY_UNINSTALL) { (void)activity; (void)token; audio_uninstall_calls++; return (jboolean)audio_uninstall_result; }
+        set_exception();
+        return 0;
+    }
     if (mid == MID_ENTRY_INSTALL) {
         entry_install_calls++;
         entry_install_activity = activity;
@@ -333,6 +363,8 @@ static void reset_fake(JNIEnv *env) {
     entry_install_result = 1; entry_uninstall_result = 1;
     entry_install_token = entry_uninstall_token = 0;
     entry_install_activity = NULL; root_fail_class = 0;
+    audio_install_calls = audio_uninstall_calls = 0;
+    audio_install_result = audio_uninstall_result = 1;
     g_text_app = NULL; g_text_next_session = 0; touch_cancel_calls = 0;
     g_ime_entry_app = NULL; g_ime_entry_next_token = 0;
     *env = &fake_functions;
@@ -509,6 +541,42 @@ static int test_entry_owner_request(JNIEnv *env) {
     CHECK(g_ime_entry_app == NULL && entry_uninstall_calls == 2);
     CHECK(entry_uninstall_token == (jlong)token);
     CHECK(native_ime_entry_request(env, NULL, (jlong)token) == JNI_FALSE);
+
+    // #211 实际 audio_entry JNI 入口：零自动播放、owner/token、门控、卸载重试。
+    native_audio audio_stub; memset(&audio_stub, 0, sizeof audio_stub);
+    a.audio = &audio_stub;
+    a.resumed = a.focused = 1; a.window = &window;
+    CHECK(audio_entry_install(&a) == 1);
+    CHECK(a.audio_entry_installed && a.audio_entry_token != 0 && a.audio_entry_class == &audio_class);
+    CHECK(audio_install_calls == 1 && native_audio_play_calls == 0 && native_audio_stop_calls == 0);
+    uint64_t audio_token = a.audio_entry_token;
+    CHECK(native_audio_entry_play(env, NULL, (jlong)audio_token + 1) == JNI_FALSE);
+    CHECK(native_audio_entry_play(env, NULL, 0) == JNI_FALSE);
+    CHECK(native_audio_play_calls == 0);
+    b.audio = &audio_stub;
+    CHECK(audio_entry_install(&b) == 0);
+    CHECK(a.audio_entry_installed && g_audio_entry_app == &a && audio_install_calls == 1);
+    CHECK(native_audio_entry_play(env, NULL, (jlong)audio_token) == JNI_TRUE);
+    CHECK(native_audio_play_calls == 1);
+    a.resumed = 0;
+    CHECK(native_audio_entry_play(env, NULL, (jlong)audio_token) == JNI_FALSE);
+    CHECK(native_audio_play_calls == 1);
+    a.resumed = 1; a.window = NULL;
+    CHECK(native_audio_entry_play(env, NULL, (jlong)audio_token) == JNI_FALSE);
+    CHECK(native_audio_play_calls == 1);
+    a.window = &window;
+    CHECK(native_audio_entry_stop(env, NULL, (jlong)audio_token) == JNI_TRUE);
+    CHECK(native_audio_stop_calls == 1);
+    audio_uninstall_result = 0;
+    audio_entry_uninstall(&a);
+    CHECK(!a.audio_entry_installed && a.audio_entry_token == audio_token && a.audio_entry_class == &audio_class);
+    CHECK(audio_uninstall_calls == 1);
+    CHECK(native_audio_entry_stop(env, NULL, (jlong)audio_token) == JNI_FALSE);
+    audio_uninstall_result = 1;
+    audio_entry_uninstall(&a);
+    CHECK(!a.audio_entry_installed && a.audio_entry_token == 0 && a.audio_entry_class == NULL);
+    CHECK(audio_uninstall_calls == 2);
+    CHECK(native_audio_entry_stop(env, NULL, (jlong)audio_token) == JNI_FALSE);
     return 0;
 }
 

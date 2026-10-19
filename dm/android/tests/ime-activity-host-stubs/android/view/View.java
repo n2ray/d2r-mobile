@@ -24,6 +24,7 @@ public class View {
     private boolean focusableInTouchMode;
     private boolean focused;
     private float x, y;
+    private int paddingLeft, paddingTop, paddingRight, paddingBottom;
     public static boolean rejectFocus;
     public int requestApplyInsetsCalls;
     public int width;
@@ -80,6 +81,18 @@ public class View {
     public float getY() {
         return y;
     }
+
+    public void setPadding(int left, int top, int right, int bottom) {
+        paddingLeft = left;
+        paddingTop = top;
+        paddingRight = right;
+        paddingBottom = bottom;
+    }
+
+    public int getPaddingLeft() { return paddingLeft; }
+    public int getPaddingTop() { return paddingTop; }
+    public int getPaddingRight() { return paddingRight; }
+    public int getPaddingBottom() { return paddingBottom; }
 
     public final boolean requestFocus() {
         if (rejectFocus) return false;

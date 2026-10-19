@@ -4,22 +4,17 @@ import android.app.Activity;
 import android.os.Looper;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewParent;
 import android.widget.Button;
+import android.widget.LinearLayout;
 
 /**
  * Owned diagnostic touch entry for the accepted NativeActivity audio controls.
  *
- * <p>Installs two clearly labelled buttons (play/stop) into the existing
- * {@code android.R.id.content}; it never replaces the NativeActivity surface,
- * HUD, IME entry or any peer view. They are offset below the IME entry's
- * default top-left position and never request text/game focus.</p>
- *
- * <p>Construction/install/resume never calls native_audio: only a user click
- * asks the registered native owner through an opaque token. Native validates
- * the current owner/token and the App active/resumed/focused/window guards
- * before sharing the same explicit play/stop path as keyboard P/S. Stale or
- * duplicate clicks after teardown/pause/focus loss are inert.</p>
+ * <p>A small owned vertical {@link LinearLayout} holds the play/stop buttons. Its padding is
+ * density-aware and the platform places children from their measured heights, so larger
+ * buttons/fonts never overlap each other; the container sits below the IME entry's default
+ * top-left position. It never replaces the NativeActivity surface, HUD, IME or peer views and
+ * never changes window/focus settings.</p>
  */
 public final class DmAudioTouchEntry {
     private static final String PLAY_LABEL = "诊断音频 播放";
@@ -31,6 +26,7 @@ public final class DmAudioTouchEntry {
         boolean stop(long token);
     }
 
+    private static LinearLayout ownedContainer;
     private static Button playView;
     private static Button stopView;
     private static Activity ownedActivity;
@@ -44,20 +40,21 @@ public final class DmAudioTouchEntry {
     public static boolean install(Activity activity, long token) {
         requireMainLooper();
         if (activity == null || token == 0) return false;
-        if (playView != null || stopView != null) {
+        if (ownedContainer != null) {
             if (ownedActivity != activity) return false;
-            if (clickAuthorized && ownedToken == token && playView != null && playView.getParent() != null
-                    && stopView != null && stopView.getParent() != null) {
-                return true;
-            }
+            if (clickAuthorized && ownedToken == token && ownedContainer.getParent() != null) return true;
             if (!cleanupOwned()) return false;
         }
         View content = activity.findViewById(android.R.id.content);
         if (!(content instanceof ViewGroup)) return false;
         ViewGroup group = (ViewGroup) content;
 
-        Button play = makeButton(activity, PLAY_LABEL, 160f);
-        Button stop = makeButton(activity, STOP_LABEL, 208f);
+        float density = activity.getResources().getDisplayMetrics().density;
+        LinearLayout box = new LinearLayout(activity);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(8, density), dp(72, density), dp(8, density), dp(8, density));
+        Button play = makeButton(activity, PLAY_LABEL);
+        Button stop = makeButton(activity, STOP_LABEL);
         play.setOnClickListener(view -> {
             if (clickAuthorized && playView == view && ownedActivity == activity && ownedToken == token) {
                 requestPlay(token);
@@ -68,16 +65,19 @@ public final class DmAudioTouchEntry {
                 requestStop(token);
             }
         });
-        // Retain both cleanup handles before attaching so a partial attach can be retried.
+        box.addView(play, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        box.addView(stop, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // Retain the cleanup handle before attaching so a partial attach can be retried.
+        ownedContainer = box;
         playView = play;
         stopView = stop;
         ownedActivity = activity;
         ownedToken = token;
         clickAuthorized = false;
         try {
-            group.addView(play, new ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            group.addView(stop, new ViewGroup.LayoutParams(
+            group.addView(box, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         } catch (RuntimeException failure) {
             cleanupOwned();
@@ -87,26 +87,42 @@ public final class DmAudioTouchEntry {
         return true;
     }
 
-    private static Button makeButton(Activity activity, String label, float y) {
+    private static Button makeButton(Activity activity, String label) {
         Button button = new Button(activity);
         button.setText(label);
         button.setAllCaps(false);
         button.setClickable(true);
         button.setFocusable(false);
         button.setFocusableInTouchMode(false);
-        // Offset below the IME test entry at the top-left; no global window/focus changes.
-        button.setX(16f);
-        button.setY(y);
         return button;
     }
 
+    private static int dp(int value, float density) {
+        return Math.round(value * density);
+    }
+
+    /** Focused-test helper: measured stacked bounds stay disjoint for large fonts/density. */
+    static boolean stackedBoundsDisjoint(int[] heights, int gap) {
+        int top = 0;
+        for (int i = 0; i < heights.length; i++) {
+            if (heights[i] <= 0) return false;
+            int bottom = top + heights[i];
+            if (i + 1 < heights.length) {
+                int nextTop = bottom + gap;
+                if (nextTop < bottom) return false;   // negative gap would overlap
+                top = nextTop;
+            }
+        }
+        return true;
+    }
+
     /**
-     * Invalidates click authorization immediately, then removes exactly the two buttons this class installed.
-     * If platform removal throws, cleanup handles are retained (clicks disabled) for a bounded retry.
+     * Invalidates click authorization immediately, then removes exactly the container this class installed.
+     * If platform removal throws, the cleanup handle is retained (clicks disabled) for a bounded retry.
      */
     public static boolean uninstall(Activity activity, long token) {
         requireMainLooper();
-        if (playView == null && stopView == null) return true;
+        if (ownedContainer == null) return true;
         if (ownedActivity != activity || ownedToken != token) return false;
         clickAuthorized = false;
         if (playView != null) playView.setOnClickListener(null);
@@ -114,29 +130,24 @@ public final class DmAudioTouchEntry {
         return cleanupOwned();
     }
 
-    /** Retries removal of retained owned views without reviving clicks. */
+    /** Retries removal of the retained container without reviving clicks. */
     private static boolean cleanupOwned() {
         clickAuthorized = false;
-        if (!removeOwned(playView)) return false;
-        if (!removeOwned(stopView)) return false;
-        playView = null;
-        stopView = null;
-        ownedActivity = null;
-        ownedToken = 0;
-        return true;
-    }
-
-    private static boolean removeOwned(Button view) {
-        if (view == null) return true;
-        view.setOnClickListener(null);
-        ViewParent parent = view.getParent();
-        if (parent instanceof ViewGroup) {
+        if (ownedContainer == null) return true;
+        ViewGroup parent = ownedContainer.getParent() instanceof ViewGroup
+                ? (ViewGroup) ownedContainer.getParent() : null;
+        if (parent != null) {
             try {
-                ((ViewGroup) parent).removeView(view);
+                parent.removeView(ownedContainer);
             } catch (RuntimeException failure) {
                 return false;
             }
         }
+        ownedContainer = null;
+        playView = null;
+        stopView = null;
+        ownedActivity = null;
+        ownedToken = 0;
         return true;
     }
 

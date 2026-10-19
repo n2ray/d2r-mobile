@@ -778,11 +778,6 @@ static void text_end(app_state*s,const char*reason);
 static int ime_entry_install(app_state*s);
 static void ime_entry_uninstall(app_state*s);
 static jboolean native_ime_entry_request(JNIEnv*env,jclass cls,jlong token);
-static jclass audio_entry_load_class(JNIEnv*env,ANativeActivity*activity);
-static int audio_entry_install(app_state*s);
-static void audio_entry_uninstall(app_state*s);
-static jboolean native_audio_entry_play(JNIEnv*env,jclass cls,jlong token);
-static jboolean native_audio_entry_stop(JNIEnv*env,jclass cls,jlong token);
 static int input_ready(int fd,int events,void*data){
     (void)fd;(void)events;ANativeActivity*a=data;app_state*s=a->instance;if(!s||!s->input)return 0;
     AInputEvent*event;while(AInputQueue_getEvent(s->input,&event)>=0){
@@ -1500,6 +1495,40 @@ done:
     if(activity_class)(*env)->DeleteLocalRef(env,activity_class);
     return entry_class;
 }
+static jboolean native_audio_entry_play(JNIEnv*env,jclass cls,jlong token){
+    (void)cls;
+    app_state*s=g_audio_entry_app;
+    if(!s||!s->audio_entry_installed||token<=0||(uint64_t)token!=s->audio_entry_token)return JNI_FALSE;
+    if(!s->resumed||!s->focused||!s->window)return JNI_FALSE;   // 与键盘相同的 App 状态门控
+    return native_audio_play(s->audio,env)==DM_AS_OK?JNI_TRUE:JNI_FALSE;
+}
+static jboolean native_audio_entry_stop(JNIEnv*env,jclass cls,jlong token){
+    (void)env;(void)cls;
+    app_state*s=g_audio_entry_app;
+    if(!s||!s->audio_entry_installed||token<=0||(uint64_t)token!=s->audio_entry_token)return JNI_FALSE;
+    return native_audio_stop(s->audio)==DM_AS_OK?JNI_TRUE:JNI_FALSE;
+}
+static void audio_entry_uninstall(app_state*s){
+    if(!s||!s->audio_entry_class)return;
+    JNIEnv*env=(s->activity&&s->activity->env)?s->activity->env:NULL;
+    jclass entry_class=s->audio_entry_class;
+    uint64_t token=s->audio_entry_token;
+    /* Invalidate native click handling first; retain class/token as a bounded cleanup handle until removal is proven. */
+    s->audio_entry_installed=0;
+    if(g_audio_entry_app==s)g_audio_entry_app=NULL;
+    if(!env||!s->activity||!s->activity->clazz)return;
+    jmethodID uninstall_method=(*env)->GetStaticMethodID(env,entry_class,"uninstall","(Landroid/app/Activity;J)Z");
+    if(!uninstall_method||text_jni_stage_failed(env,"audio entry uninstall signature")){
+        if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
+        return;
+    }
+    jboolean removed=(*env)->CallStaticBooleanMethod(env,entry_class,uninstall_method,s->activity->clazz,(jlong)token);
+    if((*env)->ExceptionCheck(env)){(*env)->ExceptionDescribe(env);(*env)->ExceptionClear(env);removed=JNI_FALSE;}
+    if(!removed){LOG("audio touch entry removal retained for retry");return;}
+    (*env)->DeleteGlobalRef(env,entry_class);
+    s->audio_entry_class=NULL;
+    s->audio_entry_token=0;
+}
 static int audio_entry_install(app_state*s){
     if(!s)return 0;
     if(s->audio_entry_class){
@@ -1565,40 +1594,6 @@ cleanup_done:
     if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
     if(entry_class)(*env)->DeleteLocalRef(env,entry_class);
     return result;
-}
-static void audio_entry_uninstall(app_state*s){
-    if(!s||!s->audio_entry_class)return;
-    JNIEnv*env=(s->activity&&s->activity->env)?s->activity->env:NULL;
-    jclass entry_class=s->audio_entry_class;
-    uint64_t token=s->audio_entry_token;
-    /* Invalidate native click handling first; retain class/token as a bounded cleanup handle until removal is proven. */
-    s->audio_entry_installed=0;
-    if(g_audio_entry_app==s)g_audio_entry_app=NULL;
-    if(!env||!s->activity||!s->activity->clazz)return;
-    jmethodID uninstall_method=(*env)->GetStaticMethodID(env,entry_class,"uninstall","(Landroid/app/Activity;J)Z");
-    if(!uninstall_method||text_jni_stage_failed(env,"audio entry uninstall signature")){
-        if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
-        return;
-    }
-    jboolean removed=(*env)->CallStaticBooleanMethod(env,entry_class,uninstall_method,s->activity->clazz,(jlong)token);
-    if((*env)->ExceptionCheck(env)){(*env)->ExceptionDescribe(env);(*env)->ExceptionClear(env);removed=JNI_FALSE;}
-    if(!removed){LOG("audio touch entry removal retained for retry");return;}
-    (*env)->DeleteGlobalRef(env,entry_class);
-    s->audio_entry_class=NULL;
-    s->audio_entry_token=0;
-}
-static jboolean native_audio_entry_play(JNIEnv*env,jclass cls,jlong token){
-    (void)cls;
-    app_state*s=g_audio_entry_app;
-    if(!s||!s->audio_entry_installed||token<=0||(uint64_t)token!=s->audio_entry_token)return JNI_FALSE;
-    if(!s->resumed||!s->focused||!s->window)return JNI_FALSE;   // 与键盘相同的 App 状态门控
-    return native_audio_play(s->audio,env)==DM_AS_OK?JNI_TRUE:JNI_FALSE;
-}
-static jboolean native_audio_entry_stop(JNIEnv*env,jclass cls,jlong token){
-    (void)env;(void)cls;
-    app_state*s=g_audio_entry_app;
-    if(!s||!s->audio_entry_installed||token<=0||(uint64_t)token!=s->audio_entry_token)return JNI_FALSE;
-    return native_audio_stop(s->audio)==DM_AS_OK?JNI_TRUE:JNI_FALSE;
 }
 __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActivity*a,void*saved,size_t saved_size){
     (void)saved;(void)saved_size;app_state*s=calloc(1,sizeof(*s));if(!s){ANativeActivity_finish(a);return;}a->instance=s;dm_touch_hud_frame_init(&s->hud_frame);
