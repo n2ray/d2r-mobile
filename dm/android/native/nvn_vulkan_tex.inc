@@ -1,5 +1,6 @@
 // 贴图创建、Tegra 解排布、上传与渲染目标清除。| Texture creation, Tegra deswizzling, uploads and render-target clears.
 #include "texture_diag.h"
+#include "texture_flat_probe.h"
 typedef struct cached_image_view { VkImageViewType type; VkImageSubresourceRange range; VkImageView view; struct cached_image_view *next; } cached_image_view;
 typedef struct image_entry {
     uint64_t serial; tex_t texture; VkImage image; VkImageView view; VkDeviceMemory memory;
@@ -24,14 +25,25 @@ static VkFormat vk_format(int format);
 // The capture window is armed only at the 60-frame report point by an app-specific token, off by default;
 // no property lookup happens per bind.
 static texture_diag_state texture_diag;
-// 默认关闭的单一实验：把所有只读 2D 采样替换为 1x1 品红图，区分纹理路径与 shader/lighting。
-// One default-off experiment: replace every read-only 2D sample with a 1x1 magenta image to distinguish
-// the texture path from shader/lighting.
-static int texture_flat_enabled;
-static void texture_flat_set(int enabled) {
-    if (enabled && !texture_flat_enabled)
-        LOG("[vulkan-tex-probe] flat magenta texture override enabled (visual A/B only)");
-    texture_flat_enabled = enabled;
+// 默认关闭的单一实验：只选中一个明确的 2D 颜色 shader/stage/slot。
+// A default-off single experiment: only one explicit 2D color shader/stage/slot is selected.
+static texture_flat_state texture_flat;
+static unsigned texture_flat_overrides, texture_flat_reported;
+static void texture_flat_apply(const char *value) {
+    int was_enabled = texture_flat.enabled;
+    texture_flat_state_apply(&texture_flat, value);
+    if (texture_flat.enabled && !was_enabled)
+        LOG("[vulkan-tex-probe] enabled shader=%s stage=%u slot=%u (visual A/B only)",
+            texture_flat.selector.shader, texture_flat.selector.stage, texture_flat.selector.slot);
+    else if (!texture_flat.enabled && was_enabled)
+        LOG("[vulkan-tex-probe] disabled overrides=%u (real descriptors restored)", texture_flat_overrides);
+}
+static void texture_flat_report(uint64_t ticket) {
+    if (!texture_flat.enabled || texture_flat_overrides == texture_flat_reported) return;
+    texture_flat_reported = texture_flat_overrides;
+    LOG("[vulkan-tex-probe] frame=%llu overrides=%u shader=%s stage=%u slot=%u",
+        (unsigned long long)ticket, texture_flat_overrides, texture_flat.selector.shader,
+        texture_flat.selector.stage, texture_flat.selector.slot);
 }
 static void texture_diag_count(unsigned kind) {
     switch (kind) {
@@ -197,7 +209,6 @@ static image_entry *texture_flat_image(void) {
         VkImageSubresourceRange range = {e->aspect, 0, 1, 0, 1};
         image_access(e, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
         vkCmdClearColorImage(command, e->image, VK_IMAGE_LAYOUT_GENERAL, &color, 1, &range);
-        image_access(e, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
         e->populated = 1;
     }
     return e;
