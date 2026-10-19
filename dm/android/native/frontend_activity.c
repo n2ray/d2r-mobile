@@ -443,7 +443,7 @@ static void live_touch_set_available(game_app *s, int available) {
     live_touch_notify_readiness(s, available);
 }
 static void live_touch_sync(game_app *s) {
-    if(!s->live_touch||!live_touch_mode_enabled()){live_touch_set_available(s,0);return;}
+    if(!s->input||!s->live_touch||!live_touch_mode_enabled()){live_touch_set_available(s,0);return;}
     if(!s->live_provider_ready){dm_live_touch_provider_init(&s->live_provider,NULL);s->live_provider_ready=1;}
     dm_live_touch_scene_observation snapshot;
     if(!dm_live_touch_provider_observe(&s->live_provider,&snapshot)){
