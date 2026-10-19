@@ -237,6 +237,7 @@ static texture_descriptor descriptor_texture(int id) {
     texture_descriptor d={0};pthread_mutex_lock(&descriptor_lock);if(id>=0&&id<texture_capacity)d=texture_descriptors[id];pthread_mutex_unlock(&descriptor_lock);return d;
 }
 static image_entry *descriptor_image(const texture_descriptor *d,uint32_t type,int storage,VkPipelineStageFlags stage,VkAccessFlags access) {
+    if(texture_flat_enabled&&!storage&&(type&255)==3)return texture_flat_image();
     if(d->valid){image_entry *e=image_get(&d->texture);if(!storage||(e->texture.has_layout&&e->texture.mem))image_upload(e);if(storage)image_gpu_written(e);image_access(e,stage,access);return e;}
     // 未绑定采样资源保留零贴图；可写空槽用独立图像，防止计算输出污染后续采样。
     // Keep unbound sampled resources zero; separate writable images prevent compute output from polluting later samples.
@@ -246,6 +247,7 @@ static image_entry *descriptor_image(const texture_descriptor *d,uint32_t type,i
     image_entry *e=image_get(t);if(!e->populated){image_access(e,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);VkClearColorValue zero={0};VkImageSubresourceRange r={e->aspect,0,1,0,e->texture.L.layers};if(type&1024){VkClearDepthStencilValue depth={1,0};vkCmdClearDepthStencilImage(command,e->image,VK_IMAGE_LAYOUT_GENERAL,&depth,1,&r);}else vkCmdClearColorImage(command,e->image,VK_IMAGE_LAYOUT_GENERAL,&zero,1,&r);e->populated=1;}image_access(e,stage,access);return e;
 }
 static VkImageView descriptor_view(const texture_descriptor *descriptor,image_entry *e,uint32_t type,int storage) {
+    if(texture_flat_enabled&&!storage&&(type&255)==3)return image_view_get(e,VK_IMAGE_VIEW_TYPE_2D,(VkImageSubresourceRange){VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1});
     view_t v=descriptor->valid?descriptor->view:(view_t){0};
     unsigned mip=v.set_levels?v.base_level:0,layers=v.set_layers?v.min_layer:0;
     if(mip>=e->texture.d.levels||layers>=e->texture.L.layers)die("Vulkan descriptor view bounds");

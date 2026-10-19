@@ -24,6 +24,15 @@ static VkFormat vk_format(int format);
 // The capture window is armed only at the 60-frame report point by an app-specific token, off by default;
 // no property lookup happens per bind.
 static texture_diag_state texture_diag;
+// 默认关闭的单一实验：把所有只读 2D 采样替换为 1x1 品红图，区分纹理路径与 shader/lighting。
+// One default-off experiment: replace every read-only 2D sample with a 1x1 magenta image to distinguish
+// the texture path from shader/lighting.
+static int texture_flat_enabled;
+static void texture_flat_set(int enabled) {
+    if (enabled && !texture_flat_enabled)
+        LOG("[vulkan-tex-probe] flat magenta texture override enabled (visual A/B only)");
+    texture_flat_enabled = enabled;
+}
 static void texture_diag_count(unsigned kind) {
     switch (kind) {
         case TEXTURE_DIAG_UNBOUND: texture_diag.unbound++; break;
@@ -169,6 +178,29 @@ static image_entry *image_get(const tex_t *t) {
     VkImageMemoryBarrier b={.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED,.newLayout=VK_IMAGE_LAYOUT_GENERAL,.dstAccessMask=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT,.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.image=e->image,.subresourceRange=vi.subresourceRange};
     vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,0,0,NULL,0,NULL,1,&b);
     e->next=image_list;image_list=e;e->hash_next=image_index[bucket];image_index[bucket]=e;return e;
+}
+// 仅实验：1x1 品红贴图，绕过所有真实只读 2D 采样；不改变格式/上传/光照。
+// Experiment only: a 1x1 magenta image bypassing every real read-only 2D sample; no format/upload/lighting change.
+static image_entry *texture_flat_image(void) {
+    static tex_t flat;
+    if (!flat.serial) {
+        flat.serial = UINT64_MAX - 1024;
+        flat.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .width = 1, .height = 1, .depth = 1,
+                               .levels = 1, .format = NVN_FORMAT_RGBA8};
+        nvn_tex_layout(&flat.d, &flat.L);
+    }
+    image_entry *e = image_get(&flat);
+    if (!e->populated) {
+        graphics_pass_end();
+        VkClearColorValue color; memset(&color, 0, sizeof color);
+        color.float32[0] = 1.0f; color.float32[2] = 1.0f; color.float32[3] = 1.0f;
+        VkImageSubresourceRange range = {e->aspect, 0, 1, 0, 1};
+        image_access(e, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        vkCmdClearColorImage(command, e->image, VK_IMAGE_LAYOUT_GENERAL, &color, 1, &range);
+        image_access(e, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        e->populated = 1;
+    }
+    return e;
 }
 // GPU 内容与 packaged CPU 源是两条独立版本；GPU 写不能把后来的 CPU 脏写永久屏蔽。
 // Track GPU contents separately from packaged CPU sources; GPU writes must not suppress subsequent real CPU changes.
