@@ -588,16 +588,25 @@ if(NOT ANDROID)
                 --app ${CMAKE_CURRENT_SOURCE_DIR}/app
                 --cc ${CMAKE_C_COMPILER})
         set_tests_properties(native_callbacks PROPERTIES TIMEOUT 120)
+        # The fixture compiles actual vk_host.h/wsi_frame_result.h, so use the
+        # same CMake-resolved Vulkan include path as the native Vulkan targets.
+        if(NOT TARGET Vulkan::Vulkan)
+            find_package(Vulkan REQUIRED)
+        endif()
+        set(WSI_HUD_VULKAN_INCLUDE "${Vulkan_INCLUDE_DIR}")
+        if(NOT WSI_HUD_VULKAN_INCLUDE)
+            set(WSI_HUD_VULKAN_INCLUDE "${Vulkan_INCLUDE_DIRS}")
+        endif()
         add_test(NAME wsi_hud_caller
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/wsi_hud_host.py
                 --native ${CMAKE_CURRENT_SOURCE_DIR}/app/native.c
-                --vulkan-include=$<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>
+                --vulkan-include=${WSI_HUD_VULKAN_INCLUDE}
                 --cc ${CMAKE_C_COMPILER})
         set_tests_properties(wsi_hud_caller PROPERTIES TIMEOUT 120)
         add_test(NAME wsi_hud_no_record_mutant
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/wsi_hud_host.py
                 --native ${CMAKE_CURRENT_SOURCE_DIR}/app/native.c
-                --vulkan-include=$<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>
+                --vulkan-include=${WSI_HUD_VULKAN_INCLUDE}
                 --cc ${CMAKE_C_COMPILER} --mutant)
         set_tests_properties(wsi_hud_no_record_mutant PROPERTIES TIMEOUT 120)
         add_test(NAME native_text_jni
