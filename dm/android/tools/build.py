@@ -14,7 +14,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = Path(os.environ.get("DM_ANDROID_TOOLS", str(Path.home() / "dm-work/tools/android")))
-BIN = TOOLS / "ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+BIN = TOOLS / "ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin"
 
 GAME_ACTIVITY = "org.d2r.android.port.D2RActivity"
 LAUNCHER_NAME = "org.d2r.android.port.LauncherActivity"
@@ -56,7 +56,7 @@ def build_counter_timestamp(build):
     # 生产辅助着色器每次构建从GLSL生成，独立于游戏缓存。
     # Generate the production helper from GLSL independently of the game cache.
     output = build / "counter_timestamp.spv"
-    run([TOOLS / "ndk/shader-tools/linux-x86_64/glslc", "--target-env=vulkan1.1", "-O",
+    run([os.environ.get("DM_GLSLC", "/opt/homebrew/bin/glslc"), "--target-env=vulkan1.1", "-O",
          ROOT / "native/shaders/counter_timestamp.comp", "-o", output])
     data = output.read_bytes()
     words = struct.unpack("<" + "I" * (len(data) // 4), data)
@@ -117,8 +117,8 @@ def main():
         # come from the package imported on the phone** (the launcher already refuses to start without one). CI
         # ships this generic APK; a local build with --game-source still embeds the game code.
         print("Package-only build: game modules come from the imported package", flush=True)
-    build = ROOT / "build"
-    build.mkdir(exist_ok=True)
+    build = Path(os.environ.get("DM_REFERENCE_BUILD", "/Volumes/T2/Projects/d2r-work/build/reference-integrated"))
+    build.mkdir(parents=True, exist_ok=True)
     if args.game_run: build_counter_timestamp(build)
     for required in [BIN / "aarch64-linux-android29-clang", TOOLS / "jdk/bin/java", TOOLS / "platform/android.jar"]:
         if not required.exists(): sys.exit("Missing tool: " + str(required) + "; run tools/bootstrap.py")
@@ -152,16 +152,22 @@ def main():
         # to the colour icon).
         shutil.rmtree(build / "res" / "mipmap-anydpi-v33", ignore_errors=True)
     run([sys.executable, ROOT / "tools/make_probe.py", build / "probe", BIN])
-    run([sys.executable, ROOT / "tools/build_gpu_driver.py"])
-    run([sys.executable, ROOT / "tools/build_gpu_fixtures.py"])
+    if not args.no_turnip:
+        run([sys.executable, ROOT / "tools/build_gpu_driver.py"])
+        run([sys.executable, ROOT / "tools/build_gpu_fixtures.py"])
     compiler = BIN / "aarch64-linux-android29-clang"
-    common = [compiler, "-O1", "-g", "-Wall", "-Wextra", "-I", ROOT / "native", "-I", build, "-I", build / "gpu-driver/include", ROOT / "native/runtime.c", ROOT / "native/probe.c", entry]
+    common = [compiler, "-O1", "-g", "-Wall", "-Wextra", "-I", ROOT / "native", "-I", build, ROOT / "native/runtime.c", ROOT / "native/probe.c", entry]
+    if args.no_turnip:
+        common.insert(2, "-DDM_NO_ADRENOTOOLS")
+        common.insert(2, "-DDM_SYSTEM_DRIVER_ONLY")
     run(common + ["-ldl", "-o", build / "runtime-smoke"])
     if args.game_run:
         run([sys.executable, ROOT / "tools/host_link.py", "--activity"])
         shutil.copyfile(build / "game-host/libdmandroid.so", build / "libdmandroid.so")
     else:
-        run(common + ["-fPIC", "-shared", "-DDM_NATIVE_APP", "-Wl,-z,max-page-size=16384", "-Wl,-z,defs",
+        run(common + ["-fPIC", "-shared", "-DDM_NATIVE_APP",
+                  * (["-DDM_NO_ADRENOTOOLS", "-DDM_SYSTEM_DRIVER_ONLY"] if args.no_turnip else []),
+                  "-Wl,-z,max-page-size=16384", "-Wl,-z,defs",
                   ROOT / "native/activity.c", ROOT / "native/app_probe.c", ROOT / "native/vulkan_front.c",
                   ROOT / "native/game_modules.c", ROOT / "native/gpu_driver.c",
                   ROOT / "native/host_posix.c", ROOT / "tests/host_posix_test.c",
@@ -196,7 +202,8 @@ def main():
     else: print("Turnip driver: not present at " + str(args.turnip) + "; generic package only", flush=True)
     # 诊断GLSL缓存独立于游戏的离线Maxwell fullshader缓存，不覆盖游戏资源。
     # Keep diagnostic GLSL shaders separate from the game's offline Maxwell fullshader cache.
-    shutil.copytree(build / "gpu-test-shaders", assets / "gpu-test-shaders", dirs_exist_ok=True)
+    if (build / "gpu-test-shaders").is_dir():
+        shutil.copytree(build / "gpu-test-shaders", assets / "gpu-test-shaders", dirs_exist_ok=True)
     for name in ["probe.fixups.tsv", "probe.gates.tsv"]:
         shutil.copyfile(build / "probe" / name, assets / name)
     if args.game_source:
