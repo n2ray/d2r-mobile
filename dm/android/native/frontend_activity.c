@@ -9,6 +9,7 @@
 #include "../../host/dm_hud.h"
 #include "../../host/dm_uiscreen.h"
 #include "../../host/dm_cursor.h"
+#include "../../host/ui_trace.h"
 #include "../../host/dm_actions.h"
 #include "debug_stats.h"
 #include "game_output.h"
@@ -481,8 +482,7 @@ static unsigned frontend_trace_generation(int force) {
     return generation;
 }
 static void frontend_trace_sync(unsigned generation) {
-    if (generation == g_fe_trace_generation) return;
-    g_fe_trace_generation = generation;
+    if (!dm_ui_trace_rearm_generation(&g_fe_trace_generation, generation)) return;
     atomic_store(&g_fe_ui_trace_count, 0);
     g_fe_cancel_trace_count = 0;
     g_fe_last_ingress_action = -1;

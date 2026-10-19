@@ -10,6 +10,10 @@ int main(void) {
     if (dm_ui_trace_take_stage(&s, DM_UI_TRACE_TOUCH)) return 3; // stage cap
     if (!dm_ui_trace_take_stage(&s, DM_UI_TRACE_PUMP)) return 4; // independent stage
     if (dm_ui_trace_arm(&s, 1) != 1) return 13;
+    unsigned rearm_generation = 0;
+    if (!dm_ui_trace_rearm_generation(&rearm_generation, 1)) return 24;
+    if (dm_ui_trace_rearm_generation(&rearm_generation, 1)) return 25; // frontend sync unchanged
+    if (!dm_ui_trace_rearm_generation(&rearm_generation, 2)) return 26; // frontend sync new
     for (int i = 0; i < 32; i++) if (!dm_ui_trace_take_stage(&s, DM_UI_TRACE_TOUCH)) return 14;
     if (dm_ui_trace_arm(&s, 1) != 0) return 15; // unchanged generation never rearms
     if (dm_ui_trace_take_stage(&s, DM_UI_TRACE_TOUCH)) return 16;

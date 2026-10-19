@@ -39,6 +39,12 @@ static inline unsigned dm_ui_trace_generation(dm_ui_trace_state *s) {
     return atomic_load(&s->generation);
 }
 
+static inline int dm_ui_trace_rearm_generation(unsigned *current, unsigned generation) {
+    if (generation == *current) return 0;
+    *current = generation;
+    return 1;
+}
+
 static inline int dm_ui_trace_take_stage(dm_ui_trace_state *s, int stage) {
     if (!atomic_load(&s->enabled) || stage < 0 || stage >= DM_UI_TRACE_STAGES) return 0;
     unsigned n = atomic_fetch_add(&s->emitted[stage], 1);
