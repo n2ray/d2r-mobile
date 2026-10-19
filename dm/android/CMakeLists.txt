@@ -791,5 +791,10 @@ if(NOT ANDROID)
                 $<TARGET_FILE:dm_native_audio_host>
                 ${Java_JAVAC_EXECUTABLE} ${Java_JAVA_EXECUTABLE})
         set_tests_properties(native_audio PROPERTIES TIMEOUT 180)
+
+        # #211 自有触屏音频按钮的 Java 生命周期/点击授权测试；native 控制由 native_audio 测试覆盖。
+        add_test(NAME audio_touch_entry_java
+            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio-touch-entry-stubs/run.sh)
+        set_tests_properties(audio_touch_entry_java PROPERTIES TIMEOUT 120)
     endif()
 endif()

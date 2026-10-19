@@ -23,6 +23,7 @@ public class View {
     private boolean focusable;
     private boolean focusableInTouchMode;
     private boolean focused;
+    private float x, y;
     public static boolean rejectFocus;
     public int requestApplyInsetsCalls;
     public int width;
@@ -62,6 +63,22 @@ public class View {
 
     public void setFocusableInTouchMode(boolean value) {
         focusableInTouchMode = value;
+    }
+
+    public void setX(float value) {
+        x = value;
+    }
+
+    public void setY(float value) {
+        y = value;
+    }
+
+    public float getX() {
+        return x;
+    }
+
+    public float getY() {
+        return y;
     }
 
     public final boolean requestFocus() {

@@ -99,6 +99,28 @@ static int ensure_session(native_audio *audio, JNIEnv *env) {
     return DM_AS_OK;
 }
 
+// 显式播放/停止的共享入口：键盘 P/S 与触屏按钮走同一套权限/会话/停止语义。
+// Shared explicit play/stop: keyboard P/S and the touch buttons use the same permission/session/stop semantics.
+int native_audio_play(native_audio *audio, JNIEnv *env) {
+    if (!audio || audio->closed) return DM_AS_E_INVALID;
+    if (!audio->active || !audio->resumed || !audio->focused) return DM_AS_E_STATE;
+    const int ensured = ensure_session(audio, env);
+    if (ensured != DM_AS_OK) return set_error(audio, ensured);
+    int platform = 0;
+    const int rc = dm_audio_session_play(audio->session, &platform);
+    if (rc != DM_AS_OK) set_error(audio, rc);
+    return rc;
+}
+
+int native_audio_stop(native_audio *audio) {
+    if (!audio || audio->closed) return DM_AS_E_INVALID;
+    if (!audio->session) return DM_AS_OK;
+    const int rc = dm_audio_session_stop(audio->session);
+    reset_pacing(audio);
+    if (rc != DM_AS_OK) set_error(audio, rc);
+    return rc;
+}
+
 int native_audio_key(native_audio *audio, JNIEnv *env, int32_t keycode, int32_t action, int32_t repeat,
                      int keyboard_source) {
     if (!audio || audio->closed) return 0;
@@ -106,19 +128,11 @@ int native_audio_key(native_audio *audio, JNIEnv *env, int32_t keycode, int32_t 
     if (keycode != 44 && keycode != 47) return 0;              // P / S
 
     if (keycode == 47) {
-        if (audio->session) {
-            const int rc = dm_audio_session_stop(audio->session);
-            reset_pacing(audio);
-            if (rc != DM_AS_OK) set_error(audio, rc);
-        }
+        (void)native_audio_stop(audio);
         return 1;
     }
     if (!audio->active || !audio->resumed || !audio->focused) return 1;   // 显式但不满足 App 状态：不请求
-    const int ensured = ensure_session(audio, env);
-    if (ensured != DM_AS_OK) { set_error(audio, ensured); return 1; }
-    int platform = 0;
-    const int rc = dm_audio_session_play(audio->session, &platform);
-    if (rc != DM_AS_OK) set_error(audio, rc);
+    (void)native_audio_play(audio, env);
     return 1;
 }
 

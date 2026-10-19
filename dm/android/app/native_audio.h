@@ -30,6 +30,11 @@ int native_audio_create(JNIEnv *env, jobject activity, const dm_audio_session_op
 int native_audio_key(native_audio *audio, JNIEnv *env, int32_t keycode, int32_t action, int32_t repeat,
                      int keyboard_source);
 
+// Shared explicit controls used by both keyboard and the touch buttons. Play enforces active/resumed/focused
+// (and creates the lazy session); stop abandons the same owner intent and is idempotent.
+int native_audio_play(native_audio *audio, JNIEnv *env);
+int native_audio_stop(native_audio *audio);
+
 void native_audio_set_focus(native_audio *audio, int focused);
 int native_audio_resume(native_audio *audio);
 int native_audio_pause(native_audio *audio);

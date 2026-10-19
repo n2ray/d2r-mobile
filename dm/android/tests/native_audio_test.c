@@ -180,6 +180,12 @@ JNIEXPORT jint JNICALL Java_NativeAudioHarness_nativeOrderErrors(JNIEnv *env, jc
 JNIEXPORT jint JNICALL Java_NativeAudioHarness_nativeDestroyNoEnv(JNIEnv *env, jclass cls) {
     (void)env; (void)cls; return native_audio_destroy(&g_audio, NULL);
 }
+JNIEXPORT jint JNICALL Java_NativeAudioHarness_nativePlayDirect(JNIEnv *env, jclass cls) {
+    (void)cls; return native_audio_play(g_audio, env);
+}
+JNIEXPORT jint JNICALL Java_NativeAudioHarness_nativeStopDirect(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls; return native_audio_stop(g_audio);
+}
 JNIEXPORT jint JNICALL Java_NativeAudioHarness_nativeReference(JNIEnv *env, jclass cls, jlong phase,
                                                                jshortArray out, jint frames) {
     (void)cls;

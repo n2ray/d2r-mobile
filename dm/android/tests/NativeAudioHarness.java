@@ -32,6 +32,8 @@ public final class NativeAudioHarness {
     private static native int nativeLastError();
     private static native int nativeDestroy();
     private static native int nativeDestroyNoEnv();
+    private static native int nativePlayDirect();
+    private static native int nativeStopDirect();
     private static native void nativeSetClock(long ns);
     private static native void nativeAdvanceClock(long ns);
     private static native int nativeConsume(int frames);
@@ -99,6 +101,16 @@ public final class NativeAudioHarness {
         check(nativeState() != OUT_PLAYING && nativeTick() == 0, "S stops producing");
         int abandons = audio.abandonCalls;
         check(abandons == 1, "S abandoned the platform request");
+
+        // 触屏按钮共享的显式 play/stop 入口走真实 audio_session/JNI/output 栈。
+        check(nativePause() == 0, "pause before touch play guard");
+        check(nativePlayDirect() == -7, "touch play is rejected while App is paused");
+        check(nativeResume() == 0, "resume for direct touch controls");
+        audio.nextResult = AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        check(nativePlayDirect() == 0 && nativeState() == OUT_PLAYING, "touch play starts the same session");
+        check(nativeStopDirect() == 0 && nativeState() != OUT_PLAYING, "touch stop parks the same session");
+        check(nativeStopDirect() == 0, "touch stop is idempotent");
+        check(audio.abandonCalls >= 2, "touch stop abandons its own request");
 
         // pause → 迟到 GAIN 不自动恢复；resume 后仍需显式 P。
         audio.nextResult = AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
