@@ -59,8 +59,10 @@ if __name__ == "__main__":
     # Existing touch-core dependencies, kept explicit even though the host
     # wildcard currently includes them: hle_touch.c defines dm_touch_set,
     # dm_world.c defines dm_world_click/dm_world_walk/dm_world_tap_result, and
-    # dm_update.c defines dm_update_click_at. touch_mac.c is the existing Mac
-    # consumer of those symbols; the Android front end keeps its own touch core.
+    # dm_update.c defines dm_update_click_at. Those definitions sit in the
+    # current platform-gated branches; no stub or Objective-C source is added
+    # here. touch_mac.c is the existing Mac consumer; Android keeps its own
+    # front-end touch core.
     touch_sources = [ROOT / "host" / name for name in
                      ("hle_touch.c", "dm_world.c", "dm_update.c", "touch_mac.c")]
     known = {source for source, _ in sources}
