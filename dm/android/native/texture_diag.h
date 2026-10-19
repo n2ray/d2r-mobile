@@ -18,6 +18,9 @@ typedef enum {
 
 #define TEXTURE_DIAG_WINDOW_MAX 48u
 #define TEXTURE_DIAG_TEXTURE_MASK 0xfffffu
+// Android property values are bounded at 92 bytes; 96 stores a complete supported token.
+// Android property values are capped at 92 bytes; 96 stores a complete supported token.
+#define TEXTURE_DIAG_TOKEN_MAX 96u
 
 static inline const char *texture_diag_name(unsigned kind) {
     switch (kind) {
@@ -57,7 +60,7 @@ typedef struct {
     unsigned limit, used, seen;
     unsigned ok, unbound, missing, unsupported, unsampled, view_format, depth, linear;
     unsigned active, summarized, initialized;
-    char token[32];
+    char token[TEXTURE_DIAG_TOKEN_MAX];
 } texture_diag_state;
 
 static inline void texture_diag_state_init(texture_diag_state *state) {
@@ -88,8 +91,11 @@ static inline void texture_diag_state_tick(texture_diag_state *state, const char
         }
         return;
     }
-    strncpy(state->token, token, sizeof state->token - 1);
-    state->token[sizeof state->token - 1] = 0;
+    // 过长 token 明确拒绝且不开窗，绝不把完整输入与截断副本比较。
+    // Reject overlong tokens without arming; never compare a full input against a truncated copy.
+    size_t length = strlen(token);
+    if (length >= sizeof state->token) return;
+    memcpy(state->token, token, length + 1);
     state->limit = TEXTURE_DIAG_WINDOW_MAX;
     state->used = state->seen = 0;
     state->ok = state->unbound = state->missing = 0;

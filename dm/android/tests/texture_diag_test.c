@@ -44,6 +44,30 @@ int main(void) {
     CHECK(state.active && state.used == 0 && !strcmp(state.token, "scene-character-2"));
     CHECK(texture_diag_state_reserve(&state) && state.used == 1);
 
+    // 长 token 完整身份：同一长 token 不重开；共享前 31 字节但后缀不同是不同窗口。
+    texture_diag_state long_state = {0};
+    const char *long_token = "scene-character-0123456789-ABCDX";
+    const char *long_token_other = "scene-character-0123456789-ABCDY";
+    CHECK(strlen(long_token) > 31 && !strncmp(long_token, long_token_other, 31));
+    texture_diag_state_tick(&long_state, long_token);
+    CHECK(long_state.active && !strcmp(long_state.token, long_token));
+    for (unsigned i = 0; i < TEXTURE_DIAG_WINDOW_MAX; i++) CHECK(texture_diag_state_reserve(&long_state));
+    texture_diag_state_tick(&long_state, long_token);
+    CHECK(long_state.used == TEXTURE_DIAG_WINDOW_MAX && !texture_diag_state_reserve(&long_state));
+    texture_diag_state_tick(&long_state, long_token_other);
+    CHECK(long_state.active && long_state.used == 0 && !strcmp(long_state.token, long_token_other));
+
+    // 超过完整存储容量的 token 被拒绝，不截断，也不开窗。
+    char overlong[TEXTURE_DIAG_TOKEN_MAX + 8];
+    memset(overlong, 'x', sizeof overlong - 1);
+    overlong[sizeof overlong - 1] = 0;
+    texture_diag_state rejected = {0};
+    texture_diag_state_tick(&rejected, overlong);
+    CHECK(!rejected.active && !rejected.used);
+    overlong[sizeof overlong - 2] = 'y';
+    texture_diag_state_tick(&rejected, overlong);
+    CHECK(!rejected.active && !rejected.used);
+
     // 清空 property token 撤销当前窗口；env 仍可单独使用。
     texture_diag_state_tick(&state, "");
     CHECK(!state.active && !texture_diag_state_reserve(&state));
