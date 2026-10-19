@@ -49,10 +49,9 @@ public final class DmAudioTouchEntry {
         if (!(content instanceof ViewGroup)) return false;
         ViewGroup group = (ViewGroup) content;
 
-        float density = activity.getResources().getDisplayMetrics().density;
         LinearLayout box = new LinearLayout(activity);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(8, density), dp(72, density), dp(8, density), dp(8, density));
+        box.setPadding(8, 72, 8, 8);
         Button play = makeButton(activity, PLAY_LABEL);
         Button stop = makeButton(activity, STOP_LABEL);
         play.setOnClickListener(view -> {
@@ -95,10 +94,6 @@ public final class DmAudioTouchEntry {
         button.setFocusable(false);
         button.setFocusableInTouchMode(false);
         return button;
-    }
-
-    private static int dp(int value, float density) {
-        return Math.round(value * density);
     }
 
     /** Focused-test helper: measured stacked bounds stay disjoint for large fonts/density. */
