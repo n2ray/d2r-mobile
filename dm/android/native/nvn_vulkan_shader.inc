@@ -257,6 +257,16 @@ static VkImageView descriptor_view(const texture_descriptor *descriptor,image_en
     VkImageAspectFlags aspect=e->aspect & VK_IMAGE_ASPECT_DEPTH_BIT?VK_IMAGE_ASPECT_DEPTH_BIT:e->aspect;
     return image_view_get(e,vt,(VkImageSubresourceRange){aspect,mip,levels,layers,count});
 }
+// 实际解析后的采样/存储图像（上传之后）；未绑定/未登记也记一条，用于对照着色器输入。
+// Actually resolved sampled/storage images (after upload); unbound/unregistered ones are recorded too, to compare shader inputs.
+static void frame_trace_image(const shader_entry *s,const shader_binding *b,unsigned element,uint32_t handle,const texture_descriptor *d,const image_entry *e,int storage,int flat) {
+    if(!frame_trace_reserve(&frame_trace))return;
+    if(!d->valid||flat){FRAME_TRACE_LOG("img stage=%u shader=%s binding=%u el=%u type=%#x id=%u kind=%s",s->stage,s->key,b->binding,element,b->type,handle&0xfffff,flat?"flat_probe":handle?"unregistered":"unbound");return;}
+    const tex_t *t=&d->texture;const view_t *v=&d->view;
+    FRAME_TRACE_LOG("img stage=%u shader=%s binding=%u el=%u type=%#x storage=%d serial=%llu fmt=%#x view_fmt=%#x size=%ux%ux%u levels=%u layers=%u mip=%d+%d layer=%d+%d flags=%#x populated=%d gpu_written=%d",
+        s->stage,s->key,b->binding,element,b->type,storage,(unsigned long long)t->serial,(unsigned)t->d.format,v->set_format?(unsigned)v->format:0u,t->d.width,t->d.height,t->d.depth,t->d.levels,t->L.layers,
+        v->set_levels?v->base_level:0,v->set_levels?v->nlevels:0,v->set_layers?v->min_layer:0,v->set_layers?v->nlayers:0,t->d.flags,e->populated,e->gpu_written);
+}
 #include "nvn_vulkan_uniform.inc"
 #include "nvn_vulkan_binding_cache.inc"
 // arena 槽位承载的 uniform 把位置交给动态偏移；描述符只留块基址与范围，同一块内换槽位就不再改变描述符。
@@ -387,7 +397,8 @@ static VkDescriptorSet bind_shader(shader_entry *s,post_op *lifetime,uint32_t *d
                     if(b->kind==4&&(b->flags&4))access|=VK_ACCESS_SHADER_WRITE_BIT;
                     unsigned flat_format=descriptor.valid?descriptor.texture.d.format:0;
                     int flat=texture_flat_state_matches(&texture_flat,s->key,s->stage,b->binding,b->type,b->kind==4,flat_format);
-                    image_entry *e=descriptor_image(&descriptor,b->type,b->kind==4,shader_pipeline_stage(s),access,flat);images[j].imageView=descriptor_view(&descriptor,e,b->type,b->kind==4,flat);}
+                    image_entry *e=descriptor_image(&descriptor,b->type,b->kind==4,shader_pipeline_stage(s),access,flat);images[j].imageView=descriptor_view(&descriptor,e,b->type,b->kind==4,flat);
+                    frame_trace_image(s,b,j,handle,&descriptor,e,b->kind==4,flat);}
                 w.pImageInfo=images;
             }
         }
@@ -425,7 +436,7 @@ static void dispatch_compute(const p_dispatch *d) {
     post_op *const *output_scope=post_copy_tail;forward_scope_marker=output_scope;
     uint32_t dynamic_offsets[256];unsigned dynamic_count=0;
     VkDescriptorSet set=bind_shader(s,NULL,dynamic_offsets,&dynamic_count);
-    vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_COMPUTE,s->compute_pipeline);vkCmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_COMPUTE,s->compute_layout,0,1,&set,dynamic_count,dynamic_offsets);graphics_probe_dispatch(d);vkCmdDispatch(command,d->x,d->y,d->z);gpu_snapshot_consumer_encoded();forward_record_outputs(output_scope,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_COMPUTE,s->compute_pipeline);vkCmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_COMPUTE,s->compute_layout,0,1,&set,dynamic_count,dynamic_offsets);graphics_probe_dispatch(d);if(frame_trace_reserve(&frame_trace))FRAME_TRACE_LOG("dispatch shader=%s groups=%d,%d,%d",s->key,d->x,d->y,d->z);vkCmdDispatch(command,d->x,d->y,d->z);gpu_snapshot_consumer_encoded();forward_record_outputs(output_scope,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     graphics_probe_cs_outputs(s);
     // 图像消费者由 image_access 精确同步；仅真实缓冲写回需要主机可见性屏障。
     // image_access synchronizes image consumers precisely; only actual buffer writebacks need host visibility.
