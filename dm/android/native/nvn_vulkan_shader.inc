@@ -121,6 +121,18 @@ static shader_entry *shader_load_by_key(const char *key,int stats,int fatal) {
     if(dm_nvn_spirv_uses_shader_draw_parameters(code,bytes)&&
        !dm_vk_driver_require_shader_draw_parameters(&vk_api,1))
         die("Vulkan shader %s requires shaderDrawParameters: %s",key,dm_vk_driver_error(&vk_api));
+    if(dm_nvn_spirv_has_capability(code,bytes,3u)){
+        if(!gpu_features.tessellationShader)die("Vulkan shader %s requires tessellationShader but it is unsupported",key);
+        // 功能可启用不等于本后端已有 tessellation 阶段/pipeline；明确拒绝并保留后续依赖。
+        // Feature enablement is not a tessellation pipeline; reject explicitly and leave that dependency open.
+        die("Vulkan shader %s declares Tessellation capability, but tessellation pipeline stages are not implemented",key);
+    }
+    if(dm_nvn_spirv_has_capability(code,bytes,57u)&&!gpu_features.multiViewport)
+        die("Vulkan shader %s requires multiViewport but it is unsupported",key);
+    // 56=StorageImageWriteWithoutFormat；该 feature 已在设备创建中按真实支持启用。
+    // 56=StorageImageWriteWithoutFormat; its feature is already enabled from real support.
+    if(dm_nvn_spirv_has_capability(code,bytes,56u)&&!gpu_features.shaderStorageImageWriteWithoutFormat)
+        die("Vulkan shader %s requires StorageImageWriteWithoutFormat but it is unsupported",key);
 #endif
     shader_entry *s=calloc(1,sizeof *s);if(!s)die("Vulkan shader allocation");strcpy(s->key,key);s->stage=meta[2];s->set=meta[3];s->count=meta[4];s->c1_size=meta[5];s->bindings=(void*)(meta+7);s->c1=(uint8_t*)s->bindings+s->count*40;memcpy(s->attributes,s->c1+s->c1_size,128);
     VkShaderModuleCreateInfo mi={.sType=VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,.codeSize=bytes,.pCode=code};VK_CHECK(vkCreateShaderModule(device,&mi,NULL,&s->module));free(code);
