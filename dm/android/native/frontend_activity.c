@@ -667,7 +667,7 @@ static void window_resized(ANativeActivity *a,ANativeWindow *w) {game_app *s=a->
     // slow (surface/swapchain rebuild, caches gone cold), so as on returning to the foreground the dynamic
     // resolution controller is told not to read it as GPU pressure.
     if(same_window&&atomic_load(&s->started)){void mtl_screen_attach(struct ANativeWindow *);mtl_screen_attach(w);dm_3d_scale_resumed();if(atomic_load(&s->activity_resumed))dm_gfx_suspend(0);LOG("[android] 窗口尺寸变化：表面与交换链已按新尺寸重建，进程与本局保留");}}
-static void window_destroyed(ANativeActivity *a,ANativeWindow *w) {game_app *s=a->instance;dm_live_touch_cancel_sources(s->live_touch,(int64_t)now_ns(),ui_touch_cancel);touch_timer_stop(s);
+static void window_destroyed(ANativeActivity *a,ANativeWindow *w) {game_app *s=a->instance;dm_live_touch_cancel_sources(s->live_touch,(int64_t)now_ns(),ui_touch_cancel);touch_timer_stop(s);pad_publish(s);
     // 窗口销毁不再等于退出进程：安卓在 Activity 停止时必然销毁窗口，保留进程才能在回到前台时接着玩。
     // 退出前照 Mac/iOS 请游戏存盘（否则丢掉上一次提交之后的进度），再释放表面与交换链；真正退出走 destroyed()。
     // **顺序不能换**：请存盘在前、冻结客体时钟与挂起图形在后。反过来游戏线程会被挡在 NVN 入口外，那次自动存盘
