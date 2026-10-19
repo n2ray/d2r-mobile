@@ -733,6 +733,12 @@ def main() -> int:
                 ("omit-payload-copy",
                  "if(units>0)memcpy(s->text_payload,payload,(size_t)units*sizeof(jchar));",
                  "if(units>0)memset(s->text_payload,0,(size_t)units*sizeof(jchar));"),
+                ("omit-event-tail-clear",
+                 "memset(s->text_payload,0,sizeof(s->text_payload));\n    s->text_payload_event=event;",
+                 "s->text_payload_event=event;"),
+                ("omit-clear-buffer",
+                 "s->text_payload_units=0;\n    memset(s->text_payload,0,sizeof(s->text_payload));",
+                 "s->text_payload_units=0;"),
             ]
             for name, old, new in mutants:
                 if old not in text:
