@@ -1,3 +1,4 @@
+// Synthetic guest from sydeEvans/d2r-android 5d8e322, under MIT.
 // 合成客体：覆盖 x18、读写客体 TLS、TLR、svc 和计时器，保留调用者栈。
 // Synthetic guest covering x18, guest TLS read/write, TLR, svc, and timer reads.
 .text
