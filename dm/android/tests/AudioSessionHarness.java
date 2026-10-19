@@ -109,20 +109,26 @@ public final class AudioSessionHarness {
         check(nativeFocusGeneration() == generationAfterStop, "focus generation stays after stop");
         check(nativeWrite(pcm, 2) == 0, "write is rejected after stop");
 
-        // DELAYED 只是 pending，真实 GAIN 回调后才允许播放
+        // DELAYED 只是 pending，真实 GAIN 回调后才允许播放；并用真实 AAudio start 计数证明没有瞬态启动。
         audio.nextResult = AudioManager.AUDIOFOCUS_REQUEST_DELAYED;
+        int pendingStartsBefore = nativeFixtureStarts();
         check(nativePlay() == 2, "play returns platform DELAYED");
+        check(nativeFixtureStarts() == pendingStartsBefore,
+                "DELAYED must never transiently start AAudio before real GAIN");
         check(nativeState() != OUT_PLAYING, "delayed focus is not playback permission");
         AudioFocusRequest delayed = audio.lastRequest;
         audio.emit(delayed, AudioManager.AUDIOFOCUS_GAIN);
         deliver();
         check(nativeDrain() == 0, "drain delayed grant");
         check(nativeState() == OUT_PLAYING, "real GAIN after DELAYED starts playback");
+        check(nativeFixtureStarts() == pendingStartsBefore + 1, "exactly one real start after the granted GAIN");
 
         // FAILED 不得启动 | FAILED is never permission
+        int failedStartsBefore = nativeFixtureStarts();
         audio.nextResult = AudioManager.AUDIOFOCUS_REQUEST_FAILED;
         check(nativePlay() == 0, "play returns platform FAILED");
         check(nativeState() != OUT_PLAYING, "FAILED never starts playback");
+        check(nativeFixtureStarts() == failedStartsBefore, "FAILED does not transiently start AAudio");
 
         // permanent LOSS 撤销播放并要求新的用户意图 | permanent LOSS requires new user intent
         audio.nextResult = AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
@@ -211,6 +217,30 @@ public final class AudioSessionHarness {
         check(nativeWrite(pcm, 2) == 0, "no producer after final destroy");
         check(nativeCreate(context, 16) == 1, "recovers after failed cleanup");
         check(nativeDestroy() == 0, "final cleanup");
+
+        // 替换请求在旧请求 abandon 后抛异常：必须停到安全状态，旧 GAIN 不得恢复播放。
+        AudioManager requestThrows = new AudioManager() {
+            @Override
+            public int requestAudioFocus(AudioFocusRequest request) {
+                if (requestCalls >= 1) throw new RuntimeException("platform request failed after old abandon");
+                return super.requestAudioFocus(request);
+            }
+        };
+        nativeFixtureReset();
+        check(nativeCreate(new Context(requestThrows, AudioSessionHarness.class.getClassLoader()), 16) == 1,
+                "throwing-request session created");
+        check(nativePlay() == 1 && nativeResume() == 0, "throwing-request session initially plays");
+        check(nativeState() == OUT_PLAYING, "throwing-request session playing");
+        AudioFocusRequest replaced = requestThrows.lastRequest;
+        check(nativePlay() == E_JNI, "replacement request failure reported honestly");
+        check(requestThrows.abandonCalls == 1, "old request was already abandoned before the failure");
+        check(nativeState() != OUT_PLAYING, "request exception parks unfocused output");
+        check(nativeWrite(pcm, 2) == 0, "no producer after request failure");
+        requestThrows.emit(replaced, AudioManager.AUDIOFOCUS_GAIN);
+        deliver();
+        check(nativeDrain() == 0, "drain after failed replacement");
+        check(nativeState() != OUT_PLAYING, "stale GAIN cannot resume after failed replacement");
+        check(nativeDestroy() == 0, "cleanup after failed replacement");
 
         System.out.println("AudioSessionHarness: " + checks + " checks, " + failures + " failures");
         if (failures != 0) System.exit(1);

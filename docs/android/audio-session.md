@@ -16,7 +16,8 @@ requests no focus, opens no stream and starts nothing.
 | 调用 | 行为 |
 | --- | --- |
 | `create(JNIEnv*, activity, options)` | 初始化真实输出策略 + `dm_afj` owner；只保存句柄。 |
-| `play(&platform_result)` | 新 focus generation 请求平台焦点；结果原样返回 1/2/0。GRANTED 时同步派发 FOCUS_GAIN；DELAYED 派发 transient loss（pending 不是播放许可）；FAILED 派发 loss（确实没有焦点）。 |
+- `play(&platform_result)` | 新 focus generation 请求平台焦点；结果原样返回 1/2/0。先按真实结果更新焦点（GRANTED→GAIN；DELAYED→transient loss；FAILED→loss），再提交用户意图，因此旧 GRANTED 不可能让 pending/FAILED 瞬态启动。 |
+- 请求失败区分：已验证的 off-main 拒绝无平台副作用，状态/代次不变；其它 JNI/平台失败可能发生在旧请求已 abandon 之后，会作废旧 generation 并派发永久 loss 停到安全状态，迟到 GAIN 不能恢复。 |
 | `resume` / `pause` | 只派发 App 生命周期事件；resume 只有在用户意图 + GRANTED + 前台时才真正开始。 |
 | `stop` | 策略停止 + 平台 abandon；generation 递增，迟到 GAIN 不会自动播放，需新的显式 play。 |
 | `drain` | 从 `dm_afj` 取焦点事件，丢弃旧 generation，映射为 `DM_AF_EV_FOCUS_*` 交给输出策略。溢出停到安全状态并返回 `DM_AS_E_OVERFLOW`。 |

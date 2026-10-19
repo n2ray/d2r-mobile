@@ -76,26 +76,35 @@ int dm_audio_session_play(dm_audio_session *session, int *platform_result) {
     const int requested = dm_afj_request(session->focus, (int)generation,
                                          session->accepts_delayed_focus, &platform);
     if (requested != DM_AFJ_OK) {
-        // off-main 等失败发生在任何意图/代次提交之前：已有焦点身份与播放状态保持原样。
+        if (requested == DM_AFJ_E_THREAD) {
+            // 证实的 off-main 拒绝：平台无任何副作用，保持现有意图/焦点/代次不变。
+            // Proven off-main rejection: no platform side effect, so keep intent/focus/generation unchanged.
+            return set_error(session, map_afj_error(requested));
+        }
+        // 平台/JNI 失败可能发生在旧请求已 abandon 之后：可见焦点不确定，必须作废旧代次并停到安全状态。
+        // A platform/JNI failure may happen after the old request was abandoned: focus is uncertain, so invalidate
+        // the generation and park output fail-closed instead of leaving unfocused playback running.
+        session->focus_generation++;
+        (void)handle_event(session, DM_AF_EV_FOCUS_LOSS);
         return set_error(session, map_afj_error(requested));
     }
     session->focus_generation = generation;
     *platform_result = platform;
 
-    int status = handle_event(session, DM_AF_EV_USER_PLAY);
-    if (status != DM_AS_OK) return status;
+    // 先处理已知的平台结果，再提交新的用户意图：避免 USER_PLAY 读取旧 GRANTED 而瞬态启动。
+    // Apply the known platform result before the new intent so USER_PLAY can never consult stale GRANTED.
+    int status;
     if (platform == 1) {
-        status = handle_event(session, DM_AF_EV_FOCUS_GAIN);   // 真实 GRANTED
+        status = handle_event(session, DM_AF_EV_FOCUS_GAIN);
+        if (status != DM_AS_OK) return status;
     } else if (platform == 2) {
-        // 平台 pending：不持有焦点，不能让旧 GRANTED 状态继续放行播放；真实 GAIN 回调后再恢复。
-        // Platform pending: we do not hold focus, so stale GRANTED must not permit playback; a real GAIN may resume.
         status = handle_event(session, DM_AF_EV_FOCUS_LOSS_TRANSIENT);
+        if (status != DM_AS_OK) return status;
     } else {
-        // 平台拒绝：abandon 旧请求后确实没有焦点，按丢失处理而不是假装仍持有。
-        // Platform refused: after abandoning the old request we hold no focus, so report loss rather than pretending.
         status = handle_event(session, DM_AF_EV_FOCUS_LOSS);
+        if (status != DM_AS_OK) return status;
     }
-    return status;
+    return handle_event(session, DM_AF_EV_USER_PLAY);
 }
 
 int dm_audio_session_resume(dm_audio_session *session) {
