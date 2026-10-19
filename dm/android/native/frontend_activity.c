@@ -444,16 +444,8 @@ static void live_touch_set_available(game_app *s, int available) {
     LOG("[android-touch] live readiness %s", available ? "ready" : "unavailable");
     live_touch_notify_readiness(s, available);
 }
-static uint64_t live_touch_visual_signature(const dm_live_touch_visual *v, const dm_live_touch_geometry *g) {
-    uint64_t h = 1469598103934665603ull;
-    const uint64_t parts[] = {(uint64_t)v->buttons, (uint64_t)(uint32_t)v->lx,
-        (uint64_t)(uint32_t)v->ly, (uint64_t)v->skill_set, (uint64_t)v->diff_open,
-        (uint64_t)v->navigation_mode, (uint64_t)v->joy_active, (uint64_t)(uint32_t)v->joy_origin_x,
-        (uint64_t)(uint32_t)v->joy_origin_y, (uint64_t)(uint32_t)g->left, (uint64_t)(uint32_t)g->top,
-        (uint64_t)(uint32_t)g->width, (uint64_t)(uint32_t)g->height};
-    for (unsigned i = 0; i < sizeof parts / sizeof *parts; i++) h = (h ^ parts[i]) * 1099511628211ull;
-    return h;
-}
+uint64_t dm_live_touch_visual_signature(const dm_live_touch_visual *visual,
+                                        const dm_live_touch_geometry *geometry);
 static void live_touch_notify_visual(game_app *s) {
     if (!s || !s->activity || s->live_readiness.destroyed || !s->live_touch) return;
     ANativeActivity *a = s->activity;
@@ -469,7 +461,7 @@ static void live_touch_publish_visual(game_app *s) {
     if (!s || !s->live_provider_available || !s->live_geometry.valid) return;
     dm_live_touch_visual v;
     if (!dm_live_touch_visual_snapshot(s->live_touch, &v)) return;
-    uint64_t signature = live_touch_visual_signature(&v, &s->live_geometry);
+    uint64_t signature = dm_live_touch_visual_signature(&v, &s->live_geometry);
     dm_hud_info hud; memset(&hud, 0, sizeof hud); dm_hud_get(&hud);
     const uint64_t hud_parts[] = {(uint64_t)(hud.valid ? hud.players : 0), (uint64_t)hud.belt[0],
         (uint64_t)hud.belt[1], (uint64_t)hud.belt[2], (uint64_t)hud.belt[3]};

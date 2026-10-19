@@ -68,6 +68,16 @@ int main(void) {
     dm_live_touch_set_context(t, 1, dm_tc_nav_mask(1), 2, 2, 2, 0);
     CHECK(dm_live_touch_visual_snapshot(t, &v) == 1 && v.navigation_mode == 1);
 
+    // Direct production signature: mask-only change must invalidate; identical snapshot must not.
+    dm_live_touch_visual sig_a = {0}, sig_b = {0};
+    dm_live_touch_geometry sig_g = {0};
+    sig_a.enabled_targets = 1; sig_b = sig_a;
+    CHECK(dm_live_touch_visual_signature(&sig_a, &sig_g) ==
+          dm_live_touch_visual_signature(&sig_b, &sig_g));
+    sig_b.enabled_targets = 0;
+    CHECK(dm_live_touch_visual_signature(&sig_a, &sig_g) !=
+          dm_live_touch_visual_signature(&sig_b, &sig_g));
+
     // Destroyed owner cannot expose a snapshot (caller must drop the pointer).
     dm_live_touch_destroy(t);
     CHECK(dm_live_touch_visual_snapshot(NULL, &v) == 0);

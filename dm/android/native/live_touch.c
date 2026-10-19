@@ -431,6 +431,18 @@ int dm_live_touch_visual_snapshot(const dm_live_touch *touch, dm_live_touch_visu
     out->lx = touch->state.lx; out->ly = touch->state.ly;
     return 1;
 }
+uint64_t dm_live_touch_visual_signature(const dm_live_touch_visual *v,
+                                        const dm_live_touch_geometry *g) {
+    uint64_t h = 1469598103934665603ull;
+    const uint64_t parts[] = {(uint64_t)v->buttons, (uint64_t)(uint32_t)v->lx,
+        (uint64_t)(uint32_t)v->ly, (uint64_t)v->skill_set, (uint64_t)v->diff_open,
+        (uint64_t)v->navigation_mode, (uint64_t)v->joy_active, (uint64_t)(uint32_t)v->joy_origin_x,
+        (uint64_t)(uint32_t)v->joy_origin_y, (uint64_t)v->enabled_targets,
+        (uint64_t)(uint32_t)g->left, (uint64_t)(uint32_t)g->top,
+        (uint64_t)(uint32_t)g->width, (uint64_t)(uint32_t)g->height};
+    for (unsigned i = 0; i < sizeof parts / sizeof *parts; i++) h = (h ^ parts[i]) * 1099511628211ull;
+    return h;
+}
 
 int dm_live_touch_has_pointer(const dm_live_touch *touch, int32_t id) {
     return touch && id >= 0 && dm_touch_pointer_slot(&touch->pointers, id) >= 0;

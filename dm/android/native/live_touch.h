@@ -3,6 +3,7 @@
 // output; it does not own game scene/UI state and does not synthesize actions.
 #pragma once
 #include <stdint.h>
+#include "live_touch_geometry.h"
 #include "../../ios/Sources/dm_touch_controls.h"
 
 #ifdef __cplusplus
@@ -117,6 +118,8 @@ typedef struct {
     int32_t lx, ly;
 } dm_live_touch_visual;
 int dm_live_touch_visual_snapshot(const dm_live_touch *touch, dm_live_touch_visual *out);
+// Invalidation key is defined in live_touch.c; the frontend declares it locally
+// so the standalone root extraction fixture remains source-compatible.
 int dm_live_touch_has_pointer(const dm_live_touch *touch, int32_t id);
 int dm_live_touch_active(const dm_live_touch *touch);
 int dm_live_touch_pointer_long(const dm_live_touch *touch);
