@@ -104,6 +104,9 @@ typedef struct {
     int valid;
     float width, height;
     float joy_x, joy_y, joy_radius;
+    float joy_rest_x, joy_rest_y;
+    float joy_origin_x, joy_origin_y;
+    int joy_active;
     float swap_x, swap_y, swap_radius;
     float diff_x, diff_y, diff_radius;
     float pick_x[8], pick_y[8], pick_r[8];

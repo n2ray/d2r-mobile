@@ -20,6 +20,32 @@ final class TouchOverlayGeometry {
         return logicalRadius * v[2] / v[4];
     }
 
+    static boolean navigation(float[] v) {
+        return v[23] != 0;
+    }
+
+    static boolean joyActive(float[] v) {
+        return v[86] != 0;
+    }
+
+    static float joyBaseX(float[] v) {
+        return joyActive(v) ? v[84] : v[6];
+    }
+
+    static float joyBaseY(float[] v) {
+        return joyActive(v) ? v[85] : v[7];
+    }
+
+    static float joyKnobX(float[] v, long axisX) {
+        float n = Math.max(-1f, Math.min(1f, axisX / 32767f));
+        return joyBaseX(v) + n * v[8];
+    }
+
+    static float joyKnobY(float[] v, long axisY) {
+        float n = Math.max(-1f, Math.min(1f, axisY / 32767f));
+        return joyBaseY(v) - n * v[8];
+    }
+
     // Returns the first visual target whose mapped center is within its mapped
     // radius. This is the overlay's own draw/hit consistency check; real input
     // remains owned by the native core's dm_tc_hit path.

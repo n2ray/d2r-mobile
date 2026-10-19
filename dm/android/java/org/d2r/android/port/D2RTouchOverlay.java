@@ -104,14 +104,18 @@ final class D2RTouchOverlay extends View {
         int mask = (int)v[17];
         int skillSet = (int)v[15];
         int players = (int)v[18];
+        boolean navigation = TouchOverlayGeometry.navigation(v);
 
-        // Joystick: the base is core layout; the knob is the core's actual axis.
-        if (v[8] > 0) {
-            float cx = mx(v, v[6]), cy = my(v, v[7]), r = v[8] * v[2] / v[4];
+        // Joystick: the base follows the actual floating origin while a core joystick finger is down.
+        // The vertical sign matches DmTouchOverlay: dy = -ly / 32767 * radius.
+        if (v[8] > 0 && !navigation) {
+            float cx = mx(v, TouchOverlayGeometry.joyBaseX(v));
+            float cy = my(v, TouchOverlayGeometry.joyBaseY(v));
+            float r = v[8] * v[2] / v[4];
             circle(canvas, cx, cy, r, 0x66141b22, 0x88d8c49a);
-            float sx = Math.max(-1f, Math.min(1f, state[1] / 32767f));
-            float sy = Math.max(-1f, Math.min(1f, state[2] / 32767f));
-            circle(canvas, cx + sx * r * .62f, cy + sy * r * .62f, r * .32f, 0x99d8c49a, 0xccf1e8d8);
+            float kx = mx(v, TouchOverlayGeometry.joyKnobX(v, state[1]));
+            float ky = my(v, TouchOverlayGeometry.joyKnobY(v, state[2]));
+            circle(canvas, kx, ky, r * .32f, 0x99d8c49a, 0xccf1e8d8);
             text(canvas, "MOVE", cx, cy + r + label.getTextSize() * 1.2f);
         }
 
@@ -140,14 +144,14 @@ final class D2RTouchOverlay extends View {
         }
 
         // Skill group toggle is the core's swap target, not a reinvented layout.
-        if (v[11] > 0) {
+        if (!navigation && v[11] > 0) {
             float cx = mx(v, v[9]), cy = my(v, v[10]), r = v[11] * v[2] / v[4];
             circle(canvas, cx, cy, r, 0x88101820, 0xccd8c49a);
             text(canvas, skillSet == 0 ? "I" : "II", cx, cy + label.getTextSize() * .36f);
         }
 
         // Difficulty target: host-reported player count; the eight choices are the core's pick cells.
-        if (v[14] > 0) {
+        if (!navigation && v[14] > 0) {
             float cx = mx(v, v[12]), cy = my(v, v[13]), r = v[14] * v[2] / v[4];
             circle(canvas, cx, cy, r, 0x88101820, 0xccd8c49a);
             text(canvas, players > 0 ? "P" + players : "P?", cx, cy + label.getTextSize() * .36f);

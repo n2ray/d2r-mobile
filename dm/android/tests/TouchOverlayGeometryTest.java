@@ -26,6 +26,17 @@ public final class TouchOverlayGeometryTest {
         check(TouchOverlayGeometry.targetAt(v, 0, 0, 12) == -1, "outside returns no target");
         v[60] = 0; v[61] = 0; v[62] = 0;
         check(TouchOverlayGeometry.targetAt(v, 0, 0, 12) == -1, "empty pick does not hit");
+        // Floating joystick: active origin is used, and +ly moves the knob up (iOS negative-y projection).
+        v[8] = 60; v[84] = 70; v[85] = 240; v[86] = 1;
+        check(TouchOverlayGeometry.joyActive(v), "joystick active flag");
+        check(TouchOverlayGeometry.joyBaseX(v) == 70 && TouchOverlayGeometry.joyBaseY(v) == 240,
+            "active floating origin is the base");
+        check(TouchOverlayGeometry.joyKnobX(v, 16384) > TouchOverlayGeometry.joyBaseX(v),
+            "positive lx moves right");
+        check(TouchOverlayGeometry.joyKnobY(v, 16384) < TouchOverlayGeometry.joyBaseY(v),
+            "positive ly moves up, matching iOS negative-y");
+        v[23] = 1;
+        check(TouchOverlayGeometry.navigation(v), "navigation mode is read");
         v[2] = 800; v[3] = 360;
         check(Math.abs(TouchOverlayGeometry.x(v, 120) - (100 + 120 * 800f / 667f)) < .001f,
             "resize uses new picture width");

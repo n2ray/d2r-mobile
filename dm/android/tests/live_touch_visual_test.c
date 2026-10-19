@@ -9,8 +9,9 @@
 
 static int event(dm_live_touch *t, int action, int id, float x, float y, int64_t at) {
     int32_t pointer = id;
+    int w = (int)t->width, h = (int)t->height;
     return dm_live_touch_event(t, action, 0, 1, &pointer, &x, &y,
-                               667, 600, 0, 0, 667, 600, at);
+                               w, h, 0, 0, w, h, at);
 }
 
 int main(void) {
@@ -44,6 +45,28 @@ int main(void) {
     CHECK(dm_live_touch_visual_snapshot(t, &v) == 1 && v.width == 800 && v.height == 400);
     CHECK(dm_live_touch_cancel_all(t, 1020000000));
     CHECK(dm_live_touch_visual_snapshot(t, &v) == 1 && v.buttons == 0);
+
+    // Floating joystick: core DOWN at (70,240) has zero axes but must still publish active origin.
+    dm_live_touch *jt = dm_live_touch_create(667, 375);
+    CHECK(jt != NULL);
+    dm_live_touch_set_context(jt, 0, (1u << DM_TC_COUNT) - 1, 1, 1, 1, 0);
+    CHECK(event(jt, DM_LIVE_ACTION_DOWN, 21, 70, 240, 1030000000));
+    CHECK(dm_live_touch_visual_snapshot(jt, &v) == 1 && v.joy_active == 1);
+    CHECK(v.joy_origin_x == 70 && v.joy_origin_y == 240);
+    CHECK(v.joy_x == 70 && v.joy_y == 240);
+    CHECK(v.lx == 0 && v.ly == 0);
+    CHECK(event(jt, DM_LIVE_ACTION_MOVE, 21, 130, 240, 1040000000));
+    CHECK(dm_live_touch_visual_snapshot(jt, &v) == 1 && v.joy_active == 1);
+    CHECK(v.joy_origin_x == 70 && v.joy_origin_y == 240);
+    CHECK(v.lx > 0 && v.ly == 0);
+    CHECK(event(jt, DM_LIVE_ACTION_UP, 21, 130, 240, 1050000000));
+    CHECK(dm_live_touch_visual_snapshot(jt, &v) == 1 && v.joy_active == 0);
+    CHECK(v.joy_x == v.joy_rest_x && v.joy_y == v.joy_rest_y);
+    dm_live_touch_destroy(jt);
+
+    // Actual navigation state suppresses gameplay-only entries; legal targets stay in the mask.
+    dm_live_touch_set_context(t, 1, dm_tc_nav_mask(1), 2, 2, 2, 0);
+    CHECK(dm_live_touch_visual_snapshot(t, &v) == 1 && v.navigation_mode == 1);
 
     // Destroyed owner cannot expose a snapshot (caller must drop the pointer).
     dm_live_touch_destroy(t);

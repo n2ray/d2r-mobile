@@ -408,7 +408,13 @@ int dm_live_touch_visual_snapshot(const dm_live_touch *touch, dm_live_touch_visu
     if (!(l->width > 0 && l->height > 0)) return 0;
     out->valid = 1;
     out->width = l->width; out->height = l->height;
-    out->joy_x = l->joy_x; out->joy_y = l->joy_y; out->joy_radius = l->joy_radius;
+    out->joy_radius = l->joy_radius;
+    out->joy_rest_x = l->joy_x; out->joy_rest_y = l->joy_y;
+    out->joy_active = touch->state.joy_slot >= 0;
+    out->joy_origin_x = out->joy_active ? touch->state.joy_origin_x : 0;
+    out->joy_origin_y = out->joy_active ? touch->state.joy_origin_y : 0;
+    out->joy_x = out->joy_active ? out->joy_origin_x : out->joy_rest_x;
+    out->joy_y = out->joy_active ? out->joy_origin_y : out->joy_rest_y;
     out->swap_x = l->swap.x; out->swap_y = l->swap.y; out->swap_radius = l->swap.r;
     out->diff_x = l->diff.x; out->diff_y = l->diff.y; out->diff_radius = l->diff.r;
     for (int i = 0; i < 8; ++i) {

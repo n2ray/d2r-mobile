@@ -448,7 +448,8 @@ static uint64_t live_touch_visual_signature(const dm_live_touch_visual *v, const
     uint64_t h = 1469598103934665603ull;
     const uint64_t parts[] = {(uint64_t)v->buttons, (uint64_t)(uint32_t)v->lx,
         (uint64_t)(uint32_t)v->ly, (uint64_t)v->skill_set, (uint64_t)v->diff_open,
-        (uint64_t)v->navigation_mode, (uint64_t)v->enabled_targets, (uint64_t)(uint32_t)g->left, (uint64_t)(uint32_t)g->top,
+        (uint64_t)v->navigation_mode, (uint64_t)v->joy_active, (uint64_t)(uint32_t)v->joy_origin_x,
+        (uint64_t)(uint32_t)v->joy_origin_y, (uint64_t)(uint32_t)g->left, (uint64_t)(uint32_t)g->top,
         (uint64_t)(uint32_t)g->width, (uint64_t)(uint32_t)g->height};
     for (unsigned i = 0; i < sizeof parts / sizeof *parts; i++) h = (h ^ parts[i]) * 1099511628211ull;
     return h;
@@ -637,6 +638,8 @@ __attribute__((visibility("default"))) jint Java_org_d2r_android_port_D2RActivit
     out[0]=s->live_geometry.left;out[1]=s->live_geometry.top;out[2]=s->live_geometry.width;out[3]=s->live_geometry.height;
     out[4]=s->live_geometry.logical_width;out[5]=s->live_geometry.logical_height;
     out[6]=v.joy_x;out[7]=v.joy_y;out[8]=v.joy_radius;
+    out[84]=v.joy_origin_x;out[85]=v.joy_origin_y;out[86]=v.joy_active;
+    out[87]=v.joy_rest_x;out[88]=v.joy_rest_y;
     out[9]=v.swap_x;out[10]=v.swap_y;out[11]=v.swap_radius;
     out[12]=v.diff_x;out[13]=v.diff_y;out[14]=v.diff_radius;
     out[15]=(float)v.skill_set;out[16]=(float)v.diff_open;out[17]=(float)v.enabled_targets;
