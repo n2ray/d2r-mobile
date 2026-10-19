@@ -11,8 +11,10 @@
 //       If the sound card cannot be opened (no output device etc.) it no longer exits: logs red, and this channel is consumed in real time by the silent sink while the game runs on.
 // The contents of AudioOut / AudioOutBuffer / AudioOutParameter are read and written only through the interfaces below; the host defines its own internal layout and writes only the front part of each struct.
 #include "hle.h"
-#include "audio_handoff.h"
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(DM_AUDIO_HOST_TEST)
+#define DM_AUDIO_ANDROID 1
+#endif
+#ifdef DM_AUDIO_ANDROID
 #include <aaudio/AAudio.h>
 #include <semaphore.h>
 #include <errno.h>
@@ -53,6 +55,7 @@ typedef struct {
     void *event;                       // 客体 SystemEvent：有缓冲被释放就触发 | Guest SystemEvent: signaled whenever a buffer is released
     int ch;
     _Atomic int state;
+    _Atomic int au_active;             // 1 = AAudio stream may still invoke the data callback; cleared only on confirmed stop/close
     gbuf *q[QMAX]; _Atomic uint32_t q_head, q_tail;       // 待播：游戏侧写，出声端读 | Pending: written by the game side, read by the output side
     gbuf *rel[RELMAX]; _Atomic uint32_t rel_head, rel_tail; // 已释放：出声端写，游戏侧读 | Released: written by the output side, read by the game side
     uint64_t pos;                      // 当前块已播字节 | Bytes already played of the current block
@@ -167,7 +170,7 @@ static void downmix51(const int16_t *in, int16_t *out, unsigned frames) {
         int32_t l = (23170 * in[0] + 16384 * in[2] + 16384 * in[4]) >> 15, r = (23170 * in[1] + 16384 * in[2] + 16384 * in[5]) >> 15;
         out[0] = (int16_t)(l > 32767 ? 32767 : l < -32768 ? -32768 : l); out[1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r); }
 }
-#ifdef __ANDROID__
+#ifdef DM_AUDIO_ANDROID
 static aaudio_data_callback_result_t au_render(AAudioStream *stream, void *user, void *data, int32_t frames) {
     (void)stream;
     aout *a = user;
@@ -194,12 +197,12 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
     return noErr;
 }
 #endif
-#if !defined(__ANDROID__) && !TARGET_OS_IPHONE
+#if !defined(DM_AUDIO_ANDROID) && !TARGET_OS_IPHONE
 static void dev_name(AudioObjectID id, char *o, size_t n) {   // 输出设备名（日志用） | output device name (for the log)
     CFStringRef nm = NULL; UInt32 sz = sizeof nm; AudioObjectPropertyAddress pa = { kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
     o[0] = 0; if (!AudioObjectGetPropertyData(id, &pa, 0, NULL, &sz, &nm) && nm) { CFStringGetCString(nm, o, (CFIndex)n, kCFStringEncodingUTF8); CFRelease(nm); } }
 #endif
-#ifdef __ANDROID__
+#ifdef DM_AUDIO_ANDROID
 static OSStatus AudioOutputUnitStart(AudioUnit unit) { return AAudioStream_requestStart(unit); }
 static OSStatus AudioOutputUnitStop(AudioUnit unit) {
     if (AAudioStream_getState(unit) == AAUDIO_STREAM_STATE_DISCONNECTED) return AAUDIO_OK;
@@ -288,6 +291,10 @@ static void *null_sink(void *p) {
     return NULL;
 }
 static void null_start(aout *a) {
+    if (atomic_load_explicit(&a->au_active, memory_order_acquire)) {
+        LOG("【红】拒绝启动静音接收端：AAudio 回调仍未确认停止（双消费者保护）");
+        return;
+    }
     if (atomic_exchange_explicit(&a->null_run, 1, memory_order_acq_rel)) return;
     if (pthread_create(&a->null_th, NULL, null_sink, a)) {
         atomic_store_explicit(&a->null_run, 0, memory_order_release);
@@ -297,19 +304,19 @@ static void null_start(aout *a) {
 static void null_stop(aout *a) {
     if (atomic_exchange_explicit(&a->null_run, 0, memory_order_acq_rel)) pthread_join(a->null_th, NULL);
 }
-static void null_start_ctx(void *ctx) { null_start((aout *)ctx); }
 // Confirmed means the stream is STOPPED/DISCONNECTED/CLOSED (or there is no stream). Timeout or requestStop
 // error is never treated as success: the callback may still own pull()/a->pos/queue.
 static int au_stop_confirmed(aout *a) {
     if (!a->au) return 1;
     OSStatus st = AudioOutputUnitStop(a->au);
     if (st) { LOG("【红】音频停止未确认（状态 %d）：保留旧消费者，不启动静音接收端", (int)st); return 0; }
+    atomic_store_explicit(&a->au_active, 0, memory_order_release);
     return 1;
 }
 static int real_audio(void) {
     const char *e = getenv("DM_AUDIO");
     if (e) return atoi(e) != 0;
-#ifdef __ANDROID__
+#ifdef DM_AUDIO_ANDROID
     return 1;
 #else
     return TARGET_OS_IPHONE;
@@ -353,8 +360,13 @@ HLE_FORCE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", "开始播放", Result,
     aout *a = ao(g);
     pthread_mutex_lock(&a->m); int was = atomic_load_explicit(&a->state, memory_order_relaxed); atomic_store_explicit(&a->state, STATE_STARTED, memory_order_release); pthread_mutex_unlock(&a->m);
     if (was == STATE_STARTED) return RES_OK;
+    if (atomic_load_explicit(&a->au_active, memory_order_acquire)) return RES_OK;   // old callback is still the sole consumer
     if (atomic_load_explicit(&a->null_run, memory_order_acquire)) return RES_OK;   // single consumer already owns the queues
-    if (a->au && !g_suspended && AudioOutputUnitStart(a->au)) { LOG("【红】AudioUnit 启动失败：这一路改用静音接收端（不出声）"); AudioUnitUninitialize(a->au); AudioComponentInstanceDispose(a->au); a->au = NULL; }
+    if (a->au && !g_suspended) {
+        OSStatus st = AudioOutputUnitStart(a->au);
+        if (st) { LOG("【红】AudioUnit 启动失败：这一路改用静音接收端（不出声）"); AudioUnitUninitialize(a->au); AudioComponentInstanceDispose(a->au); a->au = NULL; }
+        else atomic_store_explicit(&a->au_active, 1, memory_order_release);
+    }
     if (!a->au || g_suspended) null_start(a);
     return RES_OK;
 }
@@ -431,17 +443,19 @@ void dm_audio_suspend(int on) {
             // 暂停期间改由静音接收端按实时消耗：否则缓冲不再释放，FMOD 输出线程永久等待、游戏音频节奏卡死（来电打断同理）
             // While suspended the silent sink consumes in real time instead: otherwise buffers are no longer released, the FMOD output thread waits forever and the game's audio pacing stalls (same for an incoming call interruption)
             if (on) {
-                OSStatus st = a->au ? AudioOutputUnitStop(a->au) : 0;
-                if (!dm_audio_handoff(a->au != NULL, (int)st, null_start_ctx, a)) { failed = 1; continue; }   // 未确认停止：旧回调仍是唯一消费者，绝不并行起静音接收端
+                if (a->au && !au_stop_confirmed(a)) { failed = 1; continue; }   // 未确认停止：旧回调仍是唯一消费者，绝不并行起静音接收端
+                null_start(a);
             } else {
                 null_stop(a);
                 if (!a->au) { null_start(a); continue; }
+                if (atomic_load_explicit(&a->au_active, memory_order_acquire)) continue;   // 暂停停止未确认：旧回调从未停，继续由它消费
                 OSStatus st = AudioOutputUnitStart(a->au);
                 if (st) {   // 恢复失败：先关掉可能已启动的流，确认没有回调，再交回静音接收端
                     LOG("【红】AudioUnit 恢复失败（状态 %d）：先关闭流，再由静音接收端顶住", (int)st);
                     AudioUnitUninitialize(a->au); AudioComponentInstanceDispose(a->au); a->au = NULL;
+                    atomic_store_explicit(&a->au_active, 0, memory_order_release);
                     null_start(a); failed = 1;
-                }
+                } else atomic_store_explicit(&a->au_active, 1, memory_order_release);
             }
         }
         if (failed) g_suspended = 1;   // 没恢复成：状态留在「暂停」，下次调 0 会再试 | Resume did not succeed: the state stays "suspended", and the next call with 0 will retry
