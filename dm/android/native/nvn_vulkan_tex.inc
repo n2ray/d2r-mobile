@@ -2,6 +2,7 @@
 #include "texture_diag.h"
 #include "texture_flat_probe.h"
 #include "frame_trace.h"
+#include "texture_shadow_alias.h"
 typedef struct cached_image_view { VkImageViewType type; VkImageSubresourceRange range; VkImageView view; struct cached_image_view *next; } cached_image_view;
 typedef struct image_entry {
     uint64_t serial; tex_t texture; VkImage image; VkImageView view; VkDeviceMemory memory;
@@ -197,6 +198,9 @@ static void image_access(image_entry *e,VkPipelineStageFlags stage,VkAccessFlags
     }else{e->last_stage|=stage;e->last_access|=access;}
 }
 static uint32_t dimension(uint32_t v, unsigned level) { v >>= level; return v ? v : 1; }
+static image_entry *image_find(uint64_t serial) {
+    for(image_entry *e=image_index[serial&4095];e;e=e->hash_next)if(e->serial==serial)return e;return NULL;
+}
 static image_entry *image_get(const tex_t *t) {
     unsigned bucket=t->serial&4095;for(image_entry *e=image_index[bucket];e;e=e->hash_next)if(e->serial==t->serial)return e;
     if (t->d.target==NVN_TEXTURE_TARGET_BUFFER || t->d.samples>1) die("Vulkan texture target/samples pending: %d/%d",t->d.target,t->d.samples);
@@ -435,9 +439,15 @@ void mtl_reg_samp(int id,const samp_par *p) {
     if(id>=sampler_capacity){int n=(id+64)&~63;sampler_descriptor *next=realloc(sampler_descriptors,n*sizeof *next);if(!next)die("Vulkan sampler allocation");memset(next+sampler_capacity,0,(n-sampler_capacity)*sizeof *next);sampler_descriptors=next;sampler_capacity=n;}
     sampler_descriptors[id].valid=1;sampler_descriptors[id].parameters=*p;sampler_descriptors[id].sampler=VK_NULL_HANDLE;pthread_mutex_unlock(&descriptor_lock);
 }
+// 深度比较别名与原图同寿命：释放原序号时一并释放别名序号。
+// The depth-compare alias shares the original's lifetime: releasing the serial also releases the alias serial.
+static void image_release_serial(uint64_t serial);
 void mtl_tex_release(tex_t *t) {
-    if(!device)return;mtl_finish();pthread_mutex_lock(&queue_lock);image_entry **link=&image_list;while(*link&&(*link)->serial!=t->serial)link=&(*link)->next;
-    if(*link){image_entry *e=*link;graphics_cache_forget_image(e);*link=e->next;image_entry **hash=&image_index[e->serial&4095];while(*hash&&*hash!=e)hash=&(*hash)->hash_next;if(!*hash)die("Vulkan image index corruption");*hash=e->hash_next;while(e->views){cached_image_view *v=e->views;e->views=v->next;vkDestroyImageView(device,v->view,NULL);free(v);}vkDestroyImageView(device,e->view,NULL);vkDestroyImage(device,e->image,NULL);vkFreeMemory(device,e->memory,NULL);free(e);}pthread_mutex_unlock(&queue_lock);
+    if(!device)return;mtl_finish();pthread_mutex_lock(&queue_lock);image_release_serial(t->serial);image_release_serial(texture_shadow_alias_serial(t->serial));pthread_mutex_unlock(&queue_lock);
+}
+static void image_release_serial(uint64_t serial) {
+    image_entry **link=&image_list;while(*link&&(*link)->serial!=serial)link=&(*link)->next;
+    if(*link){image_entry *e=*link;graphics_cache_forget_image(e);*link=e->next;image_entry **hash=&image_index[e->serial&4095];while(*hash&&*hash!=e)hash=&(*hash)->hash_next;if(!*hash)die("Vulkan image index corruption");*hash=e->hash_next;while(e->views){cached_image_view *v=e->views;e->views=v->next;vkDestroyImageView(device,v->view,NULL);free(v);}vkDestroyImageView(device,e->view,NULL);vkDestroyImage(device,e->image,NULL);vkFreeMemory(device,e->memory,NULL);free(e);}
 }
 void mtl_read_texels(const tex_t *t,unsigned level,unsigned layer,const NVNcopyRegion *r,uint8_t *dst,size_t row,size_t img) {
     if(r->width<=0||r->height<=0||r->depth<=0)return;mtl_sub_begin();dependencies_prepare_texture(t);image_entry *e=image_get(t);image_upload(e);

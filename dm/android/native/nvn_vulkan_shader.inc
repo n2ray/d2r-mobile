@@ -238,7 +238,15 @@ static texture_descriptor descriptor_texture(int id) {
 }
 static image_entry *descriptor_image(const texture_descriptor *d,uint32_t type,int storage,VkPipelineStageFlags stage,VkAccessFlags access,int flat) {
     if(flat){image_entry *e=texture_flat_image();image_access(e,stage,access);texture_flat_overrides++;return e;}
-    if(d->valid){image_entry *e=image_get(&d->texture);if(!storage||(e->texture.has_layout&&e->texture.mem))image_upload(e);if(storage)image_gpu_written(e);image_access(e,stage,access);return e;}
+    if(d->valid){const tex_t *source=&d->texture;tex_t alias;int alias_format=texture_shadow_alias_format(type,storage,source->d.format);
+        // 颜色格式上的深度比较改走同字节的深度格式别名；别名只由 CPU 源上传，GPU 写过的原图保持原路径并记一次。
+        // Depth compares on color formats go through a same-byte depth-format alias; the alias uploads only from the CPU
+        // source, so a GPU-written original keeps the original path and is logged once.
+        if(alias_format){image_entry *base=image_find(source->serial);
+            if(base&&base->gpu_written){static unsigned notes;if(notes++<4)LOG("[vulkan-shadow-alias] skipped GPU-written serial=%llu fmt=%#x",(unsigned long long)source->serial,(unsigned)source->d.format);}
+            else if(source->mem){alias=*source;alias.d.format=alias_format;alias.serial=texture_shadow_alias_serial(source->serial);source=&alias;
+                static unsigned created;if(!image_find(alias.serial)&&created++<8)LOG("[vulkan-shadow-alias] serial=%llu fmt=%#x sampled as %#x for depth compare",(unsigned long long)d->texture.serial,(unsigned)d->texture.d.format,alias_format);}}
+        image_entry *e=image_get(source);if(!storage||(e->texture.has_layout&&e->texture.mem))image_upload(e);if(storage)image_gpu_written(e);image_access(e,stage,access);return e;}
     // 未绑定采样资源保留零贴图；可写空槽用独立图像，防止计算输出污染后续采样。
     // Keep unbound sampled resources zero; separate writable images prevent compute output from polluting later samples.
     static tex_t dummy[2][32];unsigned index=(type&255)+(!!(type&256))*6+(!!(type&1024))*12;if(index>=32)die("Dummy texture type %u",type);
