@@ -1,0 +1,45 @@
+# 焦点策略实例化 JNI 适配（#184）| Instance-owned JNI adapter (#184)
+
+`app/audio_focus_jni.c/h` 把已验收的 `AudioFocusBoundary`（PR #171，main-looper 契约）包装成 C owner；Java 侧只新增
+必要的 `AudioFocusJniBridge` 适配类。`native.c` 未修改（由 Hermes2 负责），本切片不是 App 调用点，也不声明已播放。
+`app/audio_focus_jni.c/h` wraps the accepted AudioFocusBoundary (PR #171, main-looper contract) in a C owner; the only
+Java addition is the minimal `AudioFocusJniBridge` adapter. `native.c` is untouched (owned by Hermes2); this slice is
+not an App call site and does not claim playback.
+
+## API 与线程契约 | API and thread contract
+
+- `dm_afj_create(JNIEnv*, jobject activity_context, dm_afj_owner**)`：通过 **activity 的 ClassLoader**
+  (`context.getClassLoader().loadClass(...)`) 加载打包的 bridge 类，RegisterNatives `nativeOnFocusEvent`，构造
+  bridge 并持有全局引用；任何一步失败都回滚 owner 槽位/全局引用/本地引用。
+- `dm_afj_request/abandon/release`：控制调用必须在 Android 主线程；Java 边界拒绝其它线程，C 捕获
+  `IllegalStateException` 并返回 `DM_AFJ_E_THREAD`，不会触碰平台音频或策略。
+- 返回平台真实结果 `GRANTED(1)/DELAYED(2)/FAILED(0)`；`DELAYED`、`GRANTED`、`FAILED` 明确区分，**不把 pending
+  focus 当作播放许可**，也绝不从 JNI 回调启动 AAudio。
+- `dm_afj_drain` 由调用方的串行控制步骤执行；回调只把 `{generation,event}` 放入本 owner 的有界环。
+
+## 句柄安全 | Handle safety
+
+Java 只看到单调递增的不透明 id，绝不持有 C 指针。回调按 id 在 16 槽 owner 表中查表并取 in-flight 引用；
+`dm_afj_release` 先调用 Java `release()` 使监听器失效，再注销 id、等待 in-flight 回调归零、删除全局引用并释放。
+id 永不复用，因此 release 后到达的回调/旧 id 只会查表失败并被安全丢弃，不会解引用已释放内存。
+Java only sees a monotonically increasing opaque id, never a C pointer. Callbacks look the id up in a 16-slot owner
+table and take an in-flight reference; release invalidates the Java listener first, then unregisters, waits for
+in-flight callbacks, deletes the global reference and frees. Ids are never reused, so a late callback or stale id
+simply fails lookup instead of dereferencing freed memory.
+
+## Overflow | Overflow
+
+环容量 64。溢出时置显式标志，`dm_afj_drain` 返回 `DM_AFJ_E_OVERFLOW` 且不返回事件；调用方必须 retire owner。
+永久 LOSS 绝不会被静默丢弃。
+The ring holds 64 events. On overflow an explicit flag makes `dm_afj_drain` return `DM_AFJ_E_OVERFLOW`; the caller must
+retire the owner. A permanent LOSS is never silently dropped.
+
+## 证据 | Evidence
+
+- Host JVM 测试通过真实 C JNI 入口驱动真实 bridge/boundary（只替换 Android 边界）：35 checks / 0 failures，覆盖
+  lookup 失败回滚、真实 request 结果、callback generation/LOSS 顺序、overflow fail closed、release 后迟到回调与旧
+  id 安全、多实例隔离、off-main 拒绝、abandon 身份。
+- `aarch64-linux-android29-clang -Wall -Wextra -Werror` 编译真实 C 适配器通过；桥接 Java 也针对真实
+  `platforms/android-35/android.jar` 编译通过。
+- 尚未有 native.c/App 调用点；真实设备播放、焦点评测、延迟或 AV 同步不在本切片证据内。
+- No native.c/App call site yet; device playback, focus behaviour, latency and AV sync are not claimed here.
