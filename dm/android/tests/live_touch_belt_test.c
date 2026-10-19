@@ -111,7 +111,60 @@ int main(void) {
     CHECK(calls.expand_calls == 2 && calls.use_calls == 1);
     CHECK(!dm_live_touch_set_belt(t, 0, 1));
 
+    // Unknown before the gesture: a belt touch is not allowed to become a
+    // controller belt pulse while the host HUD has no valid state.
+    CHECK(dm_live_touch_set_belt(t, 0, 0));
+    CHECK(!event(t, DM_LIVE_ACTION_DOWN, 25, bx, by, 1750000000));
+    CHECK(!dm_live_touch_has_pointer(t, 25));
+    CHECK(dm_live_touch_buttons(t) == 0);
+    CHECK(dm_live_touch_set_belt(t, 2, 0));
+
+    // Unknown during a held belt gesture: abort that gesture, not other fingers.
+    CHECK(dm_live_touch_set_belt(t, 2, 0));
+    float mx = layout.target[DM_TC_MAIN].x;
+    float my = layout.target[DM_TC_MAIN].y;
+    CHECK(event(t, DM_LIVE_ACTION_DOWN, 30, mx, my, 1790000000));
+    CHECK(dm_live_touch_buttons(t) & layout.target[DM_TC_MAIN].button);
+    CHECK(event(t, DM_LIVE_ACTION_DOWN, 20, bx, by, 1800000000));
+    CHECK(event(t, DM_LIVE_ACTION_MOVE, 20, bx, by - 40, 1801000000));
+    CHECK(dm_live_touch_set_belt(t, 0, 0));
+    CHECK(dm_live_touch_set_belt(t, 2, 0));
+    CHECK(!dm_live_touch_has_pointer(t, 20));
+    CHECK(dm_live_touch_has_pointer(t, 30));
+    CHECK(dm_live_touch_buttons(t) & layout.target[DM_TC_MAIN].button);
+    CHECK(!event(t, DM_LIVE_ACTION_UP, 20, bx, by - 40, 1802000000));
+    CHECK(dm_live_touch_buttons(t) & layout.target[DM_TC_MAIN].button);
+    CHECK(event(t, DM_LIVE_ACTION_UP, 30, mx, my, 1803000000));
+    CHECK(!dm_live_touch_consume_belt_request(t, 3, 3, 3, &actions));
+    CHECK(calls.expand_calls == 2 && calls.use_calls == 1);
+    CHECK(dm_live_touch_buttons(t) == 0);
+
+    // Recovery: a fresh valid gesture is not quarantined.
+    dm_live_touch_set_context(t, 0, (1u << DM_TC_COUNT) - 1, 3, 3, 3, 0);
+    CHECK(swipe(t, bx, by, -40, 21, 1810000000));
+    CHECK(dm_live_touch_consume_belt_request(t, 3, 3, 3, &actions));
+    CHECK(calls.expand_calls == 3 && calls.last_on == 1);
+
+    // Invalid during an upper-row held gesture: no use and no belt pulse.
+    CHECK(dm_live_touch_set_belt(t, 2, 1));
+    float ux2 = layout.target[DM_TC_BELT1].x;
+    float uy2 = layout.target[DM_TC_BELT1].y - 165.0f * (layout.height / 1320.0f);
+    CHECK(event(t, DM_LIVE_ACTION_DOWN, 22, ux2, uy2, 1820000000));
+    CHECK(!dm_live_touch_set_belt(t, -1, 0));
+    CHECK(dm_live_touch_set_belt(t, 2, 1));
+    CHECK(!dm_live_touch_has_pointer(t, 22));
+    CHECK(!event(t, DM_LIVE_ACTION_UP, 22, ux2, uy2, 1821000000));
+    CHECK(!dm_live_touch_consume_belt_request(t, 3, 3, 3, &actions));
+    CHECK(calls.expand_calls == 3 && calls.use_calls == 1);
+    CHECK(dm_live_touch_buttons(t) == 0);
+
+    // Fresh upper-row gesture after invalid recovery still reaches host use.
+    CHECK(event(t, DM_LIVE_ACTION_DOWN, 23, ux2, uy2, 1830000000));
+    CHECK(dm_live_touch_consume_belt_request(t, 3, 3, 3, &actions));
+    CHECK(calls.use_calls == 2 && calls.last_col == 0 && calls.last_row == 1);
+    (void)event(t, DM_LIVE_ACTION_UP, 23, ux2, uy2, 1831000000);
+
     dm_live_touch_destroy(t);
-    puts("PASS: real core belt expand/collapse/upper-row requests consume once through the host action adapter and context/cancel boundaries reject");
+    puts("PASS: real core belt expand/collapse/upper-row requests consume once through the host action adapter and unknown/invalid held gestures are quarantined without replay");
     return 0;
 }
