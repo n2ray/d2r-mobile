@@ -27,6 +27,7 @@ struct dm_live_touch {
         int pointer_slot;
         int32_t pointer_id;
         uint64_t key;
+        int skill_set;
         float x0, y0, x, y;
     } skill_bind[DM_TC_MAX_TOUCH];
 };
@@ -408,6 +409,7 @@ int dm_live_touch_event(dm_live_touch *touch, int action, int action_index,
                 touch->skill_bind[slot].pointer_slot = slot;
                 touch->skill_bind[slot].pointer_id = id;
                 touch->skill_bind[slot].key = key;
+                touch->skill_bind[slot].skill_set = touch->state.skill_set;
                 touch->skill_bind[slot].x0 = touch->skill_bind[slot].x = px;
                 touch->skill_bind[slot].y0 = touch->skill_bind[slot].y = py;
                 touch->portal_request = 0;
@@ -469,7 +471,7 @@ int dm_live_touch_event(dm_live_touch *touch, int action, int action_index,
             float dx = px - touch->skill_bind[slot].x0;
             float dy = py - touch->skill_bind[slot].y0;
             int tap = dx * dx + dy * dy <= 14.0f * 14.0f;
-            if (tap && key &&
+            if (tap && key && touch->state.skill_set == touch->skill_bind[slot].skill_set &&
                 skill_slot_empty(touch, key & ~(uint64_t)DM_BTN_ZL, (uint64_t)time_ns,
                                  touch->scene_epoch, touch->world_epoch)) {
                 touch->skill_bind_request = 1;
