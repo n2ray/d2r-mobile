@@ -713,7 +713,7 @@ static int touch_timer_tick(int fd,int events,void *data) {
     while(read(fd,&expirations,sizeof expirations)==(ssize_t)sizeof expirations){}
     if(!s->live_touch||!live_touch_mode_enabled()){touch_timer_stop(s);return 1;}
     live_touch_sync(s);
-    int needs=dm_live_touch_scheduler_step(s->live_touch,(int64_t)now_ns());
+    int needs=dm_live_touch_scheduler_step(s->live_touch,(int64_t)now_ns())||dm_live_touch_needs_work(s->live_touch);
     if(s->live_items){dm_live_touch_items_tick(s->live_items,(int64_t)now_ns());live_touch_cursor_update(s);live_touch_consume_items(s);needs=dm_live_touch_needs_work(s->live_touch);}
     pad_publish(s);
     live_touch_consume_belt(s);
