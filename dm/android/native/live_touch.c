@@ -66,10 +66,63 @@ void dm_live_touch_resize(dm_live_touch *touch, float width_pt, float height_pt)
     if (!touch || !isfinite(width_pt) || !isfinite(height_pt) || width_pt <= 0 || height_pt <= 0) return;
     if (touch->width == width_pt && touch->height == height_pt) return;
     dm_tc_resize(&touch->state, width_pt, height_pt);
+    touch->state.belt_request = 0;
     touch->pulse_started_ns = 0;
     touch->width = width_pt;
     touch->height = height_pt;
     dm_touch_pointer_clear(&touch->pointers);
+}
+
+int dm_live_touch_set_belt(dm_live_touch *touch, int rows, int open) {
+    if (!touch) return 0;
+    if (rows < 0 || rows > 4 || open < 0 || open > 1 ||
+        (open && rows <= 1) || (rows == 0 && open != 0)) {
+        // Unknown/invalid host state must not leave a stale actionable request.
+        touch->state.belt_request = 0;
+        return 0;
+    }
+    touch->state.belt_rows = rows;
+    touch->state.belt_open = open ? 1 : 0;
+    if (rows == 0) touch->state.belt_request = 0;
+    return 1;
+}
+
+int dm_live_touch_consume_belt_request(dm_live_touch *touch,
+                                       uint64_t scene_epoch, uint64_t world_epoch,
+                                       uint64_t ui_identity,
+                                       const dm_live_touch_belt_actions *actions) {
+    if (!touch) return 0;
+    if (!actions || !actions->expand || !actions->use) {
+        touch->state.belt_request = 0;
+        return 0;
+    }
+    int matches = touch->have_context && touch->scene_epoch == scene_epoch &&
+                  touch->world_epoch == world_epoch && touch->ui_identity == ui_identity;
+    if (!matches) {
+        touch->state.belt_request = 0;
+        return 0;
+    }
+    int request = touch->state.belt_request;
+    if (!request) return 0;
+    touch->state.belt_request = 0;
+    // Recheck the context immediately before handing the request to the host.
+    matches = touch->have_context && touch->scene_epoch == scene_epoch &&
+              touch->world_epoch == world_epoch && touch->ui_identity == ui_identity;
+    if (!matches) return 0;
+
+    if (request == 1 || request == 2) {
+        if (touch->state.belt_rows <= 1) return 0;
+        actions->expand(actions->context, request == 1);
+        return 1;
+    }
+    if (request >= 0x100) {
+        int col = request & 0xf;
+        int row = (request >> 4) & 0xf;
+        if (col > 3 || row < 1 || row > 3 || row >= touch->state.belt_rows) return 0;
+        actions->use(actions->context, col, row);
+        return 1;
+    }
+    return 0;
 }
 
 void dm_live_touch_set_mode(dm_live_touch *touch, int navigation, uint32_t mask) {
@@ -163,6 +216,7 @@ int dm_live_touch_cancel_all(dm_live_touch *touch, int64_t time_ns) {
     (void)now_s(touch, time_ns);
     dm_tc_cancel_all(&touch->state);
     dm_touch_pointer_clear(&touch->pointers);
+    touch->state.belt_request = 0;
     touch->pulse_started_ns = 0;
     touch->have_context = 0;
     return 1;
