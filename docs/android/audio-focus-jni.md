@@ -42,6 +42,13 @@ retire the owner. A permanent LOSS is never silently dropped.
 - `AudioFocusJniBridge.release()` commits its released flag only after the accepted boundary has checked the thread
   and actually abandoned the platform request. An off-main call therefore returns `DM_AFJ_E_THREAD` with owner and
   focus intact, and a main-thread retry still abandons the exact request.
+- 平台 `abandonAudioFocusRequest` 自身抛异常时，`AudioFocusBoundary` 立即失效 callback token，但保留
+  `AudioFocusRequest` 身份；`release()` 仍保持终态（之后拒绝新 request），同一主线程的重试会再次放弃同一个
+  保留请求。C 对非线程平台异常返回 `DM_AFJ_E_JNI` 并保留 owner，绝不把失败当成功释放。
+- If the platform abandon itself throws, `AudioFocusBoundary` invalidates callback tokens immediately but retains the
+  request identity; release stays terminal (later requests are refused) and a same-thread retry abandons that exact
+  retained request. C reports a non-thread platform failure as `DM_AFJ_E_JNI` and keeps the owner instead of freeing
+  it as if the abandon had succeeded.
 - `dm_afj_create` 在每个失败的 JNI 操作后立即 clear 待处理异常并释放本地引用：抛异常的 `getClassLoader`、
   class lookup、构造器或 `NewGlobalRef` 失败都统一返回 `DM_AFJ_E_JNI`，不会把 Java 异常泄漏给调用方；
   `GetJavaVM` 失败时不会发布不可用 owner。方法查找逐个检查，避免在异常待处理时继续调用 JNI。

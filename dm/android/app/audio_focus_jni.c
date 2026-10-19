@@ -281,7 +281,15 @@ int dm_afj_abandon(dm_afj_owner *owner, int *abandoned) {
     JNIEnv *env = current_env(owner);
     if (!env) return DM_AFJ_E_JNI;
     jboolean result = (*env)->CallBooleanMethod(env, owner->bridge, owner->abandon);
-    if (pending_exception(env)) return DM_AFJ_E_JNI;
+    if ((*env)->ExceptionCheck(env)) {
+        jthrowable thrown = (*env)->ExceptionOccurred(env);
+        (*env)->ExceptionClear(env);
+        jclass ise = (*env)->FindClass(env, "java/lang/IllegalStateException");
+        int off_main = ise && (*env)->IsInstanceOf(env, thrown, ise);
+        if (ise) (*env)->DeleteLocalRef(env, ise);
+        if (thrown) (*env)->DeleteLocalRef(env, thrown);
+        return off_main ? DM_AFJ_E_THREAD : DM_AFJ_E_JNI;   // 与 request/release 的线程错误映射一致
+    }
     *abandoned = result == JNI_TRUE;
     return DM_AFJ_OK;
 }

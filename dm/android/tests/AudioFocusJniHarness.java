@@ -188,6 +188,36 @@ public final class AudioFocusJniHarness {
         check(afterFailures > 0, "JNI remains usable after failed creations");
         check(nativeRelease(afterFailures) == 0, "cleanup after failed creations");
 
+        // 平台 abandon 首次抛异常：owner 保留，重试必须真正放弃同一请求，迟到回调惰性。
+        AudioManager transientAudio = new AudioManager() {
+            private boolean failed;
+
+            @Override
+            public int abandonAudioFocusRequest(AudioFocusRequest request) {
+                if (!failed) {
+                    failed = true;
+                    throw new RuntimeException("transient platform abandon failure");
+                }
+                return super.abandonAudioFocusRequest(request);
+            }
+        };
+        Context transientContext = new Context(transientAudio,
+                AudioFocusJniHarness.class.getClassLoader());
+        long transientOwner = nativeCreate(transientContext);
+        check(transientOwner > 0, "transient owner created");
+        transientAudio.nextResult = AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        check(nativeRequest(transientOwner, 81, false) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED,
+                "transient owner granted");
+        AudioFocusRequest transientRequest = transientAudio.lastRequest;
+        check(nativeRelease(transientOwner) == -2, "platform abandon failure reported, owner retained");
+        check(transientAudio.abandonCalls == 0, "failed platform abandon did not fabricate success");
+        check(nativeRelease(transientOwner) == 0, "release retry succeeds");
+        check(transientAudio.abandonCalls == 1 && transientAudio.abandonedRequest == transientRequest,
+                "retry really abandons the same platform request");
+        transientAudio.emit(transientRequest, AudioManager.AUDIOFOCUS_LOSS);
+        deliver();
+        check(nativeDrain(transientOwner, events) == -1, "late callback after platform-retry release is inert");
+
         System.out.println("AudioFocusJniHarness: " + checks + " checks, " + failures + " failures");
         if (failures != 0) System.exit(1);
     }
