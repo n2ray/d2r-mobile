@@ -450,10 +450,16 @@ void dm_audio_suspend(int on) {
                 if (!a->au) { null_start(a); continue; }
                 if (atomic_load_explicit(&a->au_active, memory_order_acquire)) continue;   // 暂停停止未确认：旧回调从未停，继续由它消费
                 OSStatus st = AudioOutputUnitStart(a->au);
-                if (st) {   // 恢复失败：先关掉可能已启动的流，确认没有回调，再交回静音接收端
-                    LOG("【红】AudioUnit 恢复失败（状态 %d）：先关闭流，再由静音接收端顶住", (int)st);
+                if (st) {
+#ifdef DM_AUDIO_ANDROID
+                    // AAudio start failure must quiesce the stream before sink handoff.
+                    LOG("【红】AAudio 恢复失败（状态 %d）：先关闭流，再由静音接收端顶住", (int)st);
                     AudioUnitUninitialize(a->au); AudioComponentInstanceDispose(a->au); a->au = NULL;
                     atomic_store_explicit(&a->au_active, 0, memory_order_release);
+#else
+                    // Preserve AudioUnit's existing retry on the next interruption-end notification.
+                    LOG("【红】AudioUnit 恢复失败（状态 %d）：保持静音接收端，等下次恢复重试", (int)st);
+#endif
                     null_start(a); failed = 1;
                 } else atomic_store_explicit(&a->au_active, 1, memory_order_release);
             }
