@@ -31,6 +31,7 @@ public final class NativeAudioHarness {
     private static native int nativeHasSession();
     private static native int nativeLastError();
     private static native int nativeDestroy();
+    private static native int nativeDestroyNoEnv();
     private static native int nativeReference(long phase, short[] out, int frames);
 
     private static int checks, failures;
@@ -141,6 +142,12 @@ public final class NativeAudioHarness {
         check(nativeKey(KEY_P, DOWN, 0, 1) == 1 && nativeState() == OUT_PLAYING, "recreated helper plays");
         check(nativeDestroy() == 0, "final cleanup");
         check(nativeFixtureCloses() == nativeFixtureOpens(), "every opened fixture stream was closed");
+
+        // 没有 JNIEnv 时不得丢弃 global Activity ref 还报成功；保留 helper 供正确清理。
+        check(nativeCreate(context, 64) == 1, "helper for no-env cleanup boundary");
+        check(nativeDestroyNoEnv() != 0, "destroy without JNIEnv refuses to report success");
+        check(nativeHasSession() == 0, "no session was created");
+        check(nativeDestroy() == 0, "normal cleanup after refused no-env destroy");
 
         System.out.println("NativeAudioHarness: " + checks + " checks, " + failures + " failures");
         if (failures != 0) System.exit(1);

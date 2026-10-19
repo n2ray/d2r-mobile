@@ -737,7 +737,7 @@ static int input_ready(int fd,int events,void*data){
             handled=1; // all physical gameplay input is gated during text
         }else if(type==AINPUT_EVENT_TYPE_KEY&&key==AKEYCODE_BACK){
             if(AKeyEvent_getAction(event)==AKEY_EVENT_ACTION_UP)ANativeActivity_finish(a);handled=1;
-        }else if(type==AINPUT_EVENT_TYPE_KEY){
+        }else if(type==AINPUT_EVENT_TYPE_KEY&&!gamepad_source(source)){
             int32_t act=AKeyEvent_getAction(event),rep=AKeyEvent_getRepeatCount(event);
             int keyboard=((source&AINPUT_SOURCE_KEYBOARD)==AINPUT_SOURCE_KEYBOARD)&&
                          ((source&AINPUT_SOURCE_GAMEPAD)!=AINPUT_SOURCE_GAMEPAD);
@@ -775,8 +775,8 @@ static void input_created(ANativeActivity*a,AInputQueue*queue){app_state*s=a->in
     update_touch_state(s);
 }
 static void input_destroyed(ANativeActivity*a,AInputQueue*queue){app_state*s=a->instance;if(!s)return;
-    (void)native_audio_pause(s->audio);   // 输入队列退休：先停生产者，不自动恢复
     if(s->input!=queue){LOG("stale input queue destroy ignored");return;}
+    (void)native_audio_pause(s->audio);   // 仅当前队列退休才停生产者，陈旧回调零副作用
     s->text_back_owned=0;
     if(s->text_bridge)text_end(s,"queue_lost");
     AInputQueue_detachLooper(queue);s->input=NULL;update_touch_state(s);
@@ -868,11 +868,11 @@ static void window_resized(ANativeActivity*a,ANativeWindow*window){
 }
 static void window_destroyed(ANativeActivity*a,ANativeWindow*window){
     app_state*s=a->instance;if(!s||!s->lifecycle)return;
-    (void)native_audio_pause(s->audio);   // 窗口丢失：暂停会话，迟到焦点事件不会自动播放
     if(s->text_bridge)text_end(s,"window_destroyed");
     if(s->wsi.enabled){
         // 身份校验先于停表等一切副作用。| Identity check before every side effect, the timer included.
         if(!dm_wsi_bridge_owns_window(&s->wsi_bridge,window)){LOG("wsi stale window destroy ignored");return;}
+        (void)native_audio_pause(s->audio);   // 仅当前 WSI 窗口丢失才暂停音频；陈旧回调零副作用
         stop_frame_timer(s);
         // 只有排空被证明成功后才让生命周期释放真实 ANativeWindow 引用。
         // The lifecycle releases the real ANativeWindow reference only after a proven drain.
@@ -889,7 +889,7 @@ static void window_destroyed(ANativeActivity*a,ANativeWindow*window){
         int64_t now=monotonic_ns();touch_cancel(s,"window_destroyed",now<0?0:now);
         return;
     }
-    if(s->window==window){s->window=NULL;update_touch_state(s);
+    if(s->window==window){(void)native_audio_pause(s->audio);s->window=NULL;update_touch_state(s);
         s->hud_obs_valid=0;dm_touch_hud_frame_suppress(&s->hud_frame);
         int64_t now=monotonic_ns();touch_cancel(s,"window_destroyed",now<0?0:now);}
     if(!dm_app_lifecycle_surface_destroyed(s->lifecycle,window))

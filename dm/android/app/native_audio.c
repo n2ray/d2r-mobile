@@ -22,6 +22,12 @@ static int set_error(native_audio *audio, int error) {
     return error;
 }
 
+// 可选诊断路径上的分配失败不得把 pending exception 留给调用者。
+// Allocation failure on this optional diagnostic path must not leave a pending exception for the caller.
+static void clear_pending(JNIEnv *env) {
+    if (env && (*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+}
+
 void native_audio_reference_pcm(uint64_t start_phase, int16_t *out, int frames) {
     for (int i = 0; i < frames; i++) {
         const uint64_t frame = start_phase + (uint64_t)i;
@@ -43,6 +49,7 @@ int native_audio_create(JNIEnv *env, jobject activity, const dm_audio_session_op
     }
     audio->activity = (*env)->NewGlobalRef(env, activity);
     if (!audio->activity) {
+        clear_pending(env);
         free(audio);
         return -1;
     }
@@ -57,7 +64,7 @@ static int ensure_session(native_audio *audio, JNIEnv *env) {
     if (audio->session) return DM_AS_OK;
     if (!env) return set_error(audio, DM_AS_E_JNI);
     jobject activity = (*env)->NewLocalRef(env, audio->activity);
-    if (!activity) return set_error(audio, DM_AS_E_JNI);
+    if (!activity) { clear_pending(env); return set_error(audio, DM_AS_E_JNI); }
     dm_audio_session *session = NULL;
     const int rc = dm_audio_session_create(env, activity, &audio->options, &session);
     (*env)->DeleteLocalRef(env, activity);
@@ -146,6 +153,11 @@ int native_audio_destroy(native_audio **audio_ref, JNIEnv *env) {
     if (audio->activity && env) {
         (*env)->DeleteGlobalRef(env, audio->activity);
         audio->activity = NULL;
+    }
+    if (audio->activity) {
+        // 没有 JNIEnv 就绝不可能证明全局引用已释放；保留 helper，不虚报清理成功。
+        // Without a JNIEnv the global reference cannot be proven released; retain the helper instead of claiming success.
+        return set_error(audio, DM_AS_E_JNI);
     }
     free(audio);
     *audio_ref = NULL;
