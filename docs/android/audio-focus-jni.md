@@ -52,7 +52,8 @@ retire the owner. A permanent LOSS is never silently dropped.
 
 ## 证据 | Evidence
 
-- Host JVM 测试通过真实 C JNI 入口驱动真实 bridge/boundary（只替换 Android 边界）：35 checks / 0 failures，覆盖
+- Host JVM 测试通过真实 C JNI 入口驱动真实 bridge/boundary（只替换 Android 边界）：46 checks / 0 failures，
+  同时 root 扩展 harness 41 checks 也通过；覆盖
   lookup 失败回滚、真实 request 结果、callback generation/LOSS 顺序、overflow fail closed、release 后迟到回调与旧
   id 安全、多实例隔离、off-main 拒绝、abandon 身份。
 - `aarch64-linux-android29-clang -Wall -Wextra -Werror` 编译真实 C 适配器通过；桥接 Java 也针对真实
