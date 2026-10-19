@@ -1,5 +1,6 @@
 #include "../../host/ui_trace.h"
 #include <stdio.h>
+#include <string.h>
 
 int main(void) {
     dm_ui_trace_state s = {0};
@@ -29,6 +30,11 @@ int main(void) {
     if (!dm_ui_trace_pump_take(&s, &last_phase, 2)) return 10;
     for (int i = 0; i < 100; i++) if (dm_ui_trace_pump_take(&s, &last_phase, 2)) return 11;
     if (!dm_ui_trace_pump_take(&s, &last_phase, 3)) return 12;
-    puts("PASS: ui trace opt-out, per-stage cap, long-hold terminal receipts, 100-call cancel bound");
+    const char *old_name = "PreviousButton";
+    if (strcmp(dm_ui_trace_snap_name(0, old_name), "unknown")) return 20;
+    if (strcmp(dm_ui_trace_snap_name(6, old_name), "unknown")) return 21;
+    if (strcmp(dm_ui_trace_snap_name(1, old_name), old_name)) return 22;
+    if (strcmp(dm_ui_trace_snap_name(2, old_name), old_name)) return 23;
+    puts("PASS: ui trace opt-out, per-stage cap, long-hold terminal receipts, 100-call cancel bound, stale snap name unknown");
     return 0;
 }

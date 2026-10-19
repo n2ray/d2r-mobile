@@ -63,3 +63,9 @@ static inline int dm_ui_trace_pump_take(dm_ui_trace_state *s, _Atomic int *last_
     atomic_store(last_phase, phase);
     return trace;
 }
+
+// Only a current successful snap may contribute a widget name. ui_snap can
+// return 0/6 and leave g_click_name from an earlier tap; that is not provenance.
+static inline const char *dm_ui_trace_snap_name(int result, const char *name) {
+    return ((result == 1 || result == 2) && name && name[0]) ? name : "unknown";
+}

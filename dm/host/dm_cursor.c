@@ -2818,14 +2818,14 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
     static uint64_t snapped;   // 这次点按已吸附过的位置（吸附后 g_ut_xy 改成可点控件上的点，再悬停、按下） | the position this tap has already been snapped at (after snapping, g_ut_xy is changed to a point on the clickable widget, then hover, then press)
     if (ph == 2 && r != snapped && (dm_ui_panel_state() & DM_PS_VAULT) && ({ int dm_vault_ui_blocks(int, int); dm_vault_ui_blocks(x, y); })) snapped = r;   // 编年史页自己收的点（格子、部位页签、空处）不吸附：原先点部位页签被吸到旁边的搜索框上 | taps the chronicle page handles itself (cells, slot tabs, empty space) are not snapped: previously a tap on a slot tab got snapped onto the search box next to it
     if (ph == 2 && r != snapped) { int sx = x, sy = y; int trace_snap = dm_ui_trace_take_stage(&g_ui_trace, DM_UI_TRACE_PUMP); int sn = ui_snap(m, root, &sx, &sy);
-        if (trace_snap) LOG("[ui-trace] snap gen=%u viewport=%dx%d result=%d before=%d,%d after=%d,%d name=%s", dm_ui_trace_generation(&g_ui_trace), width, height, sn, x, y, sx, sy, g_click_name ? g_click_name : "?");
+        if (trace_snap) { const char *snap_name = dm_ui_trace_snap_name(sn, g_click_name); LOG("[ui-trace] snap gen=%u viewport=%dx%d result=%d before=%d,%d after=%d,%d name=%.32s", dm_ui_trace_generation(&g_ui_trace), width, height, sn, x, y, sx, sy, snap_name); }
         if (sn == 6) { atomic_store(&g_ut_phase, 0); static int l6; if (l6++ < 40) LOG("界面鼠标：(%d,%d) 压着被上层面板盖住的按钮，不点", x, y); return; }
         if (sn == 2) { static int lg; if (lg++ < 40) LOG("界面鼠标：(%d,%d) 就近吸附到 (%d,%d)", x, y, sx, sy);
             r = ((uint64_t)(uint32_t)((sx + 0.5) / width * 65535) << 16) | (uint32_t)((sy + 0.5) / height * 65535); atomic_store(&g_ut_xy, r); x = sx; y = sy; }
         snapped = r; }
     static int hov; static uint64_t hov_xy; if (r != hov_xy) { hov_xy = r; hov = 0; }
     if (ph == 1) hov++;
-    if (ph == 2 && hov < 2) { if (trace) LOG("[ui-trace] pump wait-hover hov=%d", hov); hov++; return; }
+    if (ph == 2 && hov < 2) {    if (trace) LOG("[ui-trace] pump gen=%u wait-hover hov=%d", dm_ui_trace_generation(&g_ui_trace), hov); hov++; return; }
     if (ph == 2 && atomic_load(&g_cc_open) && !atomic_load(&g_fe_opt_open) && !atomic_load(&g_fe_name_open) && !atomic_load(&g_fe_confirm_open)) {   // 职业选择页（上面没盖着模式页 / 起名页 / 弹窗）：这次点的若是别的职业，先让正在出列的那位归队（见上） | class selection page (not covered by the mode page / naming page / a popup): if this tap is on a different class, first have the one currently stepping forward return to the lineup (see above)
         uint64_t pn = ui_find(root, "CharacterCreatePanel", 0), xy = (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32), ws[8]; int hit = -1;
         for (int i = 0; pn && i < 8; i++) { ws[i] = ui_find(pn, k_cc_class[i], 0); if (ws[i] && hit < 0 && (((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)ws[i] + 0x48))(ws[i], xy) & 1)) hit = i; }
