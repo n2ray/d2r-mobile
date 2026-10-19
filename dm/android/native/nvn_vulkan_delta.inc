@@ -46,8 +46,8 @@ static vk_buffer gpu_snapshot_buffer(uintptr_t address,uint64_t size) {
     vk_buffer output={0},staging[NVN_DIRTY_SNAPSHOT_MAX_RUNS]={{0}};unsigned staged=0;
     nvn_dirty_snapshot_plan plan={0};int host_held=0,transaction=0,full_read=0,inplace=0;
     uint64_t patch_bytes=0;owned_snapshot_counters before=owned_snapshot_stats;
-    if(!gpu_snapshot_reuse_enabled()){reason=SNAP_DIAG_NO_ENTRY;goto raw;}
     if(size<=65536||size>(64u<<20)||size>UINTPTR_MAX-address){gpu_snapshot_stats.budget++;reason=SNAP_DIAG_LIMIT;goto raw;}
+    if(!gpu_snapshot_reuse_enabled()){reason=SNAP_DIAG_NO_ENTRY;goto raw;}
     if(!mtl_addr(address,size,NULL,NULL)){gpu_snapshot_stats.plan++;reason=SNAP_DIAG_POOL;goto raw;}
     if(!gpu_snapshot_api()){gpu_snapshot_stats.api++;goto raw;}
     // 连当前命令的未编码输出也保守拒绝；不得让 clone 覆盖原有 FIFO overlay。
