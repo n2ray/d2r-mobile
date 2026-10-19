@@ -502,7 +502,6 @@ static post_op *post_new(int kind) {
 }
 
 #include "nvn_vulkan_async.inc"
-#include "nvn_vulkan_guest_publish.inc"
 #include "nvn_vulkan_forward.inc"
 
 void mtl_sub_begin(void) {

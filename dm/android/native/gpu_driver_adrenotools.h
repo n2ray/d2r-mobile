@@ -6,6 +6,7 @@
 // libadrenotools: https://github.com/eden-emulator/libadrenotools
 // Fixed commit: 8ba23b42d7
 // SPDX-License-Identifier: BSD-2-Clause
+// Full license: gpu_driver_adrenotools.LICENSE.txt
 // Copyright (c) 2021 Billy Laws
 #pragma once
 

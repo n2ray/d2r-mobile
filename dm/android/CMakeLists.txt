@@ -708,7 +708,7 @@ if(ANDROID)
     target_include_directories(dm_android_nvn_backend PUBLIC
         native native/compat ../gfx/nvn ../gfx/nvn/include ../gfx/tex ../host)
     target_link_libraries(dm_android_nvn_backend PUBLIC dm_android_tex android log dl m vulkan)
-    target_compile_options(dm_android_nvn_backend PRIVATE -Wall -Wextra -Wno-unused-function -Werror)
+    target_compile_options(dm_android_nvn_backend PRIVATE -Wall -Wextra -Werror)
     set_source_files_properties(native/nvn_vulkan.c PROPERTIES COMPILE_DEFINITIONS _GNU_SOURCE)
     add_executable(dm_android_probe probe.c)
     target_compile_options(dm_android_probe PRIVATE -Wall -Wextra -Werror)
