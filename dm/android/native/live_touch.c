@@ -92,6 +92,7 @@ dm_live_touch *dm_live_touch_create(float width_pt, float height_pt) {
     touch->width = width_pt;
     touch->height = height_pt;
     dm_tc_init(&touch->state, width_pt, height_pt);
+    touch->state.mouse_click_mode = 1;
     dm_touch_pointer_clear(&touch->pointers);
     return touch;
 }
@@ -442,6 +443,16 @@ int dm_live_touch_pointer_dragged_for_id(const dm_live_touch *touch, int32_t id)
 float dm_live_touch_pointer_lift_norm(const dm_live_touch *touch) {
     if (!touch || touch->height <= 0) return 0;
     return DM_TC_POINTER_LIFT_PT * dm_tc_scale_for_size(touch->width, touch->height) / touch->height;
+}
+
+int dm_live_touch_pointer_position(const dm_live_touch *touch,
+                                   float *x, float *y, float *w, float *h) {
+    if (!touch || !touch->state.pointer_valid) return 0;
+    if (x) *x = touch->state.pointer_x;
+    if (y) *y = touch->state.pointer_y;
+    if (w) *w = touch->width;
+    if (h) *h = touch->height;
+    return 1;
 }
 
 void dm_live_touch_apply_item_hit(dm_live_touch *touch, int slot, int kind) {

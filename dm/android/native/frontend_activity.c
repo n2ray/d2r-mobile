@@ -490,6 +490,8 @@ static int item_result_host(void *context, unsigned seq) { (void)context; return
 static unsigned drop_query_host(void *context, float nx, float ny_lifted, float ny_finger) { (void)context; return dm_ui_drop_query(nx, ny_lifted, ny_finger); }
 static int drop_result_host(void *context, unsigned seq) { (void)context; return dm_ui_item_result(seq); }
 static int drop_last_host(void *context) { (void)context; return dm_ui_drop_last(); }
+static int drop_point_host(void *context, float *nx, float *ny) { (void)context; return dm_ui_drop_point(nx, ny); }
+static int origin_point_host(void *context, float *nx, float *ny) { (void)context; return dm_ui_origin_point(nx, ny); }
 static void item_tap_host(void *context) { (void)context; dm_ui_item_tap(); }
 static void identify_host(void *context) { (void)context; dm_ui_identify_hovered(); }
 static void use_host(void *context) { (void)context; dm_ui_use_item(); }
@@ -500,7 +502,8 @@ static void mouse_click_host(void *context, float nx, float ny) { (void)context;
 static void live_touch_items_ensure(game_app *s) {
     if (!s->live_touch || s->live_items) return;
     dm_live_touch_items_host host = {s, item_query_host, item_result_host, drop_query_host,
-                                     drop_result_host, drop_last_host, NULL};
+                                     drop_result_host, drop_last_host, drop_point_host,
+                                     origin_point_host};
     s->live_items = dm_live_touch_items_create(s->live_touch, &host);
     if (!s->live_items) LOG("[android-touch] live item routing allocation failed");
 }
@@ -508,6 +511,13 @@ static void live_touch_cancel_sources_all(game_app *s) {
     if (!s) return;
     if (s->live_items) dm_live_touch_items_cancel(s->live_items);
     dm_live_touch_cancel_sources(s->live_touch, (int64_t)now_ns(), ui_touch_cancel);
+}
+static void live_cursor_set(void *context,float x,float y,float w,float h){(void)context;dm_cursor_set_screen(x,y,w,h);}
+static void live_cursor_clear(void *context){(void)context;dm_cursor_clear();}
+static void live_touch_cursor_update(game_app *s){
+    if(!s->live_touch)return;
+    int live_on=live_touch_mode_enabled()&&s->live_provider_available;
+    dm_live_touch_cursor_publish(s->live_touch,live_on,live_cursor_set,live_cursor_clear,NULL);
 }
 static void live_touch_consume_items(game_app *s) {
     if (!s->live_items || !s->live_touch || !live_touch_mode_enabled() || !s->live_provider_available) return;
@@ -560,6 +570,9 @@ static void pad_publish(game_app *s) {
     if(!x&&!y){x=s->touch_lx;y=s->touch_ly;}
     int32_t rx=s->rx,ry=s->ry;if(!rx&&!ry&&live_on){int32_t lx=dm_live_touch_rx(s->live_touch),ly=dm_live_touch_ry(s->live_touch);if(lx||ly){rx=lx;ry=ly;}}
     if(!rx&&!ry){rx=s->touch_rx;ry=s->touch_ry;}
+    if(s->live_touch){
+        live_touch_cursor_update(s);
+    }
     dm_pad_set(s->pad_buttons|s->hat_buttons|s->trigger_buttons|s->touch_buttons|live_buttons|(s->tap_a?DM_BTN_A:0),x,y,rx,ry);
 }
 static void pad_clear(game_app *s) {s->pad_buttons=s->hat_buttons=s->trigger_buttons=s->move_keys=s->touch_buttons=0;s->tap_a=0;s->lx=s->ly=s->rx=s->ry=s->touch_lx=s->touch_ly=s->touch_rx=s->touch_ry=0;if(s->live_items)dm_live_touch_items_cancel(s->live_items);if(s->live_touch)dm_live_touch_cancel_all(s->live_touch,0);pad_publish(s);}
@@ -575,7 +588,7 @@ static int touch_timer_tick(int fd,int events,void *data) {
     if(!s->live_touch||!live_touch_mode_enabled()){touch_timer_stop(s);return 1;}
     live_touch_sync(s);
     int needs=dm_live_touch_scheduler_step(s->live_touch,(int64_t)now_ns());
-    if(s->live_items){dm_live_touch_items_tick(s->live_items,(int64_t)now_ns());live_touch_consume_items(s);needs=dm_live_touch_needs_work(s->live_touch);}
+    if(s->live_items){dm_live_touch_items_tick(s->live_items,(int64_t)now_ns());live_touch_cursor_update(s);live_touch_consume_items(s);needs=dm_live_touch_needs_work(s->live_touch);}
     pad_publish(s);
     live_touch_consume_belt(s);
     live_touch_consume_difficulty(s);
@@ -646,6 +659,7 @@ static int live_touch_event_routed(game_app *s,int action,int action_index,int p
         dm_live_touch_event(s->live_touch,action,action_index,pointer_count,ids,xs,ys,width,height,left,top,gw,gh,time_ns);
     if(handled&&s->live_items){
         dm_live_touch_items_tick(s->live_items,time_ns);
+        live_touch_cursor_update(s);
         live_touch_consume_items(s);
     }
     return handled;

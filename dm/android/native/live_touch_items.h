@@ -19,6 +19,7 @@ typedef struct {
     unsigned (*drop_query)(void *context, float nx, float ny_lifted, float ny_finger);
     int (*drop_result)(void *context, unsigned seq);
     int (*drop_last)(void *context);
+    int (*drop_point)(void *context, float *nx, float *ny);
     int (*origin_point)(void *context, float *nx, float *ny);
 } dm_live_touch_items_host;
 

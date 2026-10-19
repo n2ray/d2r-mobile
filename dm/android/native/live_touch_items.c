@@ -1,4 +1,5 @@
 #include "live_touch_items.h"
+#define LIVE_ITEM_MAX_POINTER 16
 
 #include <math.h>
 #include <stdlib.h>
@@ -22,11 +23,31 @@ struct dm_live_touch_items {
     int pending_release;
     int64_t release_ns;
     float release_nx, release_ny;
+    int32_t quarantine[LIVE_ITEM_MAX_POINTER];
+    int quarantine_count;
 };
+
+static int quarantined(const dm_live_touch_items *items, int32_t id) {
+    for (int i = 0; i < items->quarantine_count; ++i)
+        if (items->quarantine[i] == id) return 1;
+    return 0;
+}
+static void quarantine_add(dm_live_touch_items *items, int32_t id) {
+    if (id < 0 || quarantined(items, id) || items->quarantine_count >= LIVE_ITEM_MAX_POINTER) return;
+    items->quarantine[items->quarantine_count++] = id;
+}
+static void quarantine_remove(dm_live_touch_items *items, int32_t id) {
+    for (int i = 0; i < items->quarantine_count; ++i) {
+        if (items->quarantine[i] != id) continue;
+        items->quarantine[i] = items->quarantine[--items->quarantine_count];
+        return;
+    }
+}
 
 static int valid_host(const dm_live_touch_items_host *host) {
     return host && host->item_query && host->item_result &&
-           host->drop_query && host->drop_result && host->drop_last;
+           host->drop_query && host->drop_result && host->drop_last &&
+           host->drop_point && host->origin_point;
 }
 
 dm_live_touch_items *dm_live_touch_items_create(dm_live_touch *touch,
@@ -55,6 +76,7 @@ static void discard_pending(dm_live_touch_items *items) {
     items->drop_known = 0;
     items->item_seq = 0;
     items->drop_seq = 0;
+    items->quarantine_count = 0;
 }
 
 int dm_live_touch_items_set_context(dm_live_touch_items *items,
@@ -144,8 +166,31 @@ static void resolve_release(dm_live_touch_items *items, int64_t now_ns) {
             }
         }
         if (!items->drop_known) return;
-        dm_live_touch_apply_drop(items->touch, items->drop_kind,
-                                 items->release_nx, items->release_ny);
+        if (items->drop_kind == 5) {
+            float nx, ny;
+            if (items->host.drop_point(items->host.context, &nx, &ny))
+                dm_live_touch_apply_drop(items->touch, 5, clamp_norm(nx), clamp_norm(ny));
+            else if (items->host.origin_point(items->host.context, &nx, &ny))
+                dm_live_touch_apply_drop(items->touch, 5, clamp_norm(nx), clamp_norm(ny));
+            else {
+                // No authoritative host point: fail closed instead of using the
+                // finger as a legal drop location.
+                dm_live_touch_cancel_all(items->touch, items->release_ns);
+                discard_pending(items);
+                return;
+            }
+        } else if (items->drop_kind == 0) {
+            float nx, ny;
+            if (items->host.origin_point(items->host.context, &nx, &ny))
+                dm_live_touch_apply_drop(items->touch, 5, clamp_norm(nx), clamp_norm(ny));
+            else {
+                dm_live_touch_cancel_all(items->touch, items->release_ns);
+                discard_pending(items);
+                return;
+            }
+        } else {
+            dm_live_touch_apply_drop(items->touch, items->drop_kind, 0, 0);
+        }
     }
     dm_live_touch_apply_item_hit(items->touch, items->slot, items->item_kind);
     dm_live_touch_finish_pointer(items->touch, items->pointer_id, items->release_ns);
@@ -173,14 +218,21 @@ int dm_live_touch_items_event(dm_live_touch_items *items,
     }
 
     if (action == DM_LIVE_ACTION_DOWN || action == DM_LIVE_ACTION_POINTER_DOWN) {
+        if (action_index < 0 || action_index >= pointer_count) return 0;
+        int32_t id = ids[action_index];
+        if (items->active || items->pending_release) {
+            // A second finger must never steal or discard the first pointer's
+            // async item/release verdict. Quarantine it until its own UP.
+            quarantine_add(items, id);
+            return 1;
+        }
+        if (quarantined(items, id)) quarantine_remove(items, id);
         discard_pending(items);
         int changed = dm_live_touch_event(touch, action, action_index, pointer_count,
                                           ids, x_px, y_px, viewport_width, viewport_height,
                                           picture_left, picture_top, picture_width, picture_height,
                                           time_ns);
-        if (!changed || action_index < 0 || action_index >= pointer_count ||
-            picture_width <= 0 || picture_height <= 0) return changed;
-        int32_t id = ids[action_index];
+        if (!changed || picture_width <= 0 || picture_height <= 0) return changed;
         int slot = dm_live_touch_pointer_slot_for_id(touch, id);
         if (slot < 0 || slot != dm_live_touch_pointer_slot(touch)) return changed;
         float nx = clamp_norm((x_px[action_index] - picture_left) / picture_width);
@@ -194,10 +246,22 @@ int dm_live_touch_items_event(dm_live_touch_items *items,
 
     if (action == DM_LIVE_ACTION_MOVE) {
         poll_item_hit(items);
-        int changed = dm_live_touch_event(touch, action, action_index, pointer_count,
+        int changed;
+        if (items->quarantine_count) {
+            int idx = -1;
+            for (int i = 0; i < pointer_count; ++i) if (ids[i] == items->pointer_id) { idx = i; break; }
+            if (idx < 0) return 1;
+            int32_t owner = ids[idx];
+            float ox = x_px[idx], oy = y_px[idx];
+            changed = dm_live_touch_event(touch, action, -1, 1, &owner, &ox, &oy,
+                                          viewport_width, viewport_height, picture_left, picture_top,
+                                          picture_width, picture_height, time_ns);
+        } else {
+            changed = dm_live_touch_event(touch, action, action_index, pointer_count,
                                           ids, x_px, y_px, viewport_width, viewport_height,
                                           picture_left, picture_top, picture_width, picture_height,
                                           time_ns);
+        }
         if (!items->active) return changed;
         int idx = -1;
         for (int i = 0; i < pointer_count; ++i) if (ids[i] == items->pointer_id) { idx = i; break; }
@@ -211,8 +275,13 @@ int dm_live_touch_items_event(dm_live_touch_items *items,
     }
 
     if (action == DM_LIVE_ACTION_UP || action == DM_LIVE_ACTION_POINTER_UP) {
-        if (!items->active || action_index < 0 || action_index >= pointer_count ||
-            ids[action_index] != items->pointer_id || picture_width <= 0 || picture_height <= 0) {
+        if (action_index < 0 || action_index >= pointer_count) return 0;
+        if (quarantined(items, ids[action_index])) {
+            quarantine_remove(items, ids[action_index]);
+            return 1;
+        }
+        if (!items->active || ids[action_index] != items->pointer_id ||
+            picture_width <= 0 || picture_height <= 0) {
             return dm_live_touch_event(touch, action, action_index, pointer_count,
                                        ids, x_px, y_px, viewport_width, viewport_height,
                                        picture_left, picture_top, picture_width, picture_height,
