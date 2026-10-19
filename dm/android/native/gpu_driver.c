@@ -49,6 +49,13 @@ static void reset_subgroup_policy(dm_vk_driver *d) {
     d->effective_shader_subgroup_size=0;d->required_subgroup_stages=0;
     d->subgroup_policy_supported=0;d->subgroup_policy_prepared=0;d->subgroup_policy_enabled=0;
     memset(&d->subgroup_features,0,sizeof d->subgroup_features);
+    // 同一 reset 边界也清除所选设备的 draw 功能状态；下一次 validate
+    // 必须从新 physical 重新查询，不能继承旧设备的支持/已启用标记。
+    // Clear selected-device draw-feature state at the same reset boundary;
+    // the next validate must re-query the new physical device.
+    memset(&d->shader_draw_parameters_features,0,sizeof d->shader_draw_parameters_features);
+    d->shader_draw_parameters_supported=0;
+    d->shader_draw_parameters_prepared=0;
 }
 static int configure(dm_vk_driver *d) {
     // 严格环境标志先解析，配置语法错误也不能悄悄退回系统。
