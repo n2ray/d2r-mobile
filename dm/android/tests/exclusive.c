@@ -29,6 +29,12 @@ int main(void){
     put(im.bytes,words[0]);
     for(unsigned i=1;i<300;i++)put(im.bytes+4*i,0xd503201f);
     put(im.bytes+1200,0xd5033f5f);CHECK(dm_exclusive_untouched(&im,0,d)==ENOTSUP);
+    // Current SDK blocker shape: exclusive root with a WFE polling back edge and a normal RET tail. RET is not a
+    // monitor-clearing event, so accepting this shape without a closed caller-continuation proof would change the
+    // reservation lifetime; strict preparation must keep rejecting it.
+    const uint32_t sdk_shape[]={0xc85f7c00,0xd503205f,0x54ffffc1,0xd65f03c0};
+    for(unsigned i=0;i<4;i++)put(im.bytes+4*i,sdk_shape[i]);
+    CHECK(dm_exclusive_untouched(&im,0,d)==ENOTSUP);
     dm_decoder_free(d);dm_nso_free(&im);
     puts("PASS: exclusive CFG branch paths, clear/store terminals, cycles, replacement loads, unsafe sites and bounded rejection");
     return 0;
