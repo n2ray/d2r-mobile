@@ -1,7 +1,7 @@
 // #33 belt request adapter fixture: real live_touch core plus a counting host
 // action consumer. No game files or host action execution.
 #include "live_touch.h"
-#include "../ios/Sources/dm_touch_controls.h"
+#include "../../ios/Sources/dm_touch_controls.h"
 
 #include <stdio.h>
 #include <string.h>
