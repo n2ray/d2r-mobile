@@ -9,6 +9,7 @@
 #include "../../host/dm_hud.h"
 #include "../../host/dm_uiscreen.h"
 #include "../../host/dm_cursor.h"
+#include "../../host/ui_trace.h"
 #include "../../host/dm_actions.h"
 #include "debug_stats.h"
 #include "game_output.h"
@@ -19,6 +20,7 @@
 #include "live_touch_provider.h"
 #include "live_touch_readiness.h"
 #include "padmode_route.h"
+#include "live_owner_timer.h"
 #include "../../ios/Sources/dm_touch_controls.h"
 #include "performance_hint.h"
 #include "launch_settings.h"
@@ -27,6 +29,7 @@
 #include <android/window.h>
 #include <android/input.h>
 #include <android/looper.h>
+#include <errno.h>
 #include <android/log.h>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -65,6 +68,9 @@ typedef struct {
     int live_provider_ready;
     int live_provider_available;
     dm_live_touch_scene_observation live_observation;
+    dm_live_touch_geometry live_geometry;
+    uint64_t live_visual_signature;
+    int live_bind_state;
     int touch_timer_fd;
     int padmode_requested;
     int padmode_touch_swallow;
@@ -80,6 +86,7 @@ static void live_touch_items_ensure(game_app *s);
 void dm_padmode_request(int pad);
 int dm_padmode_current(void);
 int dm_padmode_busy(void);
+static void live_touch_cursor_update(game_app *s);
 static _Atomic int display_hz;
 // 运行时可切的调试浮层（游戏内菜单的「帧率显示」）：UI 线程写，调试线程每拍读。启动初值见 debug_overlay 的读取处。
 // Runtime-togglable debug overlay (the in-game menu's "frame rate display"): the UI thread writes it, the debug
@@ -459,6 +466,65 @@ static void live_touch_set_available(game_app *s, int available) {
     LOG("[android-touch] live readiness %s", available ? "ready" : "unavailable");
     live_touch_notify_readiness(s, available);
 }
+void dm_ui_trace_set(int on);
+int dm_ui_trace_arm_generation(unsigned generation);
+unsigned dm_ui_trace_generation_value(void);
+static _Atomic unsigned g_fe_ui_trace_count;
+static unsigned g_fe_trace_generation;
+static unsigned g_fe_cancel_trace_count;
+static int g_fe_last_ingress_action = -1;
+static int g_fe_last_fe_action = -1;
+static unsigned frontend_trace_generation(int force) {
+    static unsigned cached;
+    static int64_t read_ns;
+    int64_t now = now_ns();
+    if (!force && read_ns && now - read_ns < 100000000) return cached;
+    char value[PROP_VALUE_MAX] = {0};
+    unsigned generation = 0;
+    if (__system_property_get("debug.d2r.ui_trace", value) > 0) {
+        char *end = NULL;
+        unsigned long parsed = strtoul(value, &end, 10);
+        if (end != value && *end == 0 && parsed > 0 && parsed <= UINT32_MAX) generation = (unsigned)parsed;
+    }
+    cached = generation; read_ns = now;
+    return generation;
+}
+static void frontend_trace_sync(unsigned generation) {
+    if (!dm_ui_trace_rearm_generation(&g_fe_trace_generation, generation)) return;
+    atomic_store(&g_fe_ui_trace_count, 0);
+    g_fe_cancel_trace_count = 0;
+    g_fe_last_ingress_action = -1;
+    g_fe_last_fe_action = -1;
+    (void)dm_ui_trace_arm_generation(generation);
+}
+uint64_t dm_live_touch_visual_signature(const dm_live_touch_visual *visual,
+                                        const dm_live_touch_geometry *geometry);
+static void live_touch_notify_visual(game_app *s) {
+    if (!s || !s->activity || s->live_readiness.destroyed || !s->live_touch) return;
+    ANativeActivity *a = s->activity;
+    JNIEnv *env = NULL;
+    if ((*a->vm)->GetEnv(a->vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) return;
+    jclass klass = (*env)->GetObjectClass(env, a->clazz);
+    jmethodID method = klass ? (*env)->GetMethodID(env, klass, "onLiveTouchVisualChanged", "()V") : NULL;
+    if (method && !(*env)->ExceptionCheck(env)) (*env)->CallVoidMethod(env, a->clazz, method);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (klass) (*env)->DeleteLocalRef(env, klass);
+}
+static void live_touch_publish_visual(game_app *s) {
+    if (!s || !s->live_provider_available || !s->live_geometry.valid) return;
+    dm_live_touch_visual v;
+    if (!dm_live_touch_visual_snapshot(s->live_touch, &v)) return;
+    v.frontend = dm_uiscreen_ingame() ? 0 : 1;
+    uint64_t signature = dm_live_touch_visual_signature(&v, &s->live_geometry);
+    dm_hud_info hud; memset(&hud, 0, sizeof hud); dm_hud_get(&hud);
+    const uint64_t hud_parts[] = {(uint64_t)(hud.valid ? hud.players : 0), (uint64_t)hud.belt[0],
+        (uint64_t)hud.belt[1], (uint64_t)hud.belt[2], (uint64_t)hud.belt[3]};
+    for (unsigned i = 0; i < sizeof hud_parts / sizeof *hud_parts; i++)
+        signature = (signature ^ hud_parts[i]) * 1099511628211ull;
+    if (signature == s->live_visual_signature) return;
+    s->live_visual_signature = signature;
+    live_touch_notify_visual(s);
+}
 static void live_touch_sync(game_app *s) {
     if(!s->input||!s->live_touch||!live_touch_mode_enabled()){live_touch_set_available(s,0);return;}
     if(!s->live_provider_ready){dm_live_touch_provider_init(&s->live_provider,NULL);s->live_provider_ready=1;}
@@ -473,7 +539,6 @@ static void live_touch_sync(game_app *s) {
         live_touch_cancel_sources_all(s);
         dm_touch_pointer_clear(&s->touch_map);
         dm_touch_set(NULL,0);
-        touch_timer_stop(s);
         return;
     }
     s->live_observation=snapshot;
@@ -481,7 +546,12 @@ static void live_touch_sync(game_app *s) {
       dm_touch_game_set_scene(snapshot.scene==DM_LIVE_TOUCH_SCENE_GAME,
                               snapshot.scene_epoch,snapshot.world_epoch); }
     live_touch_set_available(s,1);
-    int navigation=snapshot.scene!=DM_LIVE_TOUCH_SCENE_GAME||snapshot.panel_bits||atomic_load(&menu_open);
+    int bind_state=dm_ui_bind_active();
+    int navigation=bind_state||snapshot.scene!=DM_LIVE_TOUCH_SCENE_GAME||snapshot.panel_bits||atomic_load(&menu_open);
+    // Android has no front-end setter; publish the same original panel stack
+    // reading the iOS front end uses, so host panel layout and gesture mode
+    // agree during inventory/open/close.
+    { int blocked=dm_ui_panel_stack_count(); dm_uiscreen_set_panel(blocked>0); }
     uint32_t mask=navigation?(dm_tc_nav_mask(1)|(1u<<DM_TC_MENU)):
         (((1u<<DM_TC_COUNT)-1)&~(1u<<DM_TC_MAP));
     dm_live_touch_set_context(s->live_touch,navigation,mask,
@@ -495,6 +565,14 @@ static void live_touch_sync(game_app *s) {
       dm_live_touch_set_skill_snapshot(s->live_touch,have_skill?&skill_snapshot:NULL,
                                        snapshot.scene_epoch,snapshot.world_epoch);
       dm_live_touch_set_skill_bind_active(s->live_touch,dm_ui_bind_active()); }
+    { if(bind_state==2 && s->live_bind_state!=2) {
+          // Original bindTapSync: move the original controller cursor into the
+          // ornamental gap before the player picks a skill, so the skill-tree
+          // tooltip does not cover the panel. Publish before any host action.
+          dm_live_touch_pointer_move(s->live_touch,0.155f,0.5f);
+          live_touch_cursor_update(s);
+      }
+      s->live_bind_state=bind_state; }
     if(!navigation){
         int expanded=0, rows=dm_belt_rows(&expanded);
         if(!dm_live_touch_set_belt(s->live_touch,rows,expanded))
@@ -502,6 +580,7 @@ static void live_touch_sync(game_app *s) {
     } else {
         (void)dm_live_touch_set_belt(s->live_touch,0,0);
     }
+    live_touch_publish_visual(s);
 }
 static void belt_expand_host(void *context, int on) { (void)context; dm_belt_expand(on); }
 static void belt_use_host(void *context, int col, int row) { (void)context; dm_belt_use(col, row); }
@@ -521,8 +600,22 @@ static void long_press_host(void *context) { (void)context; dm_ui_long_press(); 
 static void tab_go_host(void *context) { (void)context; dm_ui_tab_go(); }
 static void stack_take_host(void *context) { (void)context; dm_stash_take(1); }
 static void mouse_click_host(void *context, float nx, float ny) { (void)context; dm_ui_touch(0, nx, ny); dm_ui_touch(2, nx, ny); }
+// Original bindTapSync: only state 2 + a skill icon becomes Y; state 0 skill
+// and stat-plus taps only move/select. Tabs/close (hit 0) keep the original
+// route, and an unknown host hit is never turned into a binding.
+static int bind_tap_host(void *context, float *nx, float *ny) {
+    (void)context;
+    int state = dm_ui_bind_active();
+    int hit = dm_ui_bind_skill_hit(nx, ny);
+    if (!hit) return 0;
+    if (state == 2 && hit == 1) return 2;
+    if ((state == 0 || state == 2) && (hit == 1 || hit == 2)) return 1;
+    return 0;
+}
 static void live_touch_items_ensure(game_app *s) {
-    if (!s->live_touch || s->live_items) return;
+    if (!s->live_touch) return;
+    dm_live_touch_set_tap_hook(s->live_touch, bind_tap_host, s);
+    if (s->live_items) return;
     dm_live_touch_items_host host = {s, item_query_host, item_result_host, drop_query_host,
                                      drop_result_host, drop_last_host, drop_point_host,
                                      origin_point_host};
@@ -531,6 +624,9 @@ static void live_touch_items_ensure(game_app *s) {
 }
 static void live_touch_cancel_sources_all(game_app *s) {
     if (!s) return;
+    unsigned generation = frontend_trace_generation(1);
+    frontend_trace_sync(generation);
+    if (generation && g_fe_cancel_trace_count++ < 32) LOG("[ui-trace] cancel sources gen=%u reason=4", generation);
     if (s->live_items) dm_live_touch_items_cancel(s->live_items);
     dm_live_touch_cancel_sources(s->live_touch, (int64_t)now_ns(), ui_touch_cancel);
 }
@@ -617,36 +713,74 @@ static void touch_timer_stop(game_app *s) {
     if(looper)ALooper_removeFd(looper,s->touch_timer_fd);
     close(s->touch_timer_fd);s->touch_timer_fd=-1;
 }
+static int touch_owner_valid(game_app *s) {
+    if(!s)return 0;
+    pthread_mutex_lock(&s->lock);
+    int window_present=s->window!=NULL;
+    int stopped=s->stop;
+    pthread_mutex_unlock(&s->lock);
+    return dm_live_owner_can_start(!!s->live_touch,live_touch_mode_enabled(),
+        s->input!=NULL,atomic_load(&s->activity_resumed),window_present,
+        stopped||s->live_readiness.destroyed,s->live_geometry.valid);
+}
+static void touch_timer_set_period(game_app *s,int active) {
+    if(s->touch_timer_fd<0)return;
+    int64_t ns=(int64_t)dm_live_owner_interval_ms(active)*1000000ll;
+    struct itimerspec interval={{0,ns},{0,ns}};
+    if(timerfd_settime(s->touch_timer_fd,0,&interval,NULL)<0)
+        LOG("[android-touch] owner tick reprogram failed: %s",strerror(errno));
+}
 static int touch_timer_tick(int fd,int events,void *data) {
     (void)events;game_app *s=data;uint64_t expirations;
+    if(s->touch_timer_fd!=fd)return 1; // stale callback after stop/window teardown
     while(read(fd,&expirations,sizeof expirations)==(ssize_t)sizeof expirations){}
-    if(!s->live_touch||!live_touch_mode_enabled()){touch_timer_stop(s);return 1;}
+    if(!touch_owner_valid(s)){touch_timer_stop(s);return 1;}
     live_touch_sync(s);
-    int needs=dm_live_touch_scheduler_step(s->live_touch,(int64_t)now_ns());
+    int needs=dm_live_touch_scheduler_step(s->live_touch,(int64_t)now_ns())||dm_live_touch_needs_work(s->live_touch);
     if(s->live_items){dm_live_touch_items_tick(s->live_items,(int64_t)now_ns());live_touch_cursor_update(s);live_touch_consume_items(s);needs=dm_live_touch_needs_work(s->live_touch);}
     pad_publish(s);
     live_touch_consume_belt(s);
     live_touch_consume_difficulty(s);
     live_touch_consume_portal(s);
     live_touch_consume_skill_bind(s);
-    if(!needs)touch_timer_stop(s);
+    touch_timer_set_period(s,needs);
     return 1;
 }
 static void touch_timer_start(game_app *s) {
-    if(s->touch_timer_fd>=0||!s->live_touch||!live_touch_mode_enabled()||!dm_live_touch_needs_work(s->live_touch))return;
+    if(s->touch_timer_fd>=0||!touch_owner_valid(s))return;
     ALooper *looper=ALooper_forThread();if(!looper)return;
-    int fd=timerfd_create(CLOCK_MONOTONIC,TFD_NONBLOCK|TFD_CLOEXEC);if(fd<0){LOG("[android-touch] owner tick timer unavailable");return;}
-    struct itimerspec interval={{0,16000000},{0,16000000}};
-    if(timerfd_settime(fd,0,&interval,NULL)<0||ALooper_addFd(looper,fd,ALOOPER_POLL_CALLBACK,ALOOPER_EVENT_INPUT,touch_timer_tick,s)<0){close(fd);LOG("[android-touch] owner tick timer attach failed");return;}
+    int fd=timerfd_create(CLOCK_MONOTONIC,TFD_NONBLOCK|TFD_CLOEXEC);if(fd<0){LOG("[android-touch] owner tick timer unavailable: %s",strerror(errno));return;}
+    int needs=dm_live_touch_needs_work(s->live_touch);
+    int64_t ns=(int64_t)dm_live_owner_interval_ms(needs)*1000000ll;
+    struct itimerspec interval={{0,ns},{0,ns}};
+    if(timerfd_settime(fd,0,&interval,NULL)<0){LOG("[android-touch] owner tick timer set failed: %s",strerror(errno));close(fd);return;}
+    if(ALooper_addFd(looper,fd,ALOOPER_POLL_CALLBACK,ALOOPER_EVENT_INPUT,touch_timer_tick,s)<0){LOG("[android-touch] owner tick timer attach failed");close(fd);return;}
     s->touch_timer_fd=fd;
-    LOG("[android-touch] owner tick timer started");
+    LOG("[android-touch] owner tick timer started (%s)",needs?"16ms":"100ms idle");
+}
+static void touch_timer_wake(game_app *s) {
+    if(!touch_owner_valid(s)){touch_timer_stop(s);return;}
+    if(s->touch_timer_fd<0)touch_timer_start(s);
+    else touch_timer_set_period(s,dm_live_touch_needs_work(s->live_touch));
 }
 static int live_touch_prepare(game_app *s,int w,int h,dm_live_touch_geometry *g) {
     uint64_t output=front_game_res(1);
     *g=dm_live_touch_geometry_for(w,h,(int)(uint32_t)output,(int)(uint32_t)(output>>32),dm_uiscreen_ingame());
-    if(!g->valid){if(s->live_items)dm_live_touch_items_cancel(s->live_items);dm_live_touch_cancel_all(s->live_touch,0);touch_timer_stop(s);pad_publish(s);return 0;}
+    if(!g->valid){if(s->live_items)dm_live_touch_items_cancel(s->live_items);memset(&s->live_geometry,0,sizeof s->live_geometry);dm_live_touch_cancel_all(s->live_touch,0);touch_timer_stop(s);pad_publish(s);return 0;}
+    s->live_geometry=*g;
     dm_live_touch_resize(s->live_touch,g->logical_width,g->logical_height);
     return 1;
+}
+static void live_touch_refresh_geometry(game_app *s) {
+    if(!s||!s->live_touch)return;
+    pthread_mutex_lock(&s->lock);
+    ANativeWindow *window=s->window;
+    if(window)ANativeWindow_acquire(window);
+    pthread_mutex_unlock(&s->lock);
+    if(!window)return;
+    int width=ANativeWindow_getWidth(window),height=ANativeWindow_getHeight(window);
+    if(width>0&&height>0){dm_live_touch_geometry g={0};(void)live_touch_prepare(s,width,height,&g);}
+    ANativeWindow_release(window);
 }
 static void ui_touch_cancel(void) { dm_ui_touch(3,0,0); }
 static int32_t touch_axis(jint value) {return value>DM_STICK_MAX?DM_STICK_MAX:value< -DM_STICK_MAX?-DM_STICK_MAX:value;}
@@ -679,6 +813,30 @@ __attribute__((visibility("default"))) void Java_org_d2r_android_port_D2RActivit
 __attribute__((visibility("default"))) jboolean Java_org_d2r_android_port_D2RActivity_isLiveTouchReady(JNIEnv *env,jclass klass) {
     (void)env;(void)klass;return application&&application->live_touch&&application->live_provider_available&&live_touch_mode_enabled()?JNI_TRUE:JNI_FALSE;
 }
+// Read-only visual snapshot for the draw-only Java overlay. The array layout is
+// documented in D2RTouchOverlay; no gesture state is modified here.
+__attribute__((visibility("default"))) jint Java_org_d2r_android_port_D2RActivity_getLiveTouchOverlaySnapshot(JNIEnv *env,jclass klass,jfloatArray values,jlongArray state) {
+    (void)klass;game_app *s=application;
+    if(!s||!s->live_touch||!s->live_provider_available||!s->live_geometry.valid)return 0;
+    dm_live_touch_visual v;if(!dm_live_touch_visual_snapshot(s->live_touch,&v))return 0;
+    if((*env)->GetArrayLength(env,values)<96||(*env)->GetArrayLength(env,state)<4)return 0;
+    float out[96]={0};
+    out[0]=s->live_geometry.left;out[1]=s->live_geometry.top;out[2]=s->live_geometry.width;out[3]=s->live_geometry.height;
+    out[4]=s->live_geometry.logical_width;out[5]=s->live_geometry.logical_height;
+    out[6]=v.joy_x;out[7]=v.joy_y;out[8]=v.joy_radius;
+    out[84]=v.joy_origin_x;out[85]=v.joy_origin_y;out[86]=v.joy_active;
+    out[87]=v.joy_rest_x;out[88]=v.joy_rest_y;
+    out[89]=(float)(dm_uiscreen_ingame()?0:1);
+    out[9]=v.swap_x;out[10]=v.swap_y;out[11]=v.swap_radius;
+    out[12]=v.diff_x;out[13]=v.diff_y;out[14]=v.diff_radius;
+    out[15]=(float)v.skill_set;out[16]=(float)v.diff_open;out[17]=(float)v.enabled_targets;
+    dm_hud_info hud;memset(&hud,0,sizeof hud);dm_hud_get(&hud);
+    out[18]=(float)(hud.valid?hud.players:0);out[19]=(float)hud.belt[0];out[20]=(float)hud.belt[1];out[21]=(float)hud.belt[2];out[22]=(float)hud.belt[3];out[23]=(float)v.navigation_mode;
+    for(int i=0;i<DM_TC_COUNT;i++){out[24+i*3]=v.target_x[i];out[25+i*3]=v.target_y[i];out[26+i*3]=v.target_r[i];}
+    for(int i=0;i<8;i++){out[60+i*3]=v.pick_x[i];out[61+i*3]=v.pick_y[i];out[62+i*3]=v.pick_r[i];}
+    jlong state_out[4]={(jlong)v.buttons,(jlong)dm_live_touch_lx(s->live_touch),(jlong)dm_live_touch_ly(s->live_touch),0};
+    (*env)->SetFloatArrayRegion(env,values,0,96,out);(*env)->SetLongArrayRegion(env,state,0,4,state_out);return 1;
+}
 static int32_t stick_value(float value) {if(value>1)value=1;if(value<-1)value=-1;return value>-.15f&&value<.15f?0:(int32_t)(value*DM_STICK_MAX);}
 static uint64_t pad_key(int key) {
     switch(key){case AKEYCODE_DPAD_UP:return DM_BTN_UP;case AKEYCODE_DPAD_DOWN:return DM_BTN_DOWN;case AKEYCODE_DPAD_LEFT:return DM_BTN_LEFT;case AKEYCODE_DPAD_RIGHT:return DM_BTN_RIGHT;
@@ -701,11 +859,10 @@ static int live_touch_event_routed(game_app *s,int action,int action_index,int p
     return handled;
 }
 static int external_gamepad_source(int source) {
-    return ((source & (AINPUT_SOURCE_GAMEPAD | AINPUT_SOURCE_JOYSTICK)) != 0) &&
-           ((source & AINPUT_SOURCE_TOUCHSCREEN) == 0);
+    return dm_padmode_is_pad_source(source);
 }
 static int touchscreen_source(int source) {
-    return (source & AINPUT_SOURCE_TOUCHSCREEN) == AINPUT_SOURCE_TOUCHSCREEN;
+    return dm_padmode_is_touch_source(source);
 }
 static void padmode_release_pad(game_app *s) {
     s->pad_buttons = s->hat_buttons = s->trigger_buttons = 0;
@@ -718,7 +875,7 @@ static void padmode_release_touch(game_app *s) {
     s->tap_a = 0;
 }
 static void padmode_request_touch(game_app *s) {
-    if (s->padmode_requested == 0) return;
+    if (s->padmode_requested == 0 && dm_padmode_current() == 0) return;
     padmode_release_pad(s);
     dm_padmode_request(0);
     s->padmode_requested = 0;
@@ -747,7 +904,7 @@ static int input_ready(int fd,int events,void *data) {
         if(touch_input&&touch_route==DM_PADMODE_ROUTE_TOUCH&&(touch_action==AMOTION_EVENT_ACTION_DOWN||touch_action==AMOTION_EVENT_ACTION_POINTER_DOWN)){
             int was_pad=dm_padmode_current()!=0;
             padmode_request_touch(s);
-            if(was_pad||dm_padmode_busy())s->padmode_touch_swallow=1;
+            if(was_pad)s->padmode_touch_swallow=1;
         }
         if(touch_input&&s->padmode_touch_swallow){
             if(touch_action==AMOTION_EVENT_ACTION_UP||touch_action==AMOTION_EVENT_ACTION_CANCEL)s->padmode_touch_swallow=0;
@@ -803,9 +960,15 @@ static int input_ready(int fd,int events,void *data) {
             pthread_mutex_lock(&s->lock);ANativeWindow *window=s->window;int w=window?ANativeWindow_getWidth(window):1,h=window?ANativeWindow_getHeight(window):1;pthread_mutex_unlock(&s->lock);
             float gw=w,gh=w*9.f/16.f;if(gh>h){gh=h;gw=h*16.f/9.f;}float left=(w-gw)/2,top=(h-gh)/2;
             int live_on=s->live_touch&&live_touch_mode_enabled();dm_live_touch_geometry picture;
+            unsigned trace_gen=frontend_trace_generation(action==AMOTION_EVENT_ACTION_DOWN||action==AMOTION_EVENT_ACTION_POINTER_DOWN||action==AMOTION_EVENT_ACTION_CANCEL);
+            frontend_trace_sync(trace_gen);
+            int ui_trace=trace_gen!=0;
+            if(ui_trace&&action!=g_fe_last_ingress_action&&atomic_fetch_add(&g_fe_ui_trace_count,1)<32)
+                LOG("[ui-trace] ingress gen=%u action=%d pointer=%u source=%d ingame=%d live=%d surface=%dx%d reason=%d",trace_gen,action,lifted,source,dm_uiscreen_ingame(),live_on,w,h,live_on?0:1);
+            g_fe_last_ingress_action=action;
             if(live_on){live_touch_sync(s);live_on=s->live_provider_available;}
             if(live_on){
-                if(!live_touch_prepare(s,w,h,&picture)){handled=1;}
+                if(!live_touch_prepare(s,w,h,&picture)){if(ui_trace&&atomic_fetch_add(&g_fe_ui_trace_count,1)<32)LOG("[ui-trace] route skip gen=%u reason=3 surface=%dx%d",trace_gen,w,h);handled=1;}
                 else {gw=picture.width;gh=picture.height;left=picture.left;top=picture.top;
                     unsigned count=AMotionEvent_getPointerCount(event);int32_t ids[16];float xs[16],ys[16];
                 if(count<=16){
@@ -818,7 +981,13 @@ static int input_ready(int fd,int events,void *data) {
                         unsigned at=action==AMOTION_EVENT_ACTION_MOVE?0:lifted;
                         if(at<count){float nx=(xs[at]-left)/gw,ny=(ys[at]-top)/gh;if(nx<0)nx=0;if(nx>.999f)nx=.999f;if(ny<0)ny=0;if(ny>.999f)ny=.999f;
                             int phase=(action==AMOTION_EVENT_ACTION_DOWN||action==AMOTION_EVENT_ACTION_POINTER_DOWN)?0:action==AMOTION_EVENT_ACTION_MOVE?1:(action==AMOTION_EVENT_ACTION_UP||action==AMOTION_EVENT_ACTION_POINTER_UP)?2:3;
-                            dm_ui_touch(phase,nx,ny);}
+                            int trace=ui_trace;
+                            int active_before=dm_ui_touch_active();
+                            dm_ui_touch(phase,nx,ny);
+                            int active_after=dm_ui_touch_active();
+                            if(trace&&action!=g_fe_last_fe_action&&atomic_fetch_add(&g_fe_ui_trace_count,1)<32)
+                                LOG("[ui-trace] fe gen=%u action=%d id=%d source=%d ingame=%d live=%d surface=%dx%d picture=%.0fx%.0f@%.0f,%.0f raw=%.1f,%.1f norm=%.4f,%.4f phase=%d reason=0 active=%d->%d",trace_gen,action,ids[at],source,dm_uiscreen_ingame(),live_on,w,h,gw,gh,left,top,xs[at],ys[at],nx,ny,phase,active_before,active_after);
+                            g_fe_last_fe_action=action;}
                         handled=1;
                     }else if(live_touch_event_routed(s,action,action==AMOTION_EVENT_ACTION_MOVE?-1:(int)lifted,(int)count,ids,xs,ys,w,h,left,top,gw,gh,(int64_t)now_ns())){
                         pad_publish(s);
@@ -829,8 +998,8 @@ static int input_ready(int fd,int events,void *data) {
                         live_touch_consume_skill_bind(s);
                         handled=1;
                     }else handled=1;
-                }else LOG("[android-touch] pointer count %u exceeds 16; refusing the event",count);
-                    if(dm_live_touch_needs_work(s->live_touch))touch_timer_start(s);else touch_timer_stop(s);
+                }else {if(ui_trace&&atomic_fetch_add(&g_fe_ui_trace_count,1)<32)LOG("[ui-trace] route skip gen=%u reason=2 count=%u",trace_gen,count);LOG("[android-touch] pointer count %u exceeds 16; refusing the event",count);}
+                    touch_timer_wake(s);
                 }
             }else{
                 dm_touch touches[16];int count=0;
@@ -882,6 +1051,7 @@ static void settle_save(void) {
     else LOG("[android] 【红】未存盘退出：3 秒内没等到存档提交（%s%s）",asked?"已请游戏存盘":"不处于可请存盘的状态",paused?"，原先暂停着、已放开":"");
 }
 static void window_created(ANativeActivity *a,ANativeWindow *w) {game_app *s=a->instance;pthread_mutex_lock(&s->lock);ANativeWindow_acquire(w);s->window=w;s->frame_rate_attempted=0;pthread_cond_signal(&s->ready);pthread_mutex_unlock(&s->lock);
+    live_touch_refresh_geometry(s);
     // 游戏已在跑时这块窗口是"从后台回来"的新窗口：挂起期间重建表面与交换链（此刻游戏线程被挡在 NVN 入口外，不会争）。
     // When the game is already running this is the new window from returning to the foreground: rebuild the surface
     // and swapchain while graphics are suspended, when the game thread is parked outside NVN and cannot contend.
@@ -903,7 +1073,7 @@ static void window_created(ANativeActivity *a,ANativeWindow *w) {game_app *s=a->
         // rotation passes through neither onPause nor onResume, so nothing would unfreeze it and the game would stop
         // ticking forever. A window handed to us in the foreground means it should be running: on the normal
         // return-from-background path onResume already released it, so this is an idempotent no-op there.
-        if(atomic_load(&s->activity_resumed)){dm_gfx_suspend(0);guest_clock_freeze_for(1,0);}}}
+        if(atomic_load(&s->activity_resumed)){dm_gfx_suspend(0);guest_clock_freeze_for(1,0);}}touch_timer_start(s);}
 // 旋转或窗口尺寸变化（配置变化时安卓不重建窗口，只改尺寸，所以不会走 window_destroyed/created）：交换链是按建链时的
 // 尺寸建的，不重建的话新画面会被合成器按旧尺寸拉伸或裁掉，于是这里复用「从后台回来」那一条重建路径 ——
 // mtl_screen_attach 先挂起图形（游戏线程不能在外面读交换链）再按窗口的最新尺寸重建表面与交换链。
@@ -925,7 +1095,8 @@ static void window_resized(ANativeActivity *a,ANativeWindow *w) {game_app *s=a->
     // not live yet there is no swapchain to rebuild -- the first present builds it itself. The rebuilding frame is
     // slow (surface/swapchain rebuild, caches gone cold), so as on returning to the foreground the dynamic
     // resolution controller is told not to read it as GPU pressure.
-    if(same_window&&atomic_load(&s->started)){void mtl_screen_attach(struct ANativeWindow *);mtl_screen_attach(w);dm_3d_scale_resumed();if(atomic_load(&s->activity_resumed))dm_gfx_suspend(0);LOG("[android] 窗口尺寸变化：表面与交换链已按新尺寸重建，进程与本局保留");}}
+    if(same_window&&atomic_load(&s->started)){void mtl_screen_attach(struct ANativeWindow *);mtl_screen_attach(w);dm_3d_scale_resumed();if(atomic_load(&s->activity_resumed))dm_gfx_suspend(0);LOG("[android] 窗口尺寸变化：表面与交换链已按新尺寸重建，进程与本局保留");}
+    live_touch_refresh_geometry(s);touch_timer_start(s);}
 static void window_destroyed(ANativeActivity *a,ANativeWindow *w) {game_app *s=a->instance;live_touch_cancel_sources_all(s);touch_timer_stop(s);pad_publish(s);
     // 窗口销毁不再等于退出进程：安卓在 Activity 停止时必然销毁窗口，保留进程才能在回到前台时接着玩。
     // 退出前照 Mac/iOS 请游戏存盘（否则丢掉上一次提交之后的进度），再释放表面与交换链；真正退出走 destroyed()。
@@ -944,7 +1115,7 @@ static void window_destroyed(ANativeActivity *a,ANativeWindow *w) {game_app *s=a
     // last commit is lost), then release the surface and swapchain. A real exit goes through destroyed().
     if(atomic_load(&s->started)){settle_save();guest_clock_freeze_for(1,1);void mtl_screen_detach(void);mtl_screen_detach();LOG("[android] 窗口销毁：保留进程等待回到前台");}
     pthread_mutex_lock(&s->lock);if(s->window==w){s->window=NULL;ANativeWindow_release(w);}pthread_mutex_unlock(&s->lock);}
-static void input_created(ANativeActivity *a,AInputQueue *q) {game_app *s=a->instance;s->input=q;dm_touch_pointer_clear(&s->touch_map);if(!s->live_touch){s->live_touch=dm_live_touch_create(667,375);if(!s->live_touch)LOG("[android-touch] live D2R core allocation failed; using raw touch fallback");else LOG("[android-touch] live D2R core attached");}live_touch_items_ensure(s);if(!s->live_provider_ready){dm_live_touch_provider_init(&s->live_provider,NULL);s->live_provider_ready=1;}AInputQueue_attachLooper(q,ALooper_forThread(),0,input_ready,s);}
+static void input_created(ANativeActivity *a,AInputQueue *q) {game_app *s=a->instance;s->input=q;dm_touch_pointer_clear(&s->touch_map);if(!s->live_touch){s->live_touch=dm_live_touch_create(667,375);if(!s->live_touch)LOG("[android-touch] live D2R core allocation failed; using raw touch fallback");else LOG("[android-touch] live D2R core attached");}live_touch_items_ensure(s);if(!s->live_provider_ready){dm_live_touch_provider_init(&s->live_provider,NULL);s->live_provider_ready=1;}AInputQueue_attachLooper(q,ALooper_forThread(),0,input_ready,s);live_touch_refresh_geometry(s);touch_timer_start(s);}
 static void input_destroyed(ANativeActivity *a,AInputQueue *q) {game_app *s=a->instance;AInputQueue_detachLooper(q);s->input=NULL;live_touch_set_available(s,0);live_touch_cancel_sources_all(s);touch_timer_stop(s);dm_touch_pointer_clear(&s->touch_map);dm_touch_set(NULL,0);pad_clear(s);}
 // 注意 onPause 里**不**挂起图形（Mac 的最小化路径有这一步，安卓不能照抄）：安卓在停下来之后一定会销毁窗口，
 // 而"请游戏存盘"排在窗口销毁之前（见 window_destroyed）。图形一旦在这里挂起，游戏线程就被挡在 NVN 入口外，
@@ -962,9 +1133,9 @@ static void input_destroyed(ANativeActivity *a,AInputQueue *q) {game_app *s=a->i
 // first seconds back are recovery (surface rebuild, cold caches), and without telling the controller they are read
 // as GPU pressure and the internal 3D ratio is scaled down; ② lifting the guest clock freeze, pairing with the
 // freeze taken when going to the background.
-static void resumed(ANativeActivity *a) {game_app *s=a->instance;atomic_store(&s->activity_resumed,1);dm_android_performance_resume();if(atomic_load(&s->started)){dm_3d_scale_resumed();dm_gfx_suspend(0);guest_clock_freeze_for(1,0);dm_audio_suspend(0);dm_focus_set(1);}}
+static void resumed(ANativeActivity *a) {game_app *s=a->instance;atomic_store(&s->activity_resumed,1);dm_android_performance_resume();if(atomic_load(&s->started)){dm_3d_scale_resumed();dm_gfx_suspend(0);guest_clock_freeze_for(1,0);dm_audio_suspend(0);dm_focus_set(1);}live_touch_refresh_geometry(s);touch_timer_start(s);}
 static void paused(ANativeActivity *a) {game_app *s=a->instance;atomic_store(&s->activity_resumed,0);live_touch_cancel_sources_all(s);touch_timer_stop(s);dm_touch_pointer_clear(&s->touch_map);dm_touch_set(NULL,0);pad_clear(s);if(s->padmode_requested==1)padmode_request_touch(s);if(atomic_load(&s->started)){dm_focus_set(3);dm_audio_suspend(1);}dm_android_performance_close();}
-static void focus_changed(ANativeActivity *a,int focused) {game_app *s=a->instance;if(focused)return;
+static void focus_changed(ANativeActivity *a,int focused) {game_app *s=a->instance;if(focused){touch_timer_start(s);return;}
     live_touch_cancel_sources_all(s);touch_timer_stop(s);dm_touch_pointer_clear(&s->touch_map);dm_touch_set(NULL,0);
     pad_publish(s);
 }
@@ -987,6 +1158,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
         {"onTextResult","(JLjava/lang/String;Z)V",(void*)Java_org_d2r_android_port_D2RActivity_onTextResult},
         {"onTouchPad","(JIIII)V",(void*)Java_org_d2r_android_port_D2RActivity_onTouchPad},
         {"isLiveTouchReady","()Z",(void*)Java_org_d2r_android_port_D2RActivity_isLiveTouchReady},
+        {"getLiveTouchOverlaySnapshot","([F[J)I",(void*)Java_org_d2r_android_port_D2RActivity_getLiveTouchOverlaySnapshot},
         {"setOverlayEnabled","(Z)V",(void*)Java_org_d2r_android_port_D2RActivity_setOverlayEnabled},
         {"setQualityPreset","(I)V",(void*)Java_org_d2r_android_port_D2RActivity_setQualityPreset},
         {"setMenuOpen","(Z)V",(void*)Java_org_d2r_android_port_D2RActivity_setMenuOpen},

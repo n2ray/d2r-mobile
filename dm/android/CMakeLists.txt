@@ -163,6 +163,18 @@ target_include_directories(dm_live_touch_skill_empty_test PRIVATE native ../ios/
 target_compile_options(dm_live_touch_skill_empty_test PRIVATE -Wall -Wextra -Werror)
 add_test(NAME live_touch_skill_empty COMMAND dm_live_touch_skill_empty_test)
 set_tests_properties(live_touch_skill_empty PROPERTIES TIMEOUT 30)
+add_executable(dm_live_touch_bind_tap_test tests/live_touch_bind_tap_test.c native/live_touch.c)
+target_link_libraries(dm_live_touch_bind_tap_test PRIVATE dm_android_touch_core m)
+target_include_directories(dm_live_touch_bind_tap_test PRIVATE native ../ios/Sources ../host)
+target_compile_options(dm_live_touch_bind_tap_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME live_touch_bind_tap COMMAND dm_live_touch_bind_tap_test)
+set_tests_properties(live_touch_bind_tap PROPERTIES TIMEOUT 30)
+add_executable(dm_live_touch_bind_tap_items_test tests/live_touch_bind_tap_items_test.c native/live_touch.c native/live_touch_items.c)
+target_link_libraries(dm_live_touch_bind_tap_items_test PRIVATE dm_android_touch_core m)
+target_include_directories(dm_live_touch_bind_tap_items_test PRIVATE native ../ios/Sources ../host)
+target_compile_options(dm_live_touch_bind_tap_items_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME live_touch_bind_tap_items COMMAND dm_live_touch_bind_tap_items_test)
+set_tests_properties(live_touch_bind_tap_items PROPERTIES TIMEOUT 30)
 # #35 shared guest skill snapshot bridge: parse/group/identity, Android safe
 # reader semantics, gate absent/present attach and scene/TTL fail-closed.
 add_executable(dm_skill_snapshot_test tests/skill_snapshot.c
@@ -673,6 +685,10 @@ endif()
 if(NOT ANDROID)
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME nvn_fence_domain_host
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/nvn_fence_domain_host.py
+                --cc ${CMAKE_C_COMPILER})
+        set_tests_properties(nvn_fence_domain_host PROPERTIES TIMEOUT 30)
         # #157 私有變異：忽略保存結果或忽略語言顯式狀態，必須讓真實測試失敗。
         # #157 private mutations: ignoring the store result, or the language explicit state, must fail the real tests.
         add_test(NAME custom_preferences_mutation
@@ -778,7 +794,7 @@ if(ANDROID)
                 "${CMAKE_READELF}" "${CMAKE_OBJDUMP}" "$<TARGET_FILE:dm_android_app>"
             VERBATIM)
     endif()
-    foreach(target dm_android_probe dm_texture_test dm_nso_inspect dm_nso_test dm_image_test dm_runtime_test dm_system_patch_test dm_input_test dm_touch_adapter_test dm_live_touch_belt_test dm_live_touch_difficulty_test dm_live_touch_portal_test dm_live_touch_skill_empty_test dm_skill_snapshot_test dm_touch_bridge_test dm_touch_game_bridge_test dm_view_policy_test dm_input_policy_test dm_app_lifecycle_test dm_app_diagnostic_scene_test dm_app_present_policy_test dm_app_wsi_test dm_wsi_bridge_test dm_wsi_report_test dm_module_inspect dm_module_test dm_x18_patch_test dm_x18_control_test dm_x18_regions_test dm_image_code_test dm_artifact_inspect dm_artifact_test dm_romfs_test dm_sync_test dm_arbiter_test dm_thread_test dm_bootstrap_test dm_memory_test dm_mutex_test dm_exclusive_return_test)
+    foreach(target dm_android_probe dm_texture_test dm_nso_inspect dm_nso_test dm_image_test dm_runtime_test dm_system_patch_test dm_input_test dm_touch_adapter_test dm_live_touch_belt_test dm_live_touch_difficulty_test dm_live_touch_portal_test dm_live_touch_skill_empty_test dm_live_touch_bind_tap_test dm_live_touch_bind_tap_items_test dm_skill_snapshot_test dm_touch_bridge_test dm_touch_game_bridge_test dm_view_policy_test dm_input_policy_test dm_app_lifecycle_test dm_app_diagnostic_scene_test dm_app_present_policy_test dm_app_wsi_test dm_wsi_bridge_test dm_wsi_report_test dm_module_inspect dm_module_test dm_x18_patch_test dm_x18_control_test dm_x18_regions_test dm_image_code_test dm_artifact_inspect dm_artifact_test dm_romfs_test dm_sync_test dm_arbiter_test dm_thread_test dm_bootstrap_test dm_memory_test dm_mutex_test dm_exclusive_return_test)
         target_link_options(${target} PRIVATE "-Wl,-z,max-page-size=16384")
     endforeach()
     foreach(target dm_gate_test dm_gate_vectors)
@@ -994,6 +1010,31 @@ if(NOT ANDROID)
     target_compile_options(dm_live_touch_readiness_test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME live_touch_readiness COMMAND dm_live_touch_readiness_test)
     set_tests_properties(live_touch_readiness PROPERTIES TIMEOUT 30)
+
+    add_executable(dm_live_touch_visual_test tests/live_touch_visual_test.c ../ios/Sources/dm_touch_controls.c)
+    target_link_libraries(dm_live_touch_visual_test PRIVATE m)
+    target_include_directories(dm_live_touch_visual_test PRIVATE native ../ios/Sources ../host)
+    target_compile_options(dm_live_touch_visual_test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME live_touch_visual COMMAND dm_live_touch_visual_test)
+    set_tests_properties(live_touch_visual PROPERTIES TIMEOUT 30)
+
+    add_executable(dm_ui_trace_test tests/ui_trace_test.c)
+    target_include_directories(dm_ui_trace_test PRIVATE ../host)
+    target_compile_options(dm_ui_trace_test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME ui_trace COMMAND dm_ui_trace_test)
+    set_tests_properties(ui_trace PROPERTIES TIMEOUT 10)
+
+    add_executable(dm_live_owner_timer_test tests/live_owner_timer_test.c)
+    target_include_directories(dm_live_owner_timer_test PRIVATE native)
+    target_compile_options(dm_live_owner_timer_test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME live_owner_timer COMMAND dm_live_owner_timer_test)
+    set_tests_properties(live_owner_timer PROPERTIES TIMEOUT 10)
+
+    add_executable(dm_fe_selection_test tests/fe_selection_test.c)
+    target_include_directories(dm_fe_selection_test PRIVATE ../host)
+    target_compile_options(dm_fe_selection_test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fe_selection COMMAND dm_fe_selection_test)
+    set_tests_properties(fe_selection PROPERTIES TIMEOUT 10)
 
     add_executable(dm_texture_deswizzle_formats_test tests/texture_deswizzle_formats_test.c ../gfx/nvn/nvn_tex.c ../gfx/tex/nvn_deswizzle.c)
     target_include_directories(dm_texture_deswizzle_formats_test PRIVATE native ../gfx/nvn ../gfx/tex)

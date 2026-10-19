@@ -22,6 +22,8 @@ struct dm_live_touch {
     uint64_t skill_scene_epoch, skill_world_epoch;
     int skill_bind_active;
     uint64_t skill_bind_request, skill_bind_key, skill_bind_scene_epoch, skill_bind_world_epoch;
+    dm_live_touch_tap_hook tap_hook;
+    void *tap_context;
     struct {
         int active;
         int pointer_slot;
@@ -313,6 +315,61 @@ void dm_live_touch_set_skill_bind_active(dm_live_touch *touch, int active) {
     touch->skill_bind_active = active;
 }
 
+void dm_live_touch_set_tap_hook(dm_live_touch *touch, dm_live_touch_tap_hook hook,
+                                void *context) {
+    if (!touch) return;
+    touch->tap_hook = hook;
+    touch->tap_context = context;
+}
+
+void dm_live_touch_pointer_move(dm_live_touch *touch, float nx, float ny) {
+    if (!touch || !isfinite(nx) || !isfinite(ny)) return;
+    if (nx < 0) nx = 0;
+    if (nx > 0.999f) nx = 0.999f;
+    if (ny < 0) ny = 0;
+    if (ny > 0.999f) ny = 0.999f;
+    touch->state.pointer_valid = 1;
+    touch->state.pointer_x = nx * touch->width;
+    touch->state.pointer_y = ny * touch->height;
+}
+
+unsigned dm_live_touch_tap_move_seq(const dm_live_touch *touch) {
+    return touch ? touch->state.tap_move_seq : 0;
+}
+
+// Called only at the real pointer end, after the async item hit is known. The
+// hook owns the host classification; this function only translates the verdict
+// into the original core's tap fields. Mode 2 is exactly the skill-bind Y case;
+// a null/unknown verdict leaves the original tab/close route alone.
+static void apply_tap_action(dm_live_touch *touch) {
+    if (!touch) return;
+    touch->state.tap_button = 0;
+    touch->state.tap_move = 0;
+    if (!touch->state.navigation_mode || !touch->tap_hook) return;
+    float nx = 0, ny = 0;
+    int mode = touch->tap_hook(touch->tap_context, &nx, &ny);
+    if (!isfinite(nx) || !isfinite(ny)) return;
+    if (nx < 0) nx = 0;
+    if (nx > 0.999f) nx = 0.999f;
+    if (ny < 0) ny = 0;
+    if (ny > 0.999f) ny = 0.999f;
+    if (mode == 2) {
+        touch->state.tap_button = DM_BTN_Y;
+        touch->state.tap_x = nx * touch->width;
+        touch->state.tap_y = ny * touch->height;
+    } else if (mode == 1) {
+        touch->state.tap_move = 1;
+        touch->state.tap_x = nx * touch->width;
+        touch->state.tap_y = ny * touch->height;
+    }
+}
+
+static void clear_tap_action(dm_live_touch *touch) {
+    if (!touch) return;
+    touch->state.tap_button = 0;
+    touch->state.tap_move = 0;
+}
+
 int dm_live_touch_consume_skill_bind_request(dm_live_touch *touch,
                                              uint64_t scene_epoch, uint64_t world_epoch,
                                              const dm_live_touch_skill_bind_actions *actions) {
@@ -485,7 +542,9 @@ int dm_live_touch_event(dm_live_touch *touch, int action, int action_index,
             changed = 1;
         } else {
             touch->belt_fingers &= ~(1u << slot);
+            apply_tap_action(touch);
             dm_tc_end_at(&touch->state, slot, t);
+            clear_tap_action(touch);
             dm_touch_pointer_release(&touch->pointers, id);
             changed = 1;
         }
@@ -559,6 +618,49 @@ int32_t dm_live_touch_lx(const dm_live_touch *touch) { return touch ? touch->sta
 int32_t dm_live_touch_ly(const dm_live_touch *touch) { return touch ? touch->state.ly : 0; }
 int32_t dm_live_touch_rx(const dm_live_touch *touch) { return touch ? touch->state.rx : 0; }
 int32_t dm_live_touch_ry(const dm_live_touch *touch) { return touch ? touch->state.ry : 0; }
+int dm_live_touch_visual_snapshot(const dm_live_touch *touch, dm_live_touch_visual *out) {
+    if (!touch || !out) return 0;
+    memset(out, 0, sizeof *out);
+    const dm_tc_layout *l = &touch->state.layout;
+    if (!(l->width > 0 && l->height > 0)) return 0;
+    out->valid = 1;
+    out->width = l->width; out->height = l->height;
+    out->joy_radius = l->joy_radius;
+    out->joy_rest_x = l->joy_x; out->joy_rest_y = l->joy_y;
+    out->joy_active = touch->state.joy_slot >= 0;
+    out->joy_origin_x = out->joy_active ? touch->state.joy_origin_x : 0;
+    out->joy_origin_y = out->joy_active ? touch->state.joy_origin_y : 0;
+    out->joy_x = out->joy_active ? out->joy_origin_x : out->joy_rest_x;
+    out->joy_y = out->joy_active ? out->joy_origin_y : out->joy_rest_y;
+    out->swap_x = l->swap.x; out->swap_y = l->swap.y; out->swap_radius = l->swap.r;
+    out->diff_x = l->diff.x; out->diff_y = l->diff.y; out->diff_radius = l->diff.r;
+    for (int i = 0; i < 8; ++i) {
+        out->pick_x[i] = l->pick[i].x; out->pick_y[i] = l->pick[i].y; out->pick_r[i] = l->pick[i].r;
+    }
+    for (int i = 0; i < DM_TC_COUNT; ++i) {
+        out->target_x[i] = l->target[i].x; out->target_y[i] = l->target[i].y; out->target_r[i] = l->target[i].r;
+    }
+    out->enabled_targets = touch->state.enabled_targets;
+    out->buttons = touch->state.buttons;
+    out->skill_set = touch->state.skill_set;
+    out->diff_open = touch->state.diff_open;
+    out->navigation_mode = touch->state.navigation_mode;
+    out->lx = touch->state.lx; out->ly = touch->state.ly;
+    return 1;
+}
+uint64_t dm_live_touch_visual_signature(const dm_live_touch_visual *v,
+                                        const dm_live_touch_geometry *g) {
+    uint64_t h = 1469598103934665603ull;
+    const uint64_t parts[] = {(uint64_t)v->buttons, (uint64_t)(uint32_t)v->lx,
+        (uint64_t)(uint32_t)v->ly, (uint64_t)v->skill_set, (uint64_t)v->diff_open,
+        (uint64_t)v->navigation_mode, (uint64_t)v->frontend, (uint64_t)v->joy_active,
+        (uint64_t)(uint32_t)v->joy_origin_x,
+        (uint64_t)(uint32_t)v->joy_origin_y, (uint64_t)v->enabled_targets,
+        (uint64_t)(uint32_t)g->left, (uint64_t)(uint32_t)g->top,
+        (uint64_t)(uint32_t)g->width, (uint64_t)(uint32_t)g->height};
+    for (unsigned i = 0; i < sizeof parts / sizeof *parts; i++) h = (h ^ parts[i]) * 1099511628211ull;
+    return h;
+}
 
 int dm_live_touch_has_pointer(const dm_live_touch *touch, int32_t id) {
     return touch && id >= 0 && dm_touch_pointer_slot(&touch->pointers, id) >= 0;
@@ -636,7 +738,9 @@ int dm_live_touch_finish_pointer(dm_live_touch *touch, int32_t id, int64_t time_
     int slot = dm_live_touch_pointer_slot_for_id(touch, id);
     if (slot < 0) return 0;
     double t = now_s(touch, time_ns);
+    apply_tap_action(touch);
     dm_tc_end_at(&touch->state, slot, t);
+    clear_tap_action(touch);
     dm_touch_pointer_release(&touch->pointers, id);
     dm_tc_tick(&touch->state, t);
     sync_pointers(touch);
