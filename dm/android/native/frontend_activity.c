@@ -439,15 +439,13 @@ static int touch_timer_tick(int fd,int events,void *data) {
     while(read(fd,&expirations,sizeof expirations)==(ssize_t)sizeof expirations){}
     if(!s->live_touch||!live_touch_mode_enabled()){touch_timer_stop(s);return 1;}
     live_touch_sync(s);
-    dm_live_touch_tick(s->live_touch,(int64_t)now_ns());
+    int needs=dm_live_touch_scheduler_step(s->live_touch,(int64_t)now_ns());
     pad_publish(s);
-    int active=dm_live_touch_active(s->live_touch);
-    if(!active&&dm_live_touch_end_released_pulse(s->live_touch))pad_publish(s);
-    if(!active)touch_timer_stop(s);
+    if(!needs)touch_timer_stop(s);
     return 1;
 }
 static void touch_timer_start(game_app *s) {
-    if(s->touch_timer_fd>=0||!s->live_touch||!live_touch_mode_enabled()||!dm_live_touch_active(s->live_touch))return;
+    if(s->touch_timer_fd>=0||!s->live_touch||!live_touch_mode_enabled()||!dm_live_touch_needs_work(s->live_touch))return;
     ALooper *looper=ALooper_forThread();if(!looper)return;
     int fd=timerfd_create(CLOCK_MONOTONIC,TFD_NONBLOCK|TFD_CLOEXEC);if(fd<0){LOG("[android-touch] owner tick timer unavailable");return;}
     struct itimerspec interval={{0,16000000},{0,16000000}};
@@ -456,7 +454,8 @@ static void touch_timer_start(game_app *s) {
     LOG("[android-touch] owner tick timer started");
 }
 static int live_touch_prepare(game_app *s,int w,int h,dm_live_touch_geometry *g) {
-    *g=dm_live_touch_geometry_for(w,h,dm_uiscreen_ingame());
+    uint64_t output=front_game_res(1);
+    *g=dm_live_touch_geometry_for(w,h,(int)(uint32_t)output,(int)(uint32_t)(output>>32),dm_uiscreen_ingame());
     if(!g->valid){dm_live_touch_cancel_all(s->live_touch,0);touch_timer_stop(s);pad_publish(s);return 0;}
     dm_live_touch_resize(s->live_touch,g->logical_width,g->logical_height);
     return 1;
@@ -572,7 +571,7 @@ static int input_ready(int fd,int events,void *data) {
                         handled=1;
                     }else handled=1;
                 }else LOG("[android-touch] pointer count %u exceeds 16; refusing the event",count);
-                    if(dm_live_touch_active(s->live_touch))touch_timer_start(s);else touch_timer_stop(s);
+                    if(dm_live_touch_needs_work(s->live_touch))touch_timer_start(s);else touch_timer_stop(s);
                 }
             }else{
                 dm_touch touches[16];int count=0;

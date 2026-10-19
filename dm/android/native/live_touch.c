@@ -11,6 +11,7 @@ struct dm_live_touch {
     dm_touch_pointer_map pointers;
     float width, height;
     int64_t last_ns;
+    int64_t pulse_started_ns;
 };
 
 static double now_s(dm_live_touch *touch, int64_t time_ns) {
@@ -63,6 +64,7 @@ void dm_live_touch_resize(dm_live_touch *touch, float width_pt, float height_pt)
     if (!touch || !isfinite(width_pt) || !isfinite(height_pt) || width_pt <= 0 || height_pt <= 0) return;
     if (touch->width == width_pt && touch->height == height_pt) return;
     dm_tc_resize(&touch->state, width_pt, height_pt);
+    touch->pulse_started_ns = 0;
     touch->width = width_pt;
     touch->height = height_pt;
     dm_touch_pointer_clear(&touch->pointers);
@@ -141,6 +143,7 @@ int dm_live_touch_cancel_all(dm_live_touch *touch, int64_t time_ns) {
     (void)now_s(touch, time_ns);
     dm_tc_cancel_all(&touch->state);
     dm_touch_pointer_clear(&touch->pointers);
+    touch->pulse_started_ns = 0;
     return 1;
 }
 
@@ -154,6 +157,34 @@ void dm_live_touch_tick(dm_live_touch *touch, int64_t time_ns) {
     if (!touch || time_ns < 0) return;
     dm_tc_tick(&touch->state, now_s(touch, time_ns));
     sync_pointers(touch);
+}
+
+int dm_live_touch_needs_work(const dm_live_touch *touch) {
+    if (!touch) return 0;
+    if (dm_live_touch_active(touch)) return 1;
+    const dm_tc_state *s = &touch->state;
+    return s->pulse_button != 0 || s->defer_button != 0 ||
+           s->pointer_pulse_pending || s->belt_gap_cell != 0 ||
+           s->belt_q > 0 || s->close_left > 0 || s->stash_x_check_s > 0;
+}
+
+int dm_live_touch_scheduler_step(dm_live_touch *touch, int64_t time_ns) {
+    if (!touch || time_ns < 0) return 0;
+    dm_tc_tick(&touch->state, now_s(touch, time_ns));
+    if (touch->state.pulse_button) {
+        if (touch->pulse_started_ns == 0) touch->pulse_started_ns = time_ns;
+        int64_t hold_ns = (int64_t)(touch->state.pulse_hold_s * 1000000000.0);
+        if (hold_ns < 200000000) hold_ns = 200000000;
+        hold_ns += 100000000;
+        if (time_ns - touch->pulse_started_ns >= hold_ns) {
+            dm_tc_pulse_end(&touch->state, touch->state.pulse_epoch);
+            touch->pulse_started_ns = 0;
+        }
+    } else {
+        touch->pulse_started_ns = 0;
+    }
+    sync_pointers(touch);
+    return dm_live_touch_needs_work(touch);
 }
 
 uint64_t dm_live_touch_buttons(const dm_live_touch *touch) { return touch ? touch->state.buttons : 0; }
@@ -182,5 +213,7 @@ int dm_live_touch_pointer_long(const dm_live_touch *touch) {
 
 int dm_live_touch_end_released_pulse(dm_live_touch *touch) {
     if (!touch || !touch->state.pulse_button || touch->state.pulse_hold_s > 0) return 0;
-    return dm_tc_pulse_end(&touch->state, touch->state.pulse_epoch);
+    int ended = dm_tc_pulse_end(&touch->state, touch->state.pulse_epoch);
+    touch->pulse_started_ns = 0;
+    return ended;
 }
