@@ -10,6 +10,7 @@ public class InputMethodManager {
 
     public boolean showResult = true;
     public RuntimeException showException;
+    public RuntimeException hideException;
     public int showCalls;
     public int hideCalls;
 
@@ -21,6 +22,7 @@ public class InputMethodManager {
 
     public boolean hideSoftInputFromWindow(IBinder windowToken, int flags) {
         hideCalls++;
+        if (hideException != null) throw hideException;
         return true;
     }
 }

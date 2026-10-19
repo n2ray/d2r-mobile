@@ -69,11 +69,15 @@ public final class DmTextEditorHost {
         if (released || callerSink == null) return false;
         if (editor.isSessionActive() || attached) hide();
         if (!attachEditor()) return false;
+        if (!editor.requestFocus()) {
+            detachEditor();
+            return false;
+        }
         boolean accepted;
         try {
             accepted = editor.show(new HostSink(callerSink));
         } catch (RuntimeException failure) {
-            hide();
+            cleanupAfterShowFailure(failure);
             throw failure;
         }
         if (!accepted) {
@@ -88,18 +92,30 @@ public final class DmTextEditorHost {
         requireMainLooper();
         boolean wasActive = editor.isSessionActive();
         boolean wasAttached = attached || editor.getParent() != null;
-        if (wasActive) editor.hide();
-        detachEditor();
+        try {
+            if (wasActive) editor.hide();
+        } finally {
+            detachEditor();
+        }
         return wasActive || wasAttached;
     }
 
     /** Terminal idempotent cleanup; later show calls are rejected. */
     public boolean release() {
         requireMainLooper();
-        if (released) return false;
+        if (released) {
+            if (attached || editor.getParent() != null) {
+                detachEditor();
+                return true;
+            }
+            return false;
+        }
         released = true;
-        if (editor.isSessionActive()) editor.hide();
-        detachEditor();
+        try {
+            if (editor.isSessionActive()) editor.hide();
+        } finally {
+            detachEditor();
+        }
         return true;
     }
 
@@ -146,6 +162,20 @@ public final class DmTextEditorHost {
             attached = false;
         } finally {
             detaching = false;
+        }
+    }
+
+    private void cleanupAfterShowFailure(RuntimeException original) {
+        try {
+            if (editor.isSessionActive()) editor.hide();
+        } catch (RuntimeException cleanupFailure) {
+            original.addSuppressed(cleanupFailure);
+        } finally {
+            try {
+                detachEditor();
+            } catch (RuntimeException cleanupFailure) {
+                original.addSuppressed(cleanupFailure);
+            }
         }
     }
 

@@ -110,6 +110,64 @@ public final class DmTextEditorHostTest {
         check(thrown.cancels == 0, "platform exception invents no cancel");
         imm.showException = null;
 
+        // Focus refusal must roll back before the IMM show request.
+        View.rejectFocus = true;
+        Activity focusRefusalActivity = activityWithNativeContent();
+        ViewGroup focusRefusalContent = contentOf(focusRefusalActivity);
+        InputMethodManager focusRefusalImm = new InputMethodManager();
+        DmTextEditorHost focusRefusalHost = new DmTextEditorHost(focusRefusalActivity, focusRefusalImm);
+        Recorder refused = new Recorder();
+        int refusedShowCalls = focusRefusalImm.showCalls;
+        check(!focusRefusalHost.show(refused), "focus refusal returns false");
+        check(focusRefusalImm.showCalls == refusedShowCalls, "focus refusal does not request IMM");
+        check(focusRefusalContent.getChildCount() == 1
+                && !focusRefusalHost.isAttached() && !focusRefusalHost.isSessionActive(),
+                "focus refusal detaches owned editor");
+        check(refused.cancels == 0, "focus refusal invents no cancel");
+        View.rejectFocus = false;
+
+        // A platform hide exception must still detach the owned editor.
+        Activity hideFailureActivity = activityWithNativeContent();
+        ViewGroup hideFailureContent = contentOf(hideFailureActivity);
+        InputMethodManager hideFailureImm = new InputMethodManager();
+        DmTextEditorHost hideFailureHost = new DmTextEditorHost(hideFailureActivity, hideFailureImm);
+        Recorder hideFailure = new Recorder();
+        check(hideFailureHost.show(hideFailure), "hide-failure session accepted");
+        hideFailureImm.hideException = new RuntimeException("hide failed");
+        boolean hideThrew = false;
+        try {
+            hideFailureHost.hide();
+        } catch (RuntimeException expected) {
+            hideThrew = true;
+        }
+        check(hideThrew, "hide platform exception propagated");
+        check(hideFailureContent.getChildCount() == 1
+                && !hideFailureHost.isAttached() && !hideFailureHost.isSessionActive(),
+                "hide exception still detaches owned editor");
+        check(!hideFailureHost.hide(), "hide retry is idle after cleanup");
+        hideFailureImm.hideException = null;
+        check(hideFailureHost.release(), "release after hide exception succeeds");
+
+        Activity releaseFailureActivity = activityWithNativeContent();
+        ViewGroup releaseFailureContent = contentOf(releaseFailureActivity);
+        InputMethodManager releaseFailureImm = new InputMethodManager();
+        DmTextEditorHost releaseFailureHost = new DmTextEditorHost(releaseFailureActivity, releaseFailureImm);
+        Recorder releaseFailure = new Recorder();
+        check(releaseFailureHost.show(releaseFailure), "release-failure session accepted");
+        releaseFailureImm.hideException = new RuntimeException("hide failed");
+        boolean releaseThrew = false;
+        try {
+            releaseFailureHost.release();
+        } catch (RuntimeException expected) {
+            releaseThrew = true;
+        }
+        check(releaseThrew, "release platform exception propagated");
+        check(releaseFailureContent.getChildCount() == 1
+                && !releaseFailureHost.isAttached() && !releaseFailureHost.isSessionActive(),
+                "release exception still detaches owned editor");
+        check(!releaseFailureHost.release(), "release retry is terminal after cleanup");
+        releaseFailureImm.hideException = null;
+
         Recorder focus = new Recorder();
         check(host.show(focus), "focus session accepted");
         DmTextEditorView focusEditor = attachedEditor(activity);

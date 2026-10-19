@@ -18,6 +18,7 @@ public class View {
     private boolean focusable;
     private boolean focusableInTouchMode;
     private boolean focused;
+    public static boolean rejectFocus;
 
     public View(Context context) {
         this.context = context;
@@ -44,6 +45,7 @@ public class View {
     }
 
     public final boolean requestFocus() {
+        if (rejectFocus) return false;
         boolean changed = !focused;
         focused = true;
         if (changed && focusListener != null) focusListener.onFocusChange(this, true);
