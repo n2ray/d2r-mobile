@@ -15,4 +15,4 @@ trap 'rm -rf "$work"' EXIT
     "$here/../app/java/org/d2rmobile/android/diagnostic/AudioFocusBoundary.java" \
     "$here/../app/java/org/d2rmobile/android/diagnostic/AudioFocusJniBridge.java" \
     "$here/AudioFocusJniHarness.java"
-"$java" -Djava.library.path="$(dirname "$lib")" -cp "$work/stubs:$work/classes" AudioFocusJniHarness
+"$java" -Xcheck:jni -Djava.library.path="$(dirname "$lib")" -cp "$work/stubs:$work/classes" AudioFocusJniHarness

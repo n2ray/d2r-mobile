@@ -34,6 +34,22 @@ simply fails lookup instead of dereferencing freed memory.
 The ring holds 64 events. On overflow an explicit flag makes `dm_afj_drain` return `DM_AFJ_E_OVERFLOW`; the caller must
 retire the owner. A permanent LOSS is never silently dropped.
 
+## 重试与异常清理 | Retry and exception cleanup
+
+- `AudioFocusJniBridge.release()` 先让已验收的 bridge 完成线程检查与实际 `abandon`，成功后才提交本地 released
+  状态；因此 off-main 调用返回 `DM_AFJ_E_THREAD` 时 owner 与平台焦点均保持原状，主线程重试仍会放弃同一个
+  `AudioFocusRequest`，旧回调在重试释放后保持惰性。
+- `AudioFocusJniBridge.release()` commits its released flag only after the accepted boundary has checked the thread
+  and actually abandoned the platform request. An off-main call therefore returns `DM_AFJ_E_THREAD` with owner and
+  focus intact, and a main-thread retry still abandons the exact request.
+- `dm_afj_create` 在每个失败的 JNI 操作后立即 clear 待处理异常并释放本地引用：抛异常的 `getClassLoader`、
+  class lookup、构造器或 `NewGlobalRef` 失败都统一返回 `DM_AFJ_E_JNI`，不会把 Java 异常泄漏给调用方；
+  `GetJavaVM` 失败时不会发布不可用 owner。方法查找逐个检查，避免在异常待处理时继续调用 JNI。
+- `dm_afj_create` clears each failing JNI exception immediately and frees locals: throwing classloader, class lookup,
+  constructor and NewGlobalRef failures all return `DM_AFJ_E_JNI` without leaking an exception; a failed GetJavaVM
+  never publishes an unusable owner, and method lookups are checked one by one so no JNI call runs with a pending
+  exception. The host harness runs with `-Xcheck:jni`.
+
 ## 证据 | Evidence
 
 - Host JVM 测试通过真实 C JNI 入口驱动真实 bridge/boundary（只替换 Android 边界）：35 checks / 0 failures，覆盖

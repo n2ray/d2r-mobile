@@ -132,6 +132,62 @@ public final class AudioFocusJniHarness {
         check(nativeRequest(second, 22, false) == -1, "request on released handle is rejected");
 
         check(nativeRelease(owner) == 0, "first owner still releases");
+
+        // off-main release 被拒绝后主线程重试必须真正 abandon 保留的请求，旧回调保持惰性。
+        long retryOwner = nativeCreate(context);
+        audio.nextResult = AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        check(nativeRequest(retryOwner, 55, false) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED,
+                "retry owner granted");
+        AudioFocusRequest retryRequest = audio.lastRequest;
+        int beforeRetry = audio.abandonCalls;
+        final int[] offMainRelease = new int[1];
+        Thread releaseThread = new Thread(() -> offMainRelease[0] = nativeRelease(retryOwner));
+        releaseThread.start();
+        releaseThread.join();
+        check(offMainRelease[0] == -3, "off-main release rejected");
+        check(audio.abandonCalls == beforeRetry, "off-main release leaves platform unchanged");
+        check(nativeRelease(retryOwner) == 0, "main release retry succeeds");
+        check(audio.abandonCalls == beforeRetry + 1, "main retry abandons retained request");
+        check(audio.abandonedRequest == retryRequest, "retry abandons the exact owned request");
+        audio.emit(retryRequest, AudioManager.AUDIOFOCUS_LOSS);
+        deliver();
+        check(nativeDrain(retryOwner, events) == -1, "late callback after retried release is inert");
+
+        // 抛异常的 classloader：create 必须返回 0 且不留下待处理异常，之后 JNI 仍可正常使用。
+        Context throwing = new Context(audio, AudioFocusJniHarness.class.getClassLoader()) {
+            @Override
+            public ClassLoader getClassLoader() {
+                throw new IllegalStateException("lookup failure");
+            }
+        };
+        boolean leaked = false;
+        long thrownHandle = -1;
+        try {
+            thrownHandle = nativeCreate(throwing);
+        } catch (RuntimeException failure) {
+            leaked = true;
+        }
+        check(!leaked && thrownHandle == 0, "throwing classloader rejected without a leaked exception");
+
+        // 构造器失败（无 AudioManager）：同样回滚且不留下待处理异常。
+        Context noAudio = new Context(audio, AudioFocusJniHarness.class.getClassLoader()) {
+            @Override
+            public Object getSystemService(String name) {
+                return null;
+            }
+        };
+        leaked = false;
+        long noAudioHandle = -1;
+        try {
+            noAudioHandle = nativeCreate(noAudio);
+        } catch (RuntimeException failure) {
+            leaked = true;
+        }
+        check(!leaked && noAudioHandle == 0, "constructor failure rejected without a leaked exception");
+        long afterFailures = nativeCreate(context);
+        check(afterFailures > 0, "JNI remains usable after failed creations");
+        check(nativeRelease(afterFailures) == 0, "cleanup after failed creations");
+
         System.out.println("AudioFocusJniHarness: " + checks + " checks, " + failures + " failures");
         if (failures != 0) System.exit(1);
     }

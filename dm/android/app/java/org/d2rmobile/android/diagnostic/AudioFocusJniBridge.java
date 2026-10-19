@@ -30,11 +30,11 @@ public final class AudioFocusJniBridge implements AudioFocusBoundary.Listener {
         return boundary.abandon();
     }
 
-    /** main 线程调用；先置 released 拒绝后续原生转发，再释放平台焦点。 */
+    /** main 线程调用；先由 boundary 完成线程检查与实际 abandon，成功后才提交 released 状态。 */
     public void release() {
         if (released) return;
-        released = true;
-        boundary.release();
+        boundary.release();   // off-main 会抛 IllegalStateException，bridge 状态保持不变，可主线程重试
+        released = true;      // 平台焦点已放弃后才阻止后续原生转发
     }
 
     @Override

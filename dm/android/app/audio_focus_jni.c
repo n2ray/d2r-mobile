@@ -94,29 +94,53 @@ static void JNICALL afj_on_focus_event(JNIEnv *env, jclass cls, jlong handle, ji
 }
 
 static jclass load_bridge_class(JNIEnv *env, jobject context, int *error) {
+    *error = DM_AFJ_E_JNI;
     jclass ctx_cls = (*env)->GetObjectClass(env, context);
-    if (!ctx_cls) { *error = DM_AFJ_E_JNI; return NULL; }
+    if (!ctx_cls) { pending_exception(env); return NULL; }
     jmethodID get_loader = (*env)->GetMethodID(env, ctx_cls, "getClassLoader",
                                                "()Ljava/lang/ClassLoader;");
+    if (!get_loader) { pending_exception(env); (*env)->DeleteLocalRef(env, ctx_cls); return NULL; }
     (*env)->DeleteLocalRef(env, ctx_cls);
-    if (!get_loader || pending_exception(env)) { *error = DM_AFJ_E_JNI; return NULL; }
-    jobject loader = (*env)->CallObjectMethod(env, context, get_loader);
-    if (!loader || pending_exception(env)) { *error = DM_AFJ_E_JNI; return NULL; }
 
-    jclass loader_cls = (*env)->GetObjectClass(env, loader);
-    jmethodID load_class = loader_cls ? (*env)->GetMethodID(env, loader_cls, "loadClass",
-                                                            "(Ljava/lang/String;)Ljava/lang/Class;") : NULL;
-    if (loader_cls) (*env)->DeleteLocalRef(env, loader_cls);
-    if (!load_class || pending_exception(env)) {
-        (*env)->DeleteLocalRef(env, loader);
-        *error = DM_AFJ_E_JNI;
+    jobject loader = (*env)->CallObjectMethod(env, context, get_loader);
+    if (pending_exception(env)) {       // 每次失败先 clear，再允许后续 JNI 调用
+        if (loader) (*env)->DeleteLocalRef(env, loader);
         return NULL;
     }
+    if (!loader) return NULL;
+
+    jclass loader_cls = (*env)->GetObjectClass(env, loader);
+    if (!loader_cls) {
+        pending_exception(env);
+        (*env)->DeleteLocalRef(env, loader);
+        return NULL;
+    }
+    jmethodID load_class = (*env)->GetMethodID(env, loader_cls, "loadClass",
+                                               "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (!load_class) {
+        pending_exception(env);
+        (*env)->DeleteLocalRef(env, loader_cls);
+        (*env)->DeleteLocalRef(env, loader);
+        return NULL;
+    }
+    (*env)->DeleteLocalRef(env, loader_cls);
+
     jstring name = (*env)->NewStringUTF(env, "org.d2rmobile.android.diagnostic.AudioFocusJniBridge");
-    jclass bridge_cls = name ? (jclass)(*env)->CallObjectMethod(env, loader, load_class, name) : NULL;
-    if (name) (*env)->DeleteLocalRef(env, name);
+    if (!name) {
+        pending_exception(env);
+        (*env)->DeleteLocalRef(env, loader);
+        return NULL;
+    }
+    jclass bridge_cls = (jclass)(*env)->CallObjectMethod(env, loader, load_class, name);
+    if (pending_exception(env)) {
+        if (bridge_cls) (*env)->DeleteLocalRef(env, bridge_cls);
+        (*env)->DeleteLocalRef(env, name);
+        (*env)->DeleteLocalRef(env, loader);
+        return NULL;
+    }
+    (*env)->DeleteLocalRef(env, name);
     (*env)->DeleteLocalRef(env, loader);
-    if (!bridge_cls || pending_exception(env)) { *error = DM_AFJ_E_JNI; return NULL; }
+    if (!bridge_cls) return NULL;
     return bridge_cls;
 }
 
@@ -144,20 +168,25 @@ int dm_afj_create(JNIEnv *env, jobject activity_context, dm_afj_owner **out) {
     static const JNINativeMethod native_methods[] = {
         {"nativeOnFocusEvent", "(JII)V", (void *)afj_on_focus_event},
     };
-    if ((*env)->RegisterNatives(env, bridge_cls, native_methods, 1) != 0 || pending_exception(env)) {
+    if ((*env)->RegisterNatives(env, bridge_cls, native_methods, 1) != 0) {
+        pending_exception(env);
+        (*env)->DeleteLocalRef(env, bridge_cls);
+        return DM_AFJ_E_JNI;
+    }
+    if (pending_exception(env)) {   // RegisterNatives 报错后再确认一次，避免遗留异常
         (*env)->DeleteLocalRef(env, bridge_cls);
         return DM_AFJ_E_JNI;
     }
 
     jmethodID ctor = (*env)->GetMethodID(env, bridge_cls, "<init>",
                                          "(Landroid/content/Context;J)V");
+    if (!ctor) { pending_exception(env); (*env)->DeleteLocalRef(env, bridge_cls); return DM_AFJ_E_JNI; }
     jmethodID request = (*env)->GetMethodID(env, bridge_cls, "request", "(IZ)I");
+    if (!request) { pending_exception(env); (*env)->DeleteLocalRef(env, bridge_cls); return DM_AFJ_E_JNI; }
     jmethodID abandon = (*env)->GetMethodID(env, bridge_cls, "abandon", "()Z");
+    if (!abandon) { pending_exception(env); (*env)->DeleteLocalRef(env, bridge_cls); return DM_AFJ_E_JNI; }
     jmethodID release = (*env)->GetMethodID(env, bridge_cls, "release", "()V");
-    if (!ctor || !request || !abandon || !release || pending_exception(env)) {
-        (*env)->DeleteLocalRef(env, bridge_cls);
-        return DM_AFJ_E_JNI;
-    }
+    if (!release) { pending_exception(env); (*env)->DeleteLocalRef(env, bridge_cls); return DM_AFJ_E_JNI; }
 
     dm_afj_owner *owner = calloc(1, sizeof *owner);
     if (!owner) { (*env)->DeleteLocalRef(env, bridge_cls); return DM_AFJ_E_JNI; }
@@ -167,7 +196,13 @@ int dm_afj_create(JNIEnv *env, jobject activity_context, dm_afj_owner **out) {
         return DM_AFJ_E_JNI;
     }
     owner->vm = NULL;
-    (*env)->GetJavaVM(env, &owner->vm);
+    if ((*env)->GetJavaVM(env, &owner->vm) != 0 || !owner->vm) {
+        pending_exception(env);
+        pthread_mutex_destroy(&owner->lock);
+        free(owner);
+        (*env)->DeleteLocalRef(env, bridge_cls);
+        return DM_AFJ_E_JNI;
+    }
     owner->request = request;
     owner->abandon = abandon;
     owner->release = release;
@@ -193,7 +228,8 @@ int dm_afj_create(JNIEnv *env, jobject activity_context, dm_afj_owner **out) {
 
     jobject bridge = (*env)->NewObject(env, bridge_cls, ctor, activity_context, (jlong)owner->id);
     (*env)->DeleteLocalRef(env, bridge_cls);
-    if (!bridge || pending_exception(env)) {
+    if (!bridge) {
+        pending_exception(env);         // 构造异常必须清掉，调用方才会看到 DM_AFJ_E_JNI 而不是残留异常
         unregister_owner(owner);
         pthread_mutex_destroy(&owner->lock);
         free(owner);
@@ -202,6 +238,7 @@ int dm_afj_create(JNIEnv *env, jobject activity_context, dm_afj_owner **out) {
     owner->bridge = (*env)->NewGlobalRef(env, bridge);
     (*env)->DeleteLocalRef(env, bridge);
     if (!owner->bridge) {
+        pending_exception(env);
         unregister_owner(owner);
         pthread_mutex_destroy(&owner->lock);
         free(owner);
