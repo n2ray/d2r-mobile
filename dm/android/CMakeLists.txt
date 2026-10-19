@@ -180,7 +180,7 @@ set_tests_properties(live_touch_glyph PROPERTIES TIMEOUT 30)
 add_executable(dm_live_touch_glyph_race_test tests/live_touch_glyph_race_test.c
     native/live_touch.c native/live_touch_glyph.c tests/touch_art_synthetic.c
     ../ios/Sources/dm_touch_controls.c)
-target_link_libraries(dm_live_touch_glyph_race_test PRIVATE m pthread)
+target_link_libraries(dm_live_touch_glyph_race_test PRIVATE m Threads::Threads)
 target_include_directories(dm_live_touch_glyph_race_test PRIVATE native ../ios/Sources ../host)
 target_compile_options(dm_live_touch_glyph_race_test PRIVATE -Wall -Wextra -Werror)
 add_test(NAME live_touch_glyph_race COMMAND dm_live_touch_glyph_race_test)
