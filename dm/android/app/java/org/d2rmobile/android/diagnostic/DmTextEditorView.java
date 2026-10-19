@@ -42,6 +42,7 @@ public final class DmTextEditorView extends View {
     private final Looper mainLooper;
     private Session active;
     private long nextGeneration = 1;
+    private boolean backGestureInProgress;
 
     private static final class Session {
         final long generation;
@@ -107,9 +108,9 @@ public final class DmTextEditorView extends View {
     }
 
     /**
-     * Fills the real EditorInfo contract and returns a fresh connection for the
-     * active session. Replacing an older connection retires that connection;
-     * it cannot continue writing into the same session.
+     * Fills the real EditorInfo contract and returns the session's one
+     * connection. Repeated platform queries reuse the same connection and its
+     * document/composing state; only a new show starts a new session.
      */
     @Override
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
@@ -119,17 +120,21 @@ public final class DmTextEditorView extends View {
         outAttrs.imeOptions = EditorInfo.IME_ACTION_DONE
                 | EditorInfo.IME_FLAG_NO_FULLSCREEN
                 | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING;
-        outAttrs.initialSelStart = 0;
-        outAttrs.initialSelEnd = 0;
-        outAttrs.initialCapsMode = 0;
         outAttrs.actionId = EditorInfo.IME_ACTION_DONE;
         outAttrs.actionLabel = null;
         outAttrs.hintText = null;
         outAttrs.label = null;
-        if (active.connection != null) active.connection.closeConnection();
-        DmInputConnection connection = new DmInputConnection(new SessionSink(active));
-        active.connection = connection;
-        return connection;
+        if (active.connection == null) {
+            active.connection = new DmInputConnection(new SessionSink(active));
+        }
+        int cursor = 0;
+        CharSequence before = active.connection.getTextBeforeCursor(
+                DmInputConnection.MAX_TEXT_UTF16_UNITS, 0);
+        if (before != null) cursor = before.length();
+        outAttrs.initialSelStart = cursor;
+        outAttrs.initialSelEnd = cursor;
+        outAttrs.initialCapsMode = 0;
+        return active.connection;
     }
 
     /** Explicit hide/cancel; emits caller onCancel at most once. */
@@ -188,10 +193,17 @@ public final class DmTextEditorView extends View {
 
     @Override
     public boolean onKeyPreIme(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK && active != null) {
-            if (event == null || event.getAction() == KeyEvent.ACTION_DOWN) {
-                retire(active, true);
+        if (keyCode == KeyEvent.KEYCODE_BACK && backGestureInProgress) {
+            int action = event == null ? KeyEvent.ACTION_UP : event.getAction();
+            if (action == KeyEvent.ACTION_UP) {
+                backGestureInProgress = false;
             }
+            return true; // consume the owned BACK gesture through its release
+        }
+        if (keyCode == KeyEvent.KEYCODE_BACK && active != null
+                && (event == null || event.getAction() == KeyEvent.ACTION_DOWN)) {
+            backGestureInProgress = true;
+            retire(active, true);
             return true;
         }
         return super.onKeyPreIme(keyCode, event);

@@ -17,13 +17,17 @@ public final class DmTextEditorViewTest {
         int submits;
         int cancels;
         String lastCommit;
+        String lastDelete;
         String lastSubmit;
 
         @Override public void onCommit(CharSequence text) {
             commits++;
             lastCommit = text.toString();
         }
-        @Override public void onDelete(CharSequence text) { deletes++; }
+        @Override public void onDelete(CharSequence text) {
+            deletes++;
+            lastDelete = text.toString();
+        }
         @Override public void onSubmit(CharSequence text) {
             submits++;
             lastSubmit = text.toString();
@@ -135,11 +139,15 @@ public final class DmTextEditorViewTest {
         Recorder back = new Recorder();
         check(view.show(back), "back session accepted");
         check(view.onKeyPreIme(KeyEvent.KEYCODE_BACK,
-                new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK)), "back handled");
+                new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK)), "back down handled");
         check(!view.isSessionActive() && back.cancels == 1, "back cancels once");
-        view.onKeyPreIme(KeyEvent.KEYCODE_BACK,
-                new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK));
-        check(back.cancels == 1, "back release does not duplicate");
+        check(view.onKeyPreIme(KeyEvent.KEYCODE_BACK,
+                new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK)), "back up consumed");
+        check(back.cancels == 1, "back up does not duplicate cancel");
+        check(!view.onKeyPreIme(KeyEvent.KEYCODE_BACK,
+                new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK)), "idle back down not swallowed");
+        check(!view.onKeyPreIme(KeyEvent.KEYCODE_BACK,
+                new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK)), "idle back up not swallowed");
 
         // Submit retires the session; a later hide is not another cancel.
         Recorder submit = new Recorder();
@@ -165,20 +173,51 @@ public final class DmTextEditorViewTest {
         check(!view.hide(), "hide after connection cancel is idle");
         check(cancelled.cancels == 1, "hide after connection cancel does not duplicate");
 
-        // Replacing a connection makes the old one stale; a new show makes a new session.
+        // Repeated onCreateInputConnection reuses the session document and
+        // composing state; committed text survives delete and submit.
+        Recorder document = new Recorder();
+        check(view.show(document), "document session accepted");
+        DmInputConnection documentConnection =
+                (DmInputConnection) view.onCreateInputConnection(new EditorInfo());
+        check(documentConnection.commitText("abc", 1), "document base committed");
+        check(documentConnection.setComposingText("你", 1), "document composing set");
+        EditorInfo requeryInfo = new EditorInfo();
+        DmInputConnection requery =
+                (DmInputConnection) view.onCreateInputConnection(requeryInfo);
+        check(requery == documentConnection, "requery reuses the one session connection");
+        check("abc你".contentEquals(requery.getTextBeforeCursor(99, 0)), "requery preserves document/composing");
+        check(requeryInfo.initialSelStart == 4 && requeryInfo.initialSelEnd == 4,
+                "requery reports actual cursor");
+        check(requery.deleteSurroundingText(1, 0), "requery delete accepted");
+        check("ab你".contentEquals(requery.getTextBeforeCursor(99, 0)), "delete keeps composing and remaining document");
+        check(document.deletes == 1 && "c".equals(document.lastDelete), "delete reports exact committed character");
+        check(requery.commitText("你", 1), "requery commit accepted");
+        check(document.commits == 2, "requery commit is not duplicated");
+        EditorInfo afterCommit = new EditorInfo();
+        DmInputConnection after =
+                (DmInputConnection) view.onCreateInputConnection(afterCommit);
+        check(after == requery, "post-commit requery still reuses connection");
+        check(afterCommit.initialSelStart == 3 && afterCommit.initialSelEnd == 3,
+                "post-commit cursor includes committed text");
+        check(after.performEditorAction(EditorInfo.IME_ACTION_DONE), "requery submit accepted");
+        check(document.submits == 1 && "ab你".equals(document.lastSubmit), "submit uses retained document");
+        check(!view.isSessionActive() && document.cancels == 0, "submit retires without cancel");
+
+        // A new show starts a fresh connection; the old session object is stale.
         Recorder stale = new Recorder();
         check(view.show(stale), "stale session accepted");
         DmInputConnection old = (DmInputConnection) view.onCreateInputConnection(new EditorInfo());
-        DmInputConnection fresh = (DmInputConnection) view.onCreateInputConnection(new EditorInfo());
-        check(!old.commitText("old", 1), "replaced connection is stale");
-        check(fresh.commitText("fresh", 1), "fresh connection works");
-        check(stale.commits == 1 && "fresh".equals(stale.lastCommit), "only fresh text committed");
+        check(old.commitText("old", 1), "old session text accepted");
         Recorder next = new Recorder();
         check(view.show(next), "new show accepted");
-        check(!fresh.commitText("late", 1), "old session connection cannot write after show");
-        check(next.commits == 0 && stale.commits == 1, "stale callback does not reach next session");
+        check(!old.commitText("late", 1), "old session connection cannot write after show");
+        DmInputConnection fresh = (DmInputConnection) view.onCreateInputConnection(new EditorInfo());
+        check(fresh.commitText("fresh", 1), "new session connection works");
+        check(next.commits == 1 && "fresh".equals(next.lastCommit), "fresh text only");
+        check(stale.commits == 1 && "old".equals(stale.lastCommit), "old sink unchanged");
+        check(stale.cancels == 1, "old session retired once");
         view.hide();
-        check(stale.cancels == 1 && next.cancels == 1, "session retirement cancels once per session");
+        check(next.cancels == 1, "new session retired once");
 
         System.out.println("PASS ime view: " + checks + " checks");
     }
