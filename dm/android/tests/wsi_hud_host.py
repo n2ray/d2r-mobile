@@ -196,6 +196,8 @@ def main() -> int:
     ap.add_argument("--native", default="dm/android/app/native.c")
     ap.add_argument("--cc", default="cc")
     ap.add_argument("--mutant", action="store_true")
+    ap.add_argument("--vulkan-include", action="append", default=[],
+                    help="CMake-resolved Vulkan include directory (repeatable)")
     args = ap.parse_args()
     text = Path(args.native).read_text()
     if args.mutant:
@@ -203,6 +205,10 @@ def main() -> int:
     root = Path(__file__).resolve().parents[3]
     vulkan_inc = [p for p in ("/opt/homebrew/include", "/usr/local/include")
                   if (Path(p) / "vulkan/vulkan.h").exists()]
+    for entry in args.vulkan_include:
+        for p in entry.split(";"):
+            if p and p not in vulkan_inc:
+                vulkan_inc.insert(0, p)
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
         c = work / "wsi_hud.c"
