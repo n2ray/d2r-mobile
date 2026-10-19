@@ -1,0 +1,12 @@
+# Android USB startup qualification manifest.
+# name<TAB>binary<TAB>device timeout seconds
+# Only owned runtime tests; no game/SDK payload or private device data.
+image_map	dm_image_test	45
+gate	dm_gate_test	30
+gate_vectors	dm_gate_vectors	30
+runtime	dm_runtime_test	30
+bootstrap	dm_bootstrap_test	45
+thread	dm_thread_test	60
+sync	dm_sync_test	30
+mutex	dm_mutex_test	60
+memory	dm_memory_test	45
