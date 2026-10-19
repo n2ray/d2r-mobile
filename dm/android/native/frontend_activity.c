@@ -65,6 +65,7 @@ typedef struct {
 } game_app;
 static game_app *application;
 static void touch_timer_stop(game_app *s);
+static void ui_touch_cancel(void);
 static _Atomic int display_hz;
 // 运行时可切的调试浮层（游戏内菜单的「帧率显示」）：UI 线程写，调试线程每拍读。启动初值见 debug_overlay 的读取处。
 // Runtime-togglable debug overlay (the in-game menu's "frame rate display"): the UI thread writes it, the debug
@@ -411,20 +412,24 @@ static int live_touch_mode_enabled(void) {
 static void live_touch_sync(game_app *s) {
     if(!s->live_touch||!live_touch_mode_enabled()){s->live_provider_available=0;return;}
     if(!s->live_provider_ready){dm_live_touch_provider_init(&s->live_provider,NULL);s->live_provider_ready=1;}
-    dm_tgp_snapshot snapshot;
-    if(!dm_live_touch_provider_refresh(&s->live_provider,&snapshot)){
+    dm_live_touch_scene_observation snapshot;
+    if(!dm_live_touch_provider_observe(&s->live_provider,&snapshot)){
         s->live_provider_available=0;
-        dm_live_touch_cancel_all(s->live_touch,(int64_t)now_ns());
+        // Unknown identity is a real caller boundary: cancel the original UI
+        // phase-3 press, the live core and the legacy raw pointer ownership.
+        dm_live_touch_cancel_sources(s->live_touch,(int64_t)now_ns(),ui_touch_cancel);
+        dm_touch_pointer_clear(&s->touch_map);
+        dm_touch_set(NULL,0);
         touch_timer_stop(s);
         return;
     }
     s->live_provider_available=1;
-    int navigation=snapshot.scene!=DM_TGP_SCENE_GAME||snapshot.panel_bits||atomic_load(&menu_open);
+    int navigation=snapshot.scene!=DM_LIVE_TOUCH_SCENE_GAME||snapshot.panel_bits||atomic_load(&menu_open);
     uint32_t mask=navigation?(dm_tc_nav_mask(1)|(1u<<DM_TC_MENU)):
         (((1u<<DM_TC_COUNT)-1)&~(1u<<DM_TC_MAP));
     dm_live_touch_set_context(s->live_touch,navigation,mask,
                               snapshot.scene_epoch,snapshot.world_epoch,
-                              snapshot.ui_identity,snapshot.object_generation);
+                              snapshot.ui_identity,0);
 }
 static void pad_publish(game_app *s) {
     live_touch_sync(s);

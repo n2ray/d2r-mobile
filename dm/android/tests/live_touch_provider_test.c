@@ -1,19 +1,17 @@
-// #33 owned fixture for the production provider seam. The host callbacks are
-// injected so the test can prove context identity transitions without a game.
-// The provider itself is the production implementation; no fake snapshot builder.
+// #33 owned fixture for the observation-only provider seam. The host callbacks
+// are injected so the test can prove context identity transitions without a
+// game. The provider is the production implementation; there is no fake
+// module-backed generic provider in this slice.
 #include "live_touch_provider.h"
 #include "live_touch.h"
 #include "../ios/Sources/dm_touch_controls.h"
-#include "../runtime/touch_game_bridge.h"
-#include "../runtime/touch_adapter.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-// The production defaults are not used by the injected fixture below, but the
-// provider object references them. These are controlled host stubs for the
-// default-entry test; the injected host is the only source of the other cases.
+// Controlled host stubs for the production-default entry path. The injected
+// host below is the only source of the other cases.
 static int prod_ingame, prod_panel_open, prod_panel_bits, prod_hud_valid, prod_dead, prod_area;
 static uint32_t prod_ui_gen = 1;
 static uint64_t prod_now = 1;
@@ -68,29 +66,28 @@ int main(void) {
     };
     dm_live_touch_provider provider;
     dm_live_touch_provider_init(&provider, &host);
-    CHECK(dm_live_touch_provider_interface(&provider) != NULL);
-    dm_tgp_hit hit;
-    CHECK(!dm_live_touch_provider_interface(&provider)->hit(NULL, 0, 0, &hit));
+    // This scene observation has no pinned guest module/hit/action contract.
+    CHECK(dm_live_touch_provider_generic_interface(&provider) == NULL);
 
     dm_live_touch *touch = dm_live_touch_create(667, 375);
     CHECK(touch != NULL);
-    dm_tgp_snapshot snap;
+    dm_live_touch_scene_observation obs;
 
     // Front-end is a real observed menu page even before any player exists.
-    CHECK(dm_live_touch_provider_refresh(&provider, &snap));
-    CHECK(snap.available && snap.scene == DM_TGP_SCENE_MENU);
-    dm_live_touch_set_context(touch, 1, dm_tc_nav_mask(1), snap.scene_epoch, snap.world_epoch,
-                              snap.ui_identity, snap.object_generation);
+    CHECK(dm_live_touch_provider_observe(&provider, &obs));
+    CHECK(obs.available && obs.scene == DM_LIVE_TOUCH_SCENE_MENU);
+    dm_live_touch_set_context(touch, 1, dm_tc_nav_mask(1), obs.scene_epoch, obs.world_epoch,
+                              obs.ui_identity, 0);
 
     // In-run requires the real HUD publication; unknown is not promoted to GAME.
     f.ingame = 1; f.hud_valid = 0; f.now = 1100000000;
-    CHECK(!dm_live_touch_provider_refresh(&provider, &snap));
-    CHECK(!snap.available);
+    CHECK(!dm_live_touch_provider_observe(&provider, &obs));
+    CHECK(!obs.available);
     f.hud_valid = 1; f.area = 1; f.ui_gen = 2;
-    CHECK(dm_live_touch_provider_refresh(&provider, &snap));
-    CHECK(snap.available && snap.scene == DM_TGP_SCENE_GAME);
-    dm_live_touch_set_context(touch, 0, (1u << DM_TC_COUNT) - 1, snap.scene_epoch,
-                              snap.world_epoch, snap.ui_identity, snap.object_generation);
+    CHECK(dm_live_touch_provider_observe(&provider, &obs));
+    CHECK(obs.available && obs.scene == DM_LIVE_TOUCH_SCENE_GAME);
+    dm_live_touch_set_context(touch, 0, (1u << DM_TC_COUNT) - 1, obs.scene_epoch,
+                              obs.world_epoch, obs.ui_identity, 0);
 
     int32_t id = 42;
     float x = 70, y = 300;
@@ -110,11 +107,11 @@ int main(void) {
     // UI/character identity changes: old pointer is cancelled before the new
     // context is installed, and its late UP cannot reach the new identity.
     f.ui_gen = 3; f.now = 1300000000;
-    CHECK(dm_live_touch_provider_refresh(&provider, &snap));
-    CHECK(snap.scene_epoch > 1);
-    CHECK(snap.ui_identity == 3);
-    dm_live_touch_set_context(touch, 0, (1u << DM_TC_COUNT) - 1, snap.scene_epoch,
-                              snap.world_epoch, snap.ui_identity, snap.object_generation);
+    CHECK(dm_live_touch_provider_observe(&provider, &obs));
+    CHECK(obs.scene_epoch > 1);
+    CHECK(obs.ui_identity == 3);
+    dm_live_touch_set_context(touch, 0, (1u << DM_TC_COUNT) - 1, obs.scene_epoch,
+                              obs.world_epoch, obs.ui_identity, 0);
     CHECK(!dm_live_touch_active(touch));
     CHECK(dm_live_touch_buttons(touch) == 0);
     CHECK(!dm_live_touch_event(touch, DM_LIVE_ACTION_UP, 0, 1, &id, &x, &y,
@@ -122,49 +119,59 @@ int main(void) {
 
     // Leaving the run is a scene/world change too; no old pointer survives.
     f.ingame = 0; f.now = 1500000000;
-    CHECK(dm_live_touch_provider_refresh(&provider, &snap));
-    CHECK(snap.scene == DM_TGP_SCENE_MENU);
-    CHECK(snap.world_epoch > 1);
-    dm_live_touch_set_context(touch, 1, dm_tc_nav_mask(1), snap.scene_epoch, snap.world_epoch,
-                              snap.ui_identity, snap.object_generation);
+    CHECK(dm_live_touch_provider_observe(&provider, &obs));
+    CHECK(obs.scene == DM_LIVE_TOUCH_SCENE_MENU);
+    CHECK(obs.world_epoch > 1);
+    dm_live_touch_set_context(touch, 1, dm_tc_nav_mask(1), obs.scene_epoch, obs.world_epoch,
+                              obs.ui_identity, 0);
     CHECK(!dm_live_touch_active(touch));
 
     // Panel/dead are observed from the existing host panel/HUD entries.
     f.ingame = 1; f.hud_valid = 1; f.panel_open = 1; f.panel_bits = 1; f.ui_gen = 4; f.now = 1600000000;
-    CHECK(dm_live_touch_provider_refresh(&provider, &snap));
-    CHECK(snap.scene == DM_TGP_SCENE_PANEL && snap.panel_bits == 1);
+    CHECK(dm_live_touch_provider_observe(&provider, &obs));
+    CHECK(obs.scene == DM_LIVE_TOUCH_SCENE_PANEL && obs.panel_bits == 1);
     f.dead = 1; f.ui_gen = 5; f.now = 1700000000;
-    CHECK(dm_live_touch_provider_refresh(&provider, &snap));
-    CHECK(snap.scene == DM_TGP_SCENE_DEAD && snap.dead);
+    CHECK(dm_live_touch_provider_observe(&provider, &obs));
+    CHECK(obs.scene == DM_LIVE_TOUCH_SCENE_DEAD && obs.dead);
+
+    // Unknown UI identity (0) must be unavailable, never coerced to identity 1.
+    f.ingame = 1; f.hud_valid = 1; f.dead = 0; f.panel_open = 0; f.panel_bits = 0;
+    f.ui_gen = 6; f.now = 1750000000;
+    CHECK(dm_live_touch_provider_observe(&provider, &obs));
+    dm_live_touch_set_context(touch, 0, (1u << DM_TC_COUNT) - 1, obs.scene_epoch,
+                              obs.world_epoch, obs.ui_identity, 0);
+    CHECK(dm_live_touch_event(touch, DM_LIVE_ACTION_DOWN, 0, 1, &id, &x, &y,
+                              667, 375, 0, 0, 667, 375, 1760000000));
+    CHECK(dm_live_touch_active(touch));
+    f.ui_gen = 0; f.now = 1770000000;
+    CHECK(!dm_live_touch_provider_observe(&provider, &obs));
+    CHECK(!obs.available);
+    dm_live_touch_cancel_sources(touch, 1770000000, ui_cancel);
+    CHECK(ui_cancel_count == 2);
+    CHECK(!dm_live_touch_active(touch));
+    // Recovery with a new identity must not revive the old pointer/UP.
+    f.ui_gen = 7; f.now = 1780000000;
+    CHECK(dm_live_touch_provider_observe(&provider, &obs));
+    dm_live_touch_set_context(touch, 0, (1u << DM_TC_COUNT) - 1, obs.scene_epoch,
+                              obs.world_epoch, obs.ui_identity, 0);
+    CHECK(!dm_live_touch_event(touch, DM_LIVE_ACTION_UP, 0, 1, &id, &x, &y,
+                               667, 375, 0, 0, 667, 375, 1790000000));
 
     // The production default host path calls the real host entry points. These
     // stubs only stand in for that boundary in this host build.
     dm_live_touch_provider prod;
     dm_live_touch_provider_init(&prod, NULL);
     prod_ingame = 1; prod_hud_valid = 1; prod_ui_gen = 9; prod_now = 1800000000;
-    dm_tgp_snapshot psnap;
-    CHECK(dm_live_touch_provider_refresh(&prod, &psnap));
-    CHECK(psnap.available && psnap.scene == DM_TGP_SCENE_GAME && psnap.ui_identity == 9);
-    prod_hud_valid = 0;
-    CHECK(!dm_live_touch_provider_refresh(&prod, &psnap));
-
-    // The same production provider interface is accepted by the existing
-    // runtime game bridge (scene refresh only; hit/action stay unavailable).
-    prod_hud_valid = 1; prod_ui_gen = 10; prod_now = 1900000000;
-    CHECK(dm_live_touch_provider_refresh(&prod, &psnap));
-    dm_android_pad *pad = dm_android_pad_create();
-    dm_android_touch *adapter = pad ? dm_android_touch_create(pad, 667, 375) : NULL;
-    CHECK(pad && adapter);
-    dm_touch_game_bridge *game = dm_touch_game_bridge_create(
-        adapter, dm_live_touch_provider_interface(&prod));
-    CHECK(game != NULL);
-    CHECK(dm_touch_game_bridge_refresh(game, 1900000000));
-    CHECK(dm_touch_game_bridge_available(game));
-    dm_touch_game_bridge_destroy(game);
-    dm_android_touch_destroy(adapter);
-    dm_android_pad_destroy(pad);
+    dm_live_touch_scene_observation pobs;
+    CHECK(dm_live_touch_provider_observe(&prod, &pobs));
+    CHECK(pobs.available && pobs.scene == DM_LIVE_TOUCH_SCENE_GAME && pobs.ui_identity == 9);
+    prod_ui_gen = 0;
+    CHECK(!dm_live_touch_provider_observe(&prod, &pobs));
+    prod_ui_gen = 9; prod_hud_valid = 0;
+    CHECK(!dm_live_touch_provider_observe(&prod, &pobs));
+    CHECK(dm_live_touch_provider_generic_interface(&prod) == NULL);
 
     dm_live_touch_destroy(touch);
-    puts("PASS: production provider scene/identity observations cancel old context and reject unknown/late input");
+    puts("PASS: observation-only provider rejects unknown identity, cancels old context and has no generic module interface");
     return 0;
 }
