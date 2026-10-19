@@ -410,6 +410,11 @@ final class PackageArchive {
                 swap(overlayStaging, new File(assets, OVERLAY));
             } else {
                 deleteTree(overlayStaging);
+                // A successful valid package without the optional overlay
+                // retires any obsolete installed overlay only now, after the
+                // new package passed every required check. A failed import
+                // never reaches this branch and keeps the old overlay/modules.
+                retireOverlay(assets);
             }
             writeManifest(manifest, manifestBytes);
             return new Counts(romfs, shaders, game, overlay);
@@ -456,6 +461,13 @@ final class PackageArchive {
         }
         if (manifest.exists() && !manifest.delete()) throw new IOException("cannot replace " + manifest);
         if (!temporary.renameTo(manifest)) throw new IOException("cannot move " + temporary + " into place");
+    }
+
+    private static void retireOverlay(File assets) throws IOException {
+        File overlay = new File(assets, OVERLAY);
+        if (!overlay.exists()) return;
+        deleteTree(overlay);
+        if (overlay.exists()) throw new IOException("cannot retire obsolete overlay " + overlay);
     }
 
     private static void requireCount(String key, int declared, int extracted) throws IOException {

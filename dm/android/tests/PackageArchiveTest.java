@@ -137,6 +137,13 @@ public final class PackageArchiveTest {
         check(new File(overlayRoot, "assets/overlay/ctrl_touch").isFile(), "overlay marker installed");
         check(new File(overlayRoot, "assets/overlay/data/00-00000007.data").isFile(), "overlay CASC installed");
         check(new File(overlayRoot, "assets/overlay.import").exists() == false, "overlay staging cleaned");
+        File save = new File(overlayRoot, "assets/save");
+        check(save.mkdirs(), "save fixture");
+        check(new File(save, "slot.sav").createNewFile(), "save sentinel");
+        unpack(archive(true, "android-context-v1\n"), overlayRoot, false);
+        check(!new File(overlayRoot, "assets/overlay").exists(), "valid no-overlay import retires old overlay");
+        check(new File(save, "slot.sav").isFile(), "valid no-overlay import preserves saves");
+        check(new File(overlayRoot, "assets/manifest.json").isFile(), "valid no-overlay manifest committed");
 
         File oldOverlay = Files.createTempDirectory("package-archive-old-overlay").toFile();
         File oldOverlayDir = new File(oldOverlay, "assets/overlay");
@@ -149,6 +156,12 @@ public final class PackageArchiveTest {
             check("dmAndroidLaunchImportOverlay".equals(failure.key), "overlay failure key: " + failure.key);
             check(new File(oldOverlayDir, "old.sentinel").isFile(), "failed overlay import preserves old overlay");
             check(!new File(oldOverlay, "assets/overlay.import").exists(), "failed overlay import leaves no staging");
+        }
+        try {
+            unpack(archive(false, "android-context-v1\n"), oldOverlay, true);
+            check(false, "invalid package must fail after old overlay install");
+        } catch (PackageArchive.Failure failure) {
+            check(new File(oldOverlayDir, "old.sentinel").isFile(), "invalid package preserves old overlay");
         }
 
         expectFailure(archive(false, "android-context-v1\n"), "dmAndroidLaunchImportIncomplete");
