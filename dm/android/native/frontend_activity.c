@@ -506,7 +506,8 @@ static void live_touch_sync(game_app *s) {
       dm_touch_game_set_scene(snapshot.scene==DM_LIVE_TOUCH_SCENE_GAME,
                               snapshot.scene_epoch,snapshot.world_epoch); }
     live_touch_set_available(s,1);
-    int navigation=snapshot.scene!=DM_LIVE_TOUCH_SCENE_GAME||snapshot.panel_bits||atomic_load(&menu_open);
+    int bind_state=dm_ui_bind_active();
+    int navigation=bind_state||snapshot.scene!=DM_LIVE_TOUCH_SCENE_GAME||snapshot.panel_bits||atomic_load(&menu_open);
     uint32_t mask=navigation?(dm_tc_nav_mask(1)|(1u<<DM_TC_MENU)):
         (((1u<<DM_TC_COUNT)-1)&~(1u<<DM_TC_MAP));
     dm_live_touch_set_context(s->live_touch,navigation,mask,
@@ -520,8 +521,7 @@ static void live_touch_sync(game_app *s) {
       dm_live_touch_set_skill_snapshot(s->live_touch,have_skill?&skill_snapshot:NULL,
                                        snapshot.scene_epoch,snapshot.world_epoch);
       dm_live_touch_set_skill_bind_active(s->live_touch,dm_ui_bind_active()); }
-    { int bind_state=dm_ui_bind_active();
-      if(bind_state==2 && s->live_bind_state!=2) {
+    { if(bind_state==2 && s->live_bind_state!=2) {
           // Original bindTapSync: move the original controller cursor into the
           // ornamental gap before the player picks a skill, so the skill-tree
           // tooltip does not cover the panel. Publish before any host action.
