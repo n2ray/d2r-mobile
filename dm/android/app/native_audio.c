@@ -16,6 +16,7 @@ struct native_audio {
     uint64_t pcm_phase;      // 实际写入 session 的帧数（PCM 相位只按已写帧推进）
     uint32_t pending_len;    // 已生成但尚未被 session 接受的帧
     uint64_t owed_frames;    // 按单调时钟累计应供帧
+    uint64_t units_rem;      // 精确的亚帧余量：单位 ns*rate，模 1e9；跨 tick 保留
     int64_t last_ns;
     int clock_valid;
     int16_t pending[NATIVE_AUDIO_MAX_PENDING_FRAMES * DM_AUDIO_CHANNELS];
@@ -33,6 +34,7 @@ static int64_t monotonic_now(void *user) {
 static void reset_pacing(native_audio *audio) {
     audio->pending_len = 0;   // 暂停/停止后不保留旧音频，恢复不突发
     audio->owed_frames = 0;
+    audio->units_rem = 0;     // 基线重置时同步清余量，旧时间分数不跨暂停累计
     audio->last_ns = 0;
     audio->clock_valid = 0;
 }
@@ -161,9 +163,15 @@ int native_audio_tick(native_audio *audio, JNIEnv *env) {
         audio->last_ns = now;   // 首个 tick 只建立时间基线
         audio->clock_valid = 1;
     } else if (now > audio->last_ns) {
-        const uint64_t elapsed = (uint64_t)(now - audio->last_ns);
+        uint64_t elapsed = (uint64_t)(now - audio->last_ns);
         audio->last_ns = now;
-        const uint64_t add = elapsed * (uint64_t)NATIVE_AUDIO_RATE / 1000000000u;
+        // 有界 catchup：先钳制最长 elapsed，保证 ns*48000 不溢出，再以 ns*rate 余量精确累计分数帧。
+        // Bounded catchup: clamp the longest elapsed first so ns*48000 cannot overflow, then accumulate exact
+        // fractional frames in ns*rate units carried across ticks.
+        if (elapsed > NATIVE_AUDIO_MAX_CATCHUP_NS) elapsed = NATIVE_AUDIO_MAX_CATCHUP_NS;
+        const uint64_t units = elapsed * (uint64_t)NATIVE_AUDIO_RATE + audio->units_rem;
+        const uint64_t add = units / 1000000000u;
+        audio->units_rem = units % 1000000000u;
         audio->owed_frames += add;
         if (audio->owed_frames > NATIVE_AUDIO_MAX_PENDING_FRAMES)
             audio->owed_frames = NATIVE_AUDIO_MAX_PENDING_FRAMES;   // 有界 catchup，丢弃超额而不是无限积压
@@ -197,6 +205,7 @@ void native_audio_set_clock(native_audio *audio, native_audio_clock clock, void 
     audio->clock_user = user;
     audio->last_ns = 0;
     audio->clock_valid = 0;
+    audio->units_rem = 0;
 }
 
 uint64_t native_audio_written_frames(const native_audio *audio) {

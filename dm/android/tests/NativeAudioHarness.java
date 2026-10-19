@@ -171,23 +171,51 @@ public final class NativeAudioHarness {
         audio.nextResult = AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
         check(nativeKey(KEY_P, DOWN, 0, 1) == 1 && nativeState() == OUT_PLAYING, "pacing session plays");
         nativeTick();   // 建立时间基线
-        int[] jitter = {8_000_000, 8_000_000, 7_000_000, 9_000_000, 12_000_000, 4_000_000, 8_000_000, 8_000_000};
-        int consumeMismatch = 0;
+        // 精确分数时钟：1000×8,333,333ns = 8.333333s 应为 floor(399,999.984)=399999 帧；
+        // 独立 48kHz consumer 每 tick 取 399 帧（不依赖生产者返回值），silence 会以顺序错误暴露。
+        int fractionalUnderruns = 0;
         for (int i = 0; i < 1000; i++) {
-            nativeAdvanceClock(jitter[i % jitter.length]);
-            int w = nativeTick();
-            if (w > 0 && nativeConsume(w) != w) consumeMismatch++;
+            nativeAdvanceClock(8_333_333);
+            nativeTick();
+            if (nativeConsume(399) != 399) fractionalUnderruns++;
         }
-        check(consumeMismatch == 0, "data callback consumed exactly the written frames");
-        long paced = nativeWritten();
-        check(paced >= 376_000 && paced <= 392_000,
-                "8s virtual clock supplies ~48kHz, got " + paced);
-        check(nativeConsumed() == paced, "all paced frames consumed by the registered callback");
-        check(nativeOrderErrors() == 0, "PCM order has no gaps or duplicates");
+        long fractionalWritten = nativeWritten();
+        check(fractionalWritten == 399_999,
+                "fractional slices accumulate exactly to 399999 frames, got " + fractionalWritten);
+        check(fractionalUnderruns == 0, "independent 48kHz consumer never underruns during fractional run");
+        check(nativeConsumed() == 399_000, "consumer demand is independent of producer return values");
+        check(nativeOrderErrors() == 0, "fractional run has no PCM gaps or duplicates");
         check(nativePending() < 512, "bounded pending backlog");
 
+        // 有界 timer jitter run：独立 consumer 按 48kHz 需求 384 帧/tick 消费。
+        check(nativePause() == 0 && nativeDestroy() == 0, "fractional cleanup");
+        nativeFixtureReset();
+        check(nativeCreate(context, 8192) == 1, "jitter helper created");
+        nativeSetClock(0);
+        nativeSetFocus(1);
+        nativeResume();
+        audio.nextResult = AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        check(nativeKey(KEY_P, DOWN, 0, 1) == 1 && nativeState() == OUT_PLAYING, "jitter session plays");
+        nativeTick();
+        nativeAdvanceClock(8_333_333);
+        int prefill = nativeTick();
+        check(prefill == 399, "explicit prefill before the consumer starts, got " + prefill);
+        int[] jitter = {8_000_000, 8_000_000, 7_000_000, 9_000_000, 12_000_000, 4_000_000, 8_000_000, 8_000_000};
+        int jitterUnderruns = 0;
+        for (int i = 0; i < 1000; i++) {
+            nativeAdvanceClock(jitter[i % jitter.length]);
+            nativeTick();
+            if (nativeConsume(384) != 384) jitterUnderruns++;
+        }
+        long paced = nativeWritten();
+        check(paced >= 383_600 && paced <= 384_800,
+                "8s jittered clock supplies ~48kHz, got " + paced);
+        check(jitterUnderruns == 0, "independent 384/tick consumer never underruns under jitter");
+        check(nativeConsumed() == 384_000, "jitter consumer demand matches 48kHz cadence");
+        check(nativeOrderErrors() == 0, "jitter run has no PCM gaps or duplicates");
+
         // partial write + 队列满：相位按实际写入推进，未写样本保留并随后续 tick 发出。
-        check(nativePause() == 0 && nativeDestroy() == 0, "pacing cleanup");
+        check(nativePause() == 0 && nativeDestroy() == 0, "jitter cleanup");
         nativeFixtureReset();
         check(nativeCreate(context, 32) == 1, "partial-write helper created");
         nativeSetClock(0);

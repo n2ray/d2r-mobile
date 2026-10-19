@@ -19,6 +19,7 @@ typedef int64_t (*native_audio_clock)(void *user);
 // Bounded 48000Hz diagnostic backlog (~85ms): absorbs normal timer jitter without unbounded growth.
 #define NATIVE_AUDIO_RATE DM_AUDIO_RATE
 #define NATIVE_AUDIO_MAX_PENDING_FRAMES 4096
+#define NATIVE_AUDIO_MAX_CATCHUP_NS ((NATIVE_AUDIO_MAX_PENDING_FRAMES * 1000000000ULL) / NATIVE_AUDIO_RATE + 1u)
 // 首次显式播放时使用的诊断队列容量；不修改全局 session 默认。
 #define NATIVE_AUDIO_QUEUE_FRAMES 4096
 
