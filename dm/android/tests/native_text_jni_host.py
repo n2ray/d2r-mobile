@@ -446,14 +446,20 @@ static int test_success_and_events(JNIEnv *env) {
     native_text_event(env, NULL, (jlong)a.text_session, EVENT_COMMIT, (jstring)&submitted, 2);
     CHECK(a.text_payload_units == 2 && a.text_payload_sequence == 1);
     CHECK(payload_tail_zero(&a, 2));
+    native_text_event(env, NULL, (jlong)a.text_session, EVENT_CANCEL, NULL, 0);
+    CHECK(!a.text_active && a.text_payload_event == EVENT_CANCEL);
+    CHECK(a.text_payload_units == 0 && a.text_payload_sequence == 2);
+    CHECK(payload_tail_zero(&a, 0));
+    text_end(&a, "cancel_end");
+    CHECK(payload_tail_zero(&a, 0));
+    CHECK(text_begin(&a) == 1);
+    native_text_event(env, NULL, (jlong)a.text_session, EVENT_COMMIT, (jstring)&submitted, 2);
+    CHECK(a.text_payload_units == 2 && a.text_payload_sequence == 1);
+    CHECK(payload_tail_zero(&a, 2));
     native_text_event(env, NULL, (jlong)a.text_session, EVENT_COMMIT, NULL, 0);
     CHECK(a.text_payload_units == 0 && a.text_payload_sequence == 2);
     CHECK(payload_tail_zero(&a, 0));
-    native_text_event(env, NULL, (jlong)a.text_session, EVENT_CANCEL, NULL, 0);
-    CHECK(!a.text_active && a.text_payload_event == EVENT_CANCEL);
-    CHECK(a.text_payload_units == 0 && a.text_payload_sequence == 3);
-    CHECK(payload_tail_zero(&a, 0));
-    text_end(&a, "cancel_end");
+    text_end(&a, "empty_end");
     CHECK(payload_tail_zero(&a, 0));
     return 0;
 }
