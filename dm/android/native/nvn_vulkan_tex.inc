@@ -20,23 +20,10 @@ static uint64_t texture_uploads, render_passes, draw_count;
 static uint64_t image_barriers;
 static VkFormat vk_format(int format);
 
-// DM_VK_TEX_DIAG=N 时只记录前 N 个真实采样绑定，默认关闭；不计时、不读客体内存。
-// DM_VK_TEX_DIAG=N logs only the first N real sampled binds, off by default, without timing or guest reads.
-typedef struct {
-    unsigned limit, seen, emitted;
-    unsigned ok, unbound, missing, unsupported, unsampled, view_format, depth, linear;
-    int initialized;
-} texture_diag_state;
+// 诊断窗口只在 60 帧报告点由 app-specific token 开窗，默认关闭；不逐 bind 读属性。
+// The capture window is armed only at the 60-frame report point by an app-specific token, off by default;
+// no property lookup happens per bind.
 static texture_diag_state texture_diag;
-static void texture_diag_init(void) {
-    if (texture_diag.initialized) return;
-    texture_diag.initialized = 1;
-    const char *setting = getenv("DM_VK_TEX_DIAG");
-    int n = setting ? atoi(setting) : 0;
-    if (n < 0) n = 0;
-    if (n > 48) n = 48;
-    texture_diag.limit = (unsigned)n;
-}
 static void texture_diag_count(unsigned kind) {
     switch (kind) {
         case TEXTURE_DIAG_UNBOUND: texture_diag.unbound++; break;
@@ -50,17 +37,16 @@ static void texture_diag_count(unsigned kind) {
     }
 }
 static void texture_diag_unsupported(unsigned format) {
-    texture_diag_init();
-    if (!texture_diag.limit || texture_diag.emitted >= texture_diag.limit) return;
-    texture_diag.emitted++;
+    if (!texture_diag_state_reserve(&texture_diag)) return;
     texture_diag_count(TEXTURE_DIAG_UNSUPPORTED_FORMAT);
-    LOG("[vulkan-tex-diag] kind=unsupported_format format=%#x (texture creation refused)", format);
+    LOG("[vulkan-tex-diag] n=%u kind=unsupported_format format=%#x (texture creation refused)",
+        texture_diag.used, format);
 }
 // 只在真实采样绑定处记录，区分缺映射、未绑定、格式/视图/布局，不触碰资源字节。
 // Record only at real sampled binds, distinguishing missing/unbound/format/view/layout without resource bytes.
 static void texture_diag_bind(const texture_descriptor *descriptor, unsigned handle, uint32_t type, int slot, int stage) {
-    texture_diag_init();
-    if (!texture_diag.limit || texture_diag.seen >= texture_diag.limit) return;
+    if (!texture_diag_state_reserve(&texture_diag)) return;
+    unsigned texture_id = texture_diag_texture_id(handle);
     unsigned format = descriptor->valid ? (unsigned)descriptor->texture.d.format : 0;
     VkFormat vf = vk_format((int)format);
     int sampled = 0;
@@ -69,29 +55,33 @@ static void texture_diag_bind(const texture_descriptor *descriptor, unsigned han
         vkGetPhysicalDeviceFormatProperties(physical, vf, &properties);
         sampled = !!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
     }
-    unsigned kind = texture_diag_classify(descriptor->valid, handle, format, vf != VK_FORMAT_UNDEFINED, sampled,
+    unsigned kind = texture_diag_classify(descriptor->valid, texture_id, format, vf != VK_FORMAT_UNDEFINED, sampled,
                                           descriptor->valid && descriptor->view.set_format,
                                           descriptor->valid ? (unsigned)descriptor->view.format : 0,
                                           descriptor->valid ? descriptor->texture.d.flags : 0);
-    texture_diag.seen++;
-    texture_diag.emitted++;
     texture_diag_count(kind);
     if (descriptor->valid) {
         LOG("[vulkan-tex-diag] n=%u kind=%s id=%u stage=%d slot=%d type=%#x format=%#x view=%#x size=%ux%u levels=%u layers=%u flags=%#x",
-            texture_diag.seen, texture_diag_name(kind), handle & 0xfffff, stage, slot, (unsigned)type,
+            texture_diag.used, texture_diag_name(kind), texture_id, stage, slot, (unsigned)type,
             format, descriptor->view.set_format ? (unsigned)descriptor->view.format : 0,
             descriptor->texture.d.width, descriptor->texture.d.height, descriptor->texture.d.levels,
             descriptor->texture.L.layers, descriptor->texture.d.flags);
     } else {
         LOG("[vulkan-tex-diag] n=%u kind=%s id=%u stage=%d slot=%d type=%#x (1x1 stand-in, whole quad samples zero)",
-            texture_diag.seen, texture_diag_name(kind), handle & 0xfffff, stage, slot, (unsigned)type);
+            texture_diag.used, texture_diag_name(kind), texture_id, stage, slot, (unsigned)type);
     }
 }
-static void texture_diag_report(uint64_t ticket) {
-    if (!texture_diag.initialized || !texture_diag.limit) return;
-    LOG("[vulkan-tex-diag] frame=%llu sampled_binds=%u ok=%u unbound=%u missing=%u unsupported=%u unsampled=%u view=%u depth=%u linear=%u",
-        (unsigned long long)ticket, texture_diag.seen, texture_diag.ok, texture_diag.unbound, texture_diag.missing,
-        texture_diag.unsupported, texture_diag.unsampled, texture_diag.view_format, texture_diag.depth, texture_diag.linear);
+// 报告点先处理 token；同一 token 不重开已用完的窗口，采到实际行后只汇总一次。
+// Process the token at the report point; the same token never reopens an exhausted window and a real
+// capture is summarized once.
+static void texture_diag_report(uint64_t ticket, const char *token) {
+    texture_diag_state_tick(&texture_diag, token);
+    if (!texture_diag.used || texture_diag.summarized) return;
+    texture_diag.summarized = 1;
+    LOG("[vulkan-tex-diag] frame=%llu token=%s lines=%u ok=%u unbound=%u missing=%u unsupported=%u unsampled=%u view=%u depth=%u linear=%u",
+        (unsigned long long)ticket, texture_diag.token, texture_diag.used, texture_diag.ok, texture_diag.unbound,
+        texture_diag.missing, texture_diag.unsupported, texture_diag.unsampled, texture_diag.view_format,
+        texture_diag.depth, texture_diag.linear);
 }
 
 static VkImageView image_view_get(image_entry *e,VkImageViewType type,VkImageSubresourceRange range) {

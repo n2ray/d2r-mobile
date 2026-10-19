@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stdlib.h>
+#include <string.h>
+
 // 采样绑定的有界分类，不含资源内容、地址、设备标识。
 // Bounded sampled-binding classification without resource contents, addresses or device identifiers.
 typedef enum {
@@ -12,6 +15,9 @@ typedef enum {
     TEXTURE_DIAG_DEPTH,
     TEXTURE_DIAG_LINEAR,
 } texture_diag_kind;
+
+#define TEXTURE_DIAG_WINDOW_MAX 48u
+#define TEXTURE_DIAG_TEXTURE_MASK 0xfffffu
 
 static inline const char *texture_diag_name(unsigned kind) {
     switch (kind) {
@@ -39,4 +45,65 @@ static inline unsigned texture_diag_classify(int valid, unsigned handle, unsigne
     if (format >= 0x31 && format <= 0x36) return TEXTURE_DIAG_DEPTH;
     if (flags & 0x10) return TEXTURE_DIAG_LINEAR;
     return TEXTURE_DIAG_OK;
+}
+
+static inline unsigned texture_diag_texture_id(unsigned handle) {
+    return handle & TEXTURE_DIAG_TEXTURE_MASK;
+}
+
+// 一次请求 token 最多产生 limit 行；off by default，token 变化才重新开窗。
+// One request token produces at most limit lines; off by default and only a token change re-arms.
+typedef struct {
+    unsigned limit, used, seen;
+    unsigned ok, unbound, missing, unsupported, unsampled, view_format, depth, linear;
+    unsigned active, summarized, initialized;
+    char token[32];
+} texture_diag_state;
+
+static inline void texture_diag_state_init(texture_diag_state *state) {
+    if (state->initialized) return;
+    memset(state, 0, sizeof *state);
+    state->initialized = 1;
+    const char *setting = getenv("DM_VK_TEX_DIAG");
+    int n = setting ? atoi(setting) : 0;
+    if (n < 0) n = 0;
+    if (n > (int)TEXTURE_DIAG_WINDOW_MAX) n = (int)TEXTURE_DIAG_WINDOW_MAX;
+    if (n > 0) {
+        state->limit = (unsigned)n;
+        state->active = 1;
+        strcpy(state->token, "env");
+    }
+}
+
+// token 为空表示撤销当前 property 窗口；相同 token 不重开已耗尽的预算。
+// An empty token revokes the current property window; the same token never reopens an exhausted budget.
+static inline void texture_diag_state_tick(texture_diag_state *state, const char *token) {
+    texture_diag_state_init(state);
+    if (!token) token = "";
+    if (!strcmp(token, state->token)) return;
+    if (!*token) {
+        if (strcmp(state->token, "env")) {
+            state->token[0] = 0;
+            state->active = 0;
+        }
+        return;
+    }
+    strncpy(state->token, token, sizeof state->token - 1);
+    state->token[sizeof state->token - 1] = 0;
+    state->limit = TEXTURE_DIAG_WINDOW_MAX;
+    state->used = state->seen = 0;
+    state->ok = state->unbound = state->missing = 0;
+    state->unsupported = state->unsampled = state->view_format = state->depth = state->linear = 0;
+    state->summarized = 0;
+    state->active = 1;
+}
+
+// creation refusal 和 sampled bind 共用同一预算；返回 1 才允许输出一行。
+// Creation refusals and sampled binds share one budget; a line may be emitted only on 1.
+static inline int texture_diag_state_reserve(texture_diag_state *state) {
+    texture_diag_state_init(state);
+    if (!state->active || state->used >= state->limit) return 0;
+    state->used++;
+    state->seen++;
+    return 1;
 }
