@@ -730,13 +730,16 @@ static int touch_timer_tick(int fd,int events,void *data) {
     while(read(fd,&expirations,sizeof expirations)==(ssize_t)sizeof expirations){}
     if(!touch_owner_valid(s)){touch_timer_stop(s);return 1;}
     live_touch_sync(s);
-    int needs=dm_live_touch_scheduler_step(s->live_touch,(int64_t)now_ns())||dm_live_touch_needs_work(s->live_touch);
+    int step=dm_live_touch_scheduler_step(s->live_touch,(int64_t)now_ns(),dm_input_samples(),dm_cursor_pending());
+    if(step<0)LOG("[android-touch] pulse not acknowledged by game; gesture cancelled");
+    int needs=step>0||dm_live_touch_needs_work(s->live_touch);
     if(s->live_items){dm_live_touch_items_tick(s->live_items,(int64_t)now_ns());live_touch_cursor_update(s);live_touch_consume_items(s);needs=dm_live_touch_needs_work(s->live_touch);}
     pad_publish(s);
     live_touch_consume_belt(s);
     live_touch_consume_difficulty(s);
     live_touch_consume_portal(s);
     live_touch_consume_skill_bind(s);
+    dm_ui_hand_idle(!dm_live_touch_needs_work(s->live_touch)&&!dm_cursor_pending()&&!dm_ui_touch_active());
     touch_timer_set_period(s,needs);
     return 1;
 }
@@ -845,6 +848,7 @@ static int live_touch_event_routed(game_app *s,int action,int action_index,int p
     int handled=s->live_items?
         dm_live_touch_items_event(s->live_items,action,action_index,pointer_count,ids,xs,ys,width,height,left,top,gw,gh,time_ns):
         dm_live_touch_event(s->live_touch,action,action_index,pointer_count,ids,xs,ys,width,height,left,top,gw,gh,time_ns);
+    if(handled)dm_ui_hand_idle(0);
     if(handled&&s->live_items){
         dm_live_touch_items_tick(s->live_items,time_ns);
         live_touch_cursor_update(s);

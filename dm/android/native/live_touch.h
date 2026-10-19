@@ -194,10 +194,10 @@ void dm_live_touch_item_snapshot_get(const dm_live_touch *touch,
 // True while the core still owns physical pointers or has deferred/belt/pulse
 // work that the owner loop must advance. Not a claim that the game consumed it.
 int dm_live_touch_needs_work(const dm_live_touch *touch);
-// One owner-thread scheduler step: advance core timers, bound-release a pulse
-// after its core hold plus a fixed small margin (no game ack is fabricated),
-// and return whether more owner work remains.
-int dm_live_touch_scheduler_step(dm_live_touch *touch, int64_t time_ns);
+// Advance core work using the real input poll count and cursor-withheld A state.
+// Return work remaining; -1 cancels an unacknowledged pulse rather than reporting pickup.
+int dm_live_touch_scheduler_step(dm_live_touch *touch, int64_t time_ns,
+                                  uint64_t input_samples, int cursor_pending);
 // End a short zero-hold core pulse after it has been published once. The host
 // press-edge latch is what makes the short A tap visible to the game; this is
 // not an acknowledgement that the game consumed an action.
