@@ -8,6 +8,7 @@
 #include "../../host/dm_i18n.h"
 #include "../../host/dm_hud.h"
 #include "../../host/dm_uiscreen.h"
+#include "../../host/dm_cursor.h"
 #include "debug_stats.h"
 #include "touch_pointer_map.h"
 #include "live_touch.h"
@@ -483,11 +484,21 @@ static int input_ready(int fd,int events,void *data) {
                 unsigned count=AMotionEvent_getPointerCount(event);int32_t ids[16];float xs[16],ys[16];
                 if(count<=16){
                     for(unsigned i=0;i<count;i++){ids[i]=AMotionEvent_getPointerId(event,i);xs[i]=AMotionEvent_getX(event,i);ys[i]=AMotionEvent_getY(event,i);}
-                    if(dm_live_touch_event(s->live_touch,action,action==AMOTION_EVENT_ACTION_MOVE?-1:(int)lifted,(int)count,ids,xs,ys,w,h,left,top,gw,gh,(int64_t)now_ns())){
+                    // 主菜单 / 选角 / 建角 / 读取画面不是局内：沿用原版前端的真实界面点击路（dm_ui_touch -> 鼠标消息），
+                    // 不用手柄 A 猜菜单焦点。局内才把触点送进 D2R 手势核心。
+                    // Front-end pages are not in a run: use the original front end's real UI click path (dm_ui_touch ->
+                    // mouse messages) instead of guessing menu focus with A. Only in-run touches enter the D2R gesture core.
+                    if(!dm_uiscreen_ingame()){
+                        unsigned at=action==AMOTION_EVENT_ACTION_MOVE?0:lifted;
+                        if(at<count){float nx=(xs[at]-left)/gw,ny=(ys[at]-top)/gh;if(nx<0)nx=0;if(nx>.999f)nx=.999f;if(ny<0)ny=0;if(ny>.999f)ny=.999f;
+                            int phase=(action==AMOTION_EVENT_ACTION_DOWN||action==AMOTION_EVENT_ACTION_POINTER_DOWN)?0:action==AMOTION_EVENT_ACTION_MOVE?1:(action==AMOTION_EVENT_ACTION_UP||action==AMOTION_EVENT_ACTION_POINTER_UP)?2:3;
+                            dm_ui_touch(phase,nx,ny);}
+                        handled=1;
+                    }else if(dm_live_touch_event(s->live_touch,action,action==AMOTION_EVENT_ACTION_MOVE?-1:(int)lifted,(int)count,ids,xs,ys,w,h,left,top,gw,gh,(int64_t)now_ns())){
                         pad_publish(s);
                         if(dm_live_touch_end_released_pulse(s->live_touch))pad_publish(s);
-                    }
-                    handled=1;
+                        handled=1;
+                    }else handled=1;
                 }else LOG("[android-touch] pointer count %u exceeds 16; refusing the event",count);
             }else{
                 dm_touch touches[16];int count=0;
