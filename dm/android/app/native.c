@@ -926,7 +926,7 @@ static int controller_hotplug_start(app_state*s){
         return 0;
     }
     JNIEnv*env=s->activity->env;
-    jobject activity_class=NULL,class_class=NULL,loader=NULL,loader_class=NULL;
+    jobject activity_class=NULL,loader=NULL,loader_class=NULL;
     jstring class_name=NULL;
     jclass boundary_class=NULL;
     jobject boundary=NULL;
@@ -936,9 +936,8 @@ static int controller_hotplug_start(app_state*s){
     int result=0;
     int registered=0;
     if(!(activity_class=(*env)->GetObjectClass(env,s->activity->clazz)))goto fail;
-    if(!(class_class=(*env)->GetObjectClass(env,activity_class)))goto fail;
-    if(!(get_loader=(*env)->GetMethodID(env,class_class,"getClassLoader","()Ljava/lang/ClassLoader;"))||jni_stage_failed(env,"getClassLoader"))goto fail;
-    if(!(loader=(*env)->CallObjectMethod(env,activity_class,get_loader))||jni_stage_failed(env,"activity class loader"))goto fail;
+    if(!(get_loader=(*env)->GetMethodID(env,activity_class,"getClassLoader","()Ljava/lang/ClassLoader;"))||jni_stage_failed(env,"activity getClassLoader signature"))goto fail;
+    if(!(loader=(*env)->CallObjectMethod(env,s->activity->clazz,get_loader))||jni_stage_failed(env,"activity class loader"))goto fail;
     if(!(loader_class=(*env)->GetObjectClass(env,loader)))goto fail;
     if(!(load_class=(*env)->GetMethodID(env,loader_class,"loadClass","(Ljava/lang/String;)Ljava/lang/Class;"))||jni_stage_failed(env,"loadClass signature"))goto fail;
     if(!(class_name=(*env)->NewStringUTF(env,"org.d2rmobile.android.diagnostic.ControllerHotplugBoundary")))goto fail;
@@ -959,9 +958,16 @@ static int controller_hotplug_start(app_state*s){
     }
     registered=1;
     s->controller_boundary=(*env)->NewGlobalRef(env,boundary);
+    if(!s->controller_boundary){
+        jni_stage_failed(env,"boundary global ref");
+        goto fail;
+    }
     s->controller_class=(jclass)(*env)->NewGlobalRef(env,boundary_class);
+    if(!s->controller_class){
+        jni_stage_failed(env,"class global ref");
+        goto fail;
+    }
     s->controller_release=release_method;
-    if(!s->controller_boundary||!s->controller_class)goto fail;
     LOG("controller hotplug registered session=%llu",(unsigned long long)session);
     result=1;
     goto done;
@@ -983,7 +989,6 @@ done:
     if(class_name)(*env)->DeleteLocalRef(env,class_name);
     if(loader_class)(*env)->DeleteLocalRef(env,loader_class);
     if(loader)(*env)->DeleteLocalRef(env,loader);
-    if(class_class)(*env)->DeleteLocalRef(env,class_class);
     if(activity_class)(*env)->DeleteLocalRef(env,activity_class);
     return result;
 }

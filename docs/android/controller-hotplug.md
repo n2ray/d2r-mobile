@@ -11,7 +11,7 @@
 
 ## Native 绑定与生命周期
 
-`native.c` 在 `onCreate` 通过 Activity 的 `ClassLoader.loadClass` 加载打包类，`RegisterNatives` 绑定静态 `nativeControllerEvent(JII)V`，并调用 `register()`。JNI 每步检查异常并清理；加载/注册失败只记录失败，不声称热插拔可用。
+`native.c` 在 `onCreate` 通过 Activity 的 `ClassLoader.loadClass` 加载打包类，`RegisterNatives` 绑定静态 `nativeControllerEvent(JII)V`，并调用 `register()`。loader 从 Activity 实例的 `Context.getClassLoader()` 取得（不是 `Class.getClassLoader()` 的定义/boot loader）。JNI 每步检查异常并清理；连续 `NewGlobalRef` 逐次检查失败，前一失败清异常后才允许下一步；加载/注册/global ref 失败只记录失败，不声称热插拔可用。
 
 先执行显式 owner 获取：进程内已有另一个 live owner 时直接 busy 失败，第二 NativeActivity 不会覆盖/清除第一个 owner，也不会进入 JNI 注册或修改自身状态。owner 停止/失败只释放自己的 owner；第一个 owner 停止后第二实例才可获取。
 
