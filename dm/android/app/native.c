@@ -1214,15 +1214,43 @@ static jclass ime_entry_load_class(JNIEnv*env,ANativeActivity*activity){
     jclass entry_class=NULL;
     jstring class_name=NULL;
     jmethodID get_loader=NULL,load_class=NULL;
-    if(!(activity_class=(*env)->GetObjectClass(env,activity->clazz)))goto done;
-    if(!(get_loader=(*env)->GetMethodID(env,activity_class,"getClassLoader","()Ljava/lang/ClassLoader;"))||text_jni_stage_failed(env,"ime entry getClassLoader signature"))goto done;
-    if(!(loader=(*env)->CallObjectMethod(env, activity->clazz, get_loader))||text_jni_stage_failed(env,"ime entry class loader"))goto done;
-    if(!(loader_class=(*env)->GetObjectClass(env,loader)))goto done;
-    if(!(load_class=(*env)->GetMethodID(env,loader_class,"loadClass","(Ljava/lang/String;)Ljava/lang/Class;"))||text_jni_stage_failed(env,"ime entry loadClass signature"))goto done;
-    if(!(class_name=(*env)->NewStringUTF(env,"org.d2rmobile.android.diagnostic.DmImeTouchEntry")))goto done;
+    if(!(activity_class=(*env)->GetObjectClass(env,activity->clazz))){
+        (void)text_jni_stage_failed(env,"ime entry activity class");
+        goto done;
+    }
+    if(text_jni_stage_failed(env,"ime entry activity class"))goto done;
+    if(!(get_loader=(*env)->GetMethodID(env,activity_class,"getClassLoader","()Ljava/lang/ClassLoader;"))){
+        (void)text_jni_stage_failed(env,"ime entry getClassLoader signature");
+        goto done;
+    }
+    if(text_jni_stage_failed(env,"ime entry getClassLoader signature"))goto done;
+    if(!(loader=(*env)->CallObjectMethod(env, activity->clazz, get_loader))){
+        (void)text_jni_stage_failed(env,"ime entry class loader");
+        goto done;
+    }
+    if(text_jni_stage_failed(env,"ime entry class loader"))goto done;
+    if(!(loader_class=(*env)->GetObjectClass(env,loader))){
+        (void)text_jni_stage_failed(env,"ime entry loader class");
+        goto done;
+    }
+    if(text_jni_stage_failed(env,"ime entry loader class"))goto done;
+    if(!(load_class=(*env)->GetMethodID(env,loader_class,"loadClass","(Ljava/lang/String;)Ljava/lang/Class;"))){
+        (void)text_jni_stage_failed(env,"ime entry loadClass signature");
+        goto done;
+    }
+    if(text_jni_stage_failed(env,"ime entry loadClass signature"))goto done;
+    if(!(class_name=(*env)->NewStringUTF(env,"org.d2rmobile.android.diagnostic.DmImeTouchEntry"))){
+        (void)text_jni_stage_failed(env,"ime entry class name");
+        goto done;
+    }
+    if(text_jni_stage_failed(env,"ime entry class name"))goto done;
     entry_class=(jclass)(*env)->CallObjectMethod(env,loader,load_class,class_name);
-    if(text_jni_stage_failed(env,"ime entry class load"))entry_class=NULL;
+    if(text_jni_stage_failed(env,"ime entry class load")||!entry_class)entry_class=NULL;
 done:
+    if((*env)->ExceptionCheck(env)){
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+    }
     if(class_name)(*env)->DeleteLocalRef(env,class_name);
     if(loader_class)(*env)->DeleteLocalRef(env,loader_class);
     if(loader)(*env)->DeleteLocalRef(env,loader);
@@ -1231,65 +1259,114 @@ done:
 }
 static int ime_entry_install(app_state*s){
     if(!s)return 0;
-    if(s->ime_entry_class)return s->ime_entry_installed;
+    if(s->ime_entry_class){
+        if(s->ime_entry_installed)return 1;
+        ime_entry_uninstall(s);
+        if(s->ime_entry_class)return 0;
+    }
     if(!s->resumed||!s->activity||!s->activity->env||!s->activity->clazz)return 0;
     if(!s->lifecycle||dm_app_lifecycle_state(s->lifecycle)!=DM_APP_STATE_OWNED_DIAGNOSTIC)return 0;
     if(g_ime_entry_app&&g_ime_entry_app!=s){LOG("IME touch entry owner busy; install rejected");return 0;}
     JNIEnv*env=s->activity->env;
     jclass entry_class=ime_entry_load_class(env,s->activity);
     if(!entry_class)return 0;
-    jmethodID install_method=NULL,uninstall_method=NULL;
-    int result=0,installed=0;
-    uint64_t token=++g_ime_entry_next_token;
-    if(!token)token=++g_ime_entry_next_token;
-    if(!(install_method=(*env)->GetStaticMethodID(env,entry_class,"install","(Landroid/app/Activity;J)Z"))||text_jni_stage_failed(env,"ime entry install signature"))goto done;
-    if(!(uninstall_method=(*env)->GetStaticMethodID(env,entry_class,"uninstall","(Landroid/app/Activity;J)Z"))||text_jni_stage_failed(env,"ime entry uninstall signature"))goto done;
-    {
-        JNINativeMethod method={"nativeRequest","(J)Z",(void*)native_ime_entry_request};
-        if((*env)->RegisterNatives(env,entry_class,&method,1)!=0||text_jni_stage_failed(env,"ime entry native registration"))goto done;
-    }
-    installed=(*env)->CallStaticBooleanMethod(env,entry_class,install_method,s->activity->clazz,(jlong)token);
-    if(text_jni_stage_failed(env,"ime entry install"))goto done;
-    if(!installed){LOG("IME touch entry install rejected");goto done;}
     s->ime_entry_class=(jclass)(*env)->NewGlobalRef(env,entry_class);
     if(!s->ime_entry_class){
-        text_jni_stage_failed(env,"ime entry class global ref");
-        (void)(*env)->CallStaticBooleanMethod(env,entry_class,uninstall_method,s->activity->clazz,(jlong)token);
+        (void)text_jni_stage_failed(env,"ime entry class global ref");
         if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env,entry_class);
+        return 0;
+    }
+    jmethodID install_method=NULL,uninstall_method=NULL;
+    int result=0,install_called=0,install_attached=0,install_unknown=0;
+    uint64_t token=++g_ime_entry_next_token;
+    if(!token)token=++g_ime_entry_next_token;
+    if(!(install_method=(*env)->GetStaticMethodID(env,entry_class,"install","(Landroid/app/Activity;J)Z"))){
+        (void)text_jni_stage_failed(env,"ime entry install signature");
         goto done;
     }
+    if(text_jni_stage_failed(env,"ime entry install signature"))goto done;
+    if(!(uninstall_method=(*env)->GetStaticMethodID(env,entry_class,"uninstall","(Landroid/app/Activity;J)Z"))){
+        (void)text_jni_stage_failed(env,"ime entry uninstall signature");
+        goto done;
+    }
+    if(text_jni_stage_failed(env,"ime entry uninstall signature"))goto done;
+    {
+        JNINativeMethod method={"nativeRequest","(J)Z",(void*)native_ime_entry_request};
+        if((*env)->RegisterNatives(env,entry_class,&method,1)!=0){
+            (void)text_jni_stage_failed(env,"ime entry native registration");
+            goto done;
+        }
+        if(text_jni_stage_failed(env,"ime entry native registration"))goto done;
+    }
+    install_called=1;
+    jboolean installed=(*env)->CallStaticBooleanMethod(env,entry_class,install_method,s->activity->clazz,(jlong)token);
+    if(text_jni_stage_failed(env,"ime entry install")){install_unknown=1;goto done;}
+    install_attached=installed?1:0;
+    if(!installed){LOG("IME touch entry install rejected");goto done;}
     s->ime_entry_token=token;
     s->ime_entry_installed=1;
     g_ime_entry_app=s;
     LOG("IME touch entry installed (diagnostic button; no automatic IME request)");
     result=1;
 done:
+    if((*env)->ExceptionCheck(env)){
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+    }
     if(!result){
+        if(install_called&&(install_attached||install_unknown)&&uninstall_method){
+            jboolean removed=(*env)->CallStaticBooleanMethod(env,entry_class,uninstall_method,s->activity->clazz,(jlong)token);
+            if((*env)->ExceptionCheck(env)){
+                (*env)->ExceptionDescribe(env);
+                (*env)->ExceptionClear(env);
+                removed=JNI_FALSE;
+            }
+            if(!removed){
+                s->ime_entry_token=token;
+                s->ime_entry_installed=0;
+                if(g_ime_entry_app==s)g_ime_entry_app=NULL;
+                goto cleanup_done;
+            }
+        }
         if(s->ime_entry_class&&env){(*env)->DeleteGlobalRef(env,s->ime_entry_class);s->ime_entry_class=NULL;}
         s->ime_entry_token=0;s->ime_entry_installed=0;
         if(g_ime_entry_app==s)g_ime_entry_app=NULL;
     }
+cleanup_done:
+    if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
     if(entry_class)(*env)->DeleteLocalRef(env,entry_class);
     return result;
 }
 static void ime_entry_uninstall(app_state*s){
-    if(!s)return;
+    if(!s||!s->ime_entry_class)return;
     JNIEnv*env=(s->activity&&s->activity->env)?s->activity->env:NULL;
     jclass entry_class=s->ime_entry_class;
     uint64_t token=s->ime_entry_token;
-    /* Invalidate native identity before the Java view is removed or the App is freed. */
+    /* Invalidate click authorization immediately; retain the class/token as a
+       bounded cleanup handle until Java proves the owned view was removed. */
     s->ime_entry_installed=0;
-    s->ime_entry_token=0;
     if(g_ime_entry_app==s)g_ime_entry_app=NULL;
-    if(entry_class&&env&&s->activity&&s->activity->clazz){
-        jmethodID uninstall_method=(*env)->GetStaticMethodID(env,entry_class,"uninstall","(Landroid/app/Activity;J)Z");
-        if(uninstall_method){
-            (void)(*env)->CallStaticBooleanMethod(env,entry_class,uninstall_method,s->activity->clazz,(jlong)token);
-        }
-        if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
-        (*env)->DeleteGlobalRef(env,entry_class);
+    if(!env||!s->activity||!s->activity->clazz){
+        return;
     }
+    jmethodID uninstall_method=(*env)->GetStaticMethodID(env,entry_class,"uninstall","(Landroid/app/Activity;J)Z");
+    if(!uninstall_method||text_jni_stage_failed(env,"ime entry uninstall signature")){
+        if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
+        return;
+    }
+    jboolean removed=(*env)->CallStaticBooleanMethod(env,entry_class,uninstall_method,s->activity->clazz,(jlong)token);
+    if((*env)->ExceptionCheck(env)){
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        removed=JNI_FALSE;
+    }
+    if(!removed){
+        return;
+    }
+    (*env)->DeleteGlobalRef(env,entry_class);
     s->ime_entry_class=NULL;
+    s->ime_entry_token=0;
 }
 static jboolean native_ime_entry_request(JNIEnv*env,jclass cls,jlong token){
     (void)env;(void)cls;

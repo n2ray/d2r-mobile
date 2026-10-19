@@ -19,10 +19,14 @@ field, provider or full mobile-input implementation.
   gameplay touch source; physical keyboard `T`, BACK-pair gating and
   fresh-DOWN behavior remain unchanged.
 - A second owner is rejected. Paused, unfocused, windowless or retired Apps
-  reject a click. Teardown invalidates the native owner/token before asking
-  Java to remove exactly the owned button; late clicks from an old Activity,
-  window or session are inert. The launcher is removed on window destruction
-  and App destroy.
+  reject a click. Teardown invalidates click authorization before removing
+  exactly the owned button. If platform removal throws, the Java and native
+  cleanup handles retain the old view/token (click disabled) and a retry can
+  finish removal without adding another overlay; a new install retries cleanup
+  first. The launcher is removed on window destruction and App destroy.
+- JNI setup checks each loader/signature/registration/global-ref stage and
+  clears pending exceptions before cleanup, so an optional launcher failure
+  cannot poison later NativeActivity calls.
 
 ## Tests
 

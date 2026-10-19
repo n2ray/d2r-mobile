@@ -23,6 +23,19 @@ public final class DmImeTouchEntryTest {
         }
     }
 
+    private static final class FailGroup extends ViewGroup {
+        boolean fail;
+        FailGroup(Activity activity) { super(activity); }
+        @Override
+        public void removeView(View child) {
+            if (fail) {
+                fail = false;
+                throw new IllegalStateException("one removal failure");
+            }
+            super.removeView(child);
+        }
+    }
+
     private static void check(boolean condition, String label) {
         checks++;
         if (!condition) throw new AssertionError("FAIL: " + label);
@@ -76,6 +89,24 @@ public final class DmImeTouchEntryTest {
         check(otherContent.getChildCount() == 0, "second activity untouched");
         check(DmImeTouchEntry.uninstall(activity, 7L), "first owner still removable");
         check(!second.performClick(), "removed second view inert");
+
+        Activity removal = new Activity();
+        FailGroup removalContent = new FailGroup(removal);
+        removal.setContentView(removalContent);
+        removalContent.addView(new View(removal));
+        check(DmImeTouchEntry.install(removal, 11L), "install for removal retry");
+        Button retained = (Button) removalContent.getChildAt(1);
+        removalContent.fail = true;
+        try {
+            DmImeTouchEntry.uninstall(removal, 11L);
+            throw new AssertionError("expected removal failure");
+        } catch (IllegalStateException expected) {
+            // Platform removal failed once; the owned handle must survive.
+        }
+        check(removalContent.getChildCount() == 2, "failed removal retains button");
+        check(!retained.performClick(), "failed removal disables click");
+        check(DmImeTouchEntry.uninstall(removal, 11L), "retry removes retained button");
+        check(removalContent.getChildCount() == 1, "retry removes only owned button");
 
         Activity empty = new Activity();
         check(!DmImeTouchEntry.install(empty, 9L), "missing content rejected");

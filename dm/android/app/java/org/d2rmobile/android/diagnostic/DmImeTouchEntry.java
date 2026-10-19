@@ -33,6 +33,7 @@ public final class DmImeTouchEntry {
     private static Button ownedView;
     private static Activity ownedActivity;
     private static long ownedToken;
+    private static boolean clickAuthorized;
     private static RequestSink testSink;
 
     private DmImeTouchEntry() {
@@ -42,8 +43,11 @@ public final class DmImeTouchEntry {
         requireMainLooper();
         if (activity == null || token == 0) return false;
         if (ownedView != null) {
-            return ownedActivity == activity && ownedToken == token
-                    && ownedView.getParent() != null;
+            if (ownedActivity != activity) return false;
+            if (clickAuthorized && ownedToken == token && ownedView.getParent() != null) {
+                return true;
+            }
+            if (!cleanupOwned()) return false;
         }
         View content = activity.findViewById(android.R.id.content);
         if (!(content instanceof ViewGroup)) return false;
@@ -55,48 +59,77 @@ public final class DmImeTouchEntry {
         button.setFocusable(false);
         button.setFocusableInTouchMode(false);
         button.setOnClickListener(view -> {
-            if (ownedView == view && ownedActivity == activity && ownedToken == token) {
+            if (clickAuthorized && ownedView == view
+                    && ownedActivity == activity && ownedToken == token) {
                 request(token);
             }
         });
         ViewGroup group = (ViewGroup) content;
+        // Retain the cleanup handle before attaching so an attach failure can
+        // be retried from cleanupOwned().
+        ownedView = button;
+        ownedActivity = activity;
+        ownedToken = token;
+        clickAuthorized = false;
         try {
             group.addView(button, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT));
         } catch (RuntimeException failure) {
-            button.setOnClickListener(null);
-            ViewParent parent = button.getParent();
-            if (parent instanceof ViewGroup) {
-                ((ViewGroup) parent).removeView(button);
-            }
+            cleanupOwned();
             return false;
         }
-        ownedView = button;
-        ownedActivity = activity;
-        ownedToken = token;
+        clickAuthorized = true;
         return true;
     }
 
     /**
-     * Invalidates the owned identity before removing exactly the button this
-     * class installed. A stale token or a different Activity is inert.
+     * Invalidates click authorization immediately, then removes exactly the
+     * button this class installed. If platform removal throws, the cleanup
+     * handle is retained (click remains disabled) so a retry can finish it.
      */
     public static boolean uninstall(Activity activity, long token) {
         requireMainLooper();
         if (ownedView == null || ownedActivity != activity || ownedToken != token) {
             return false;
         }
+        clickAuthorized = false;
         Button view = ownedView;
-        ownedView = null;
-        ownedActivity = null;
-        ownedToken = 0;
         view.setOnClickListener(null);
         ViewParent parent = view.getParent();
         if (parent instanceof ViewGroup) {
             ((ViewGroup) parent).removeView(view);
         }
+        clearOwned();
         return true;
+    }
+
+    /**
+     * Retries removal of the retained owned view without reviving its click.
+     * Returns false while the platform removal still fails.
+     */
+    private static boolean cleanupOwned() {
+        if (ownedView == null) return true;
+        clickAuthorized = false;
+        Button view = ownedView;
+        view.setOnClickListener(null);
+        ViewParent parent = view.getParent();
+        if (parent instanceof ViewGroup) {
+            try {
+                ((ViewGroup) parent).removeView(view);
+            } catch (RuntimeException failure) {
+                return false;
+            }
+        }
+        clearOwned();
+        return true;
+    }
+
+    private static void clearOwned() {
+        ownedView = null;
+        ownedActivity = null;
+        ownedToken = 0;
+        clickAuthorized = false;
     }
 
     /** Test-only sink; never set by production callers. */

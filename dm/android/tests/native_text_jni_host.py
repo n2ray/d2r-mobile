@@ -126,6 +126,7 @@ static int mid_entry_install, mid_entry_uninstall;
 #define MID_HIDE ((jmethodID)&mid_hide)
 #define MID_RELEASE ((jmethodID)&mid_release)
 
+static int root_fail_class;
 static int pending, exception_describes, native_registers, show_calls, release_calls;
 static int release_result = 1, show_result = 1, show_exception;
 static int reentrant_event = -1, reentrant_units;
@@ -135,6 +136,7 @@ static jlong constructed_session;
 static void *loader_receiver, *loaded_from;
 static const char *last_load_name;
 static int entry_install_calls, entry_uninstall_calls, entry_install_result = 1;
+static int entry_uninstall_result = 1;
 static jlong entry_install_token, entry_uninstall_token;
 static void *entry_install_activity;
 
@@ -143,6 +145,7 @@ static void native_text_event(JNIEnv *, jclass, jlong, jint, jint);
 
 static jobject fake_get_object_class(JNIEnv *env, jobject obj) {
     (void)env;
+    if (root_fail_class) { set_exception(); return NULL; }
     if (obj == &activity_obj || obj == &activity2_obj) return &activity_class;
     if (obj == &app_loader) return &loader_class;
     set_exception();
@@ -258,7 +261,7 @@ static jboolean fake_call_static_boolean(JNIEnv *env, jclass cls, jmethodID mid,
     if (mid == MID_ENTRY_UNINSTALL) {
         entry_uninstall_calls++;
         entry_uninstall_token = token;
-        return 1;
+        return (jboolean)entry_uninstall_result;
     }
     set_exception();
     return 0;
@@ -292,8 +295,9 @@ static void reset_fake(JNIEnv *env) {
     register_signature_ok = loader_receiver_calls = loaded_from_app_loader = 0;
     loader_receiver = loaded_from = NULL; constructed_session = 0;
     last_load_name = NULL; entry_install_calls = entry_uninstall_calls = 0;
-    entry_install_result = 1; entry_install_token = entry_uninstall_token = 0;
-    entry_install_activity = NULL;
+    entry_install_result = 1; entry_uninstall_result = 1;
+    entry_install_token = entry_uninstall_token = 0;
+    entry_install_activity = NULL; root_fail_class = 0;
     g_text_app = NULL; g_text_next_session = 0; touch_cancel_calls = 0;
     g_ime_entry_app = NULL; g_ime_entry_next_token = 0;
     *env = &fake_functions;
@@ -458,11 +462,34 @@ static int test_entry_owner_request(JNIEnv *env) {
     CHECK(native_ime_entry_request(env, NULL, 0) == JNI_FALSE);
     text_end(&a, "entry_test_end");
     uint64_t token = a.ime_entry_token;
+    entry_uninstall_result = 0;
+    ime_entry_uninstall(&a);
+    CHECK(!a.ime_entry_installed && a.ime_entry_token == token);
+    CHECK(a.ime_entry_class == &entry_class);
+    CHECK(entry_uninstall_calls == 1);
+    CHECK(native_ime_entry_request(env, NULL, (jlong)token) == JNI_FALSE);
+    entry_uninstall_result = 1;
     ime_entry_uninstall(&a);
     CHECK(!a.ime_entry_installed && a.ime_entry_token == 0 && a.ime_entry_class == NULL);
-    CHECK(g_ime_entry_app == NULL && entry_uninstall_calls == 1);
+    CHECK(g_ime_entry_app == NULL && entry_uninstall_calls == 2);
     CHECK(entry_uninstall_token == (jlong)token);
     CHECK(native_ime_entry_request(env, NULL, (jlong)token) == JNI_FALSE);
+    return 0;
+}
+
+static int test_entry_exception_cleanup(JNIEnv *env) {
+    ANativeActivity act = {env, &activity_obj};
+    dm_app_lifecycle life = {DM_APP_STATE_OWNED_DIAGNOSTIC, NULL};
+    ANativeWindow window = {1, 1};
+    app_state a; memset(&a, 0, sizeof a);
+    a.activity = &act; a.lifecycle = &life; a.window = &window;
+    a.resumed = a.focused = a.touch_allowed = 1; life.surface = &window;
+    root_fail_class = 1;
+    CHECK(ime_entry_install(&a) == 0);
+    CHECK(!pending && !a.ime_entry_installed && a.ime_entry_class == NULL);
+    CHECK(g_ime_entry_app == NULL);
+    root_fail_class = 0;
+    CHECK(ime_entry_install(&a) == 1);
     return 0;
 }
 
@@ -474,7 +501,8 @@ int main(void) {
     reset_fake(&env); if (test_owner_busy_and_inactive(&env)) return 1;
     reset_fake(&env); if (test_reentrant_terminal_during_show(&env)) return 1;
     reset_fake(&env); if (test_entry_owner_request(&env)) return 1;
-    puts("PASS text JNI start/event/end");
+    reset_fake(&env); if (test_entry_exception_cleanup(&env)) return 1;
+    puts("PASS text JNI start/event/end + entry cleanup");
     return 0;
 }
 '''
