@@ -16,6 +16,7 @@
 #include "touch_pointer_map.h"
 #include "live_touch.h"
 #include "live_touch_items.h"
+#include "live_touch_glyph.h"
 #include "live_touch_geometry.h"
 #include "live_touch_provider.h"
 #include "live_touch_readiness.h"
@@ -515,6 +516,10 @@ static void live_touch_publish_visual(game_app *s) {
         (uint64_t)hud.belt[1], (uint64_t)hud.belt[2], (uint64_t)hud.belt[3]};
     for (unsigned i = 0; i < sizeof hud_parts / sizeof *hud_parts; i++)
         signature = (signature ^ hud_parts[i]) * 1099511628211ull;
+    { dm_tg_snapshot glyph_snapshot; int have = dm_touch_game_snapshot(&glyph_snapshot);
+      uint64_t glyph = dm_live_touch_glyph_signature(s->live_touch,
+          have ? &glyph_snapshot : NULL, now_ns());
+      signature = (signature ^ glyph) * 1099511628211ull; }
     if (signature == s->live_visual_signature) return;
     s->live_visual_signature = signature;
     live_touch_notify_visual(s);
@@ -830,6 +835,29 @@ __attribute__((visibility("default"))) jint Java_org_d2r_android_port_D2RActivit
     for(int i=0;i<8;i++){out[60+i*3]=v.pick_x[i];out[61+i*3]=v.pick_y[i];out[62+i*3]=v.pick_r[i];}
     jlong state_out[4]={(jlong)v.buttons,(jlong)dm_live_touch_lx(s->live_touch),(jlong)dm_live_touch_ly(s->live_touch),0};
     (*env)->SetFloatArrayRegion(env,values,0,96,out);(*env)->SetLongArrayRegion(env,state,0,4,state_out);return 1;
+}
+// Read-only skill glyph indices for the draw-only overlay. The array layout is
+// 5 records of (status, atlas, normal_frame, pressed_frame). It calls the same
+// original dm_ta_current_set mapping and never mutates input or binding state.
+__attribute__((visibility("default"))) jint Java_org_d2r_android_port_D2RActivity_getLiveTouchGlyphSnapshot(JNIEnv *env,jclass klass,jintArray out) {
+    (void)klass;game_app *s=application;
+    if(!s||!s->live_touch||!s->live_provider_available||!out)return 0;
+    if((*env)->GetArrayLength(env,out)<20)return 0;
+    dm_tg_snapshot snapshot;int have=dm_touch_game_snapshot(&snapshot);
+    dm_live_touch_glyph glyphs[5];
+    dm_live_touch_skill_glyphs(s->live_touch,have?&snapshot:NULL,now_ns(),glyphs);
+    jint values[20];
+    for(int i=0;i<5;i++){values[i*4]=glyphs[i].status;values[i*4+1]=glyphs[i].atlas;values[i*4+2]=glyphs[i].normal_frame;values[i*4+3]=glyphs[i].pressed_frame;}
+    (*env)->SetIntArrayRegion(env,out,0,20,values);return 1;
+}
+// Nine atlas records of (width, height, frame_width, pitch, frame_count).
+// All zero entries mean the default build has no generated native art.
+__attribute__((visibility("default"))) jint Java_org_d2r_android_port_D2RActivity_getLiveTouchAtlasInfo(JNIEnv *env,jclass klass,jintArray out) {
+    (void)klass;
+    if(!out||(*env)->GetArrayLength(env,out)<45)return 0;
+    jint values[45]={0};
+    for(int i=0;i<DM_TA_ATLASES;i++){const dm_ta_atlas *a=&dm_ta_atlases[i];values[i*5]=a->width;values[i*5+1]=a->height;values[i*5+2]=a->frame_width;values[i*5+3]=a->pitch;values[i*5+4]=a->count;}
+    (*env)->SetIntArrayRegion(env,out,0,45,values);return 1;
 }
 static int32_t stick_value(float value) {if(value>1)value=1;if(value<-1)value=-1;return value>-.15f&&value<.15f?0:(int32_t)(value*DM_STICK_MAX);}
 static uint64_t pad_key(int key) {
