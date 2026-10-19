@@ -27,5 +27,4 @@ struct.pack_into("<III", header, 0x60, len(code), 0x100, 0x100)
 (out / "probe.nso").write_bytes(header + code + ro + bytes(0x100))
 subprocess.run([sys.executable, str(root.parent / "tools/patch_nso.py"), str(out / "probe.nso"), str(out), "probe"],
                env=dict(os.environ, DM_TARGET="android", DM_RULESET="native"), check=True)
-(out / "probe.target").write_text("android-context-v1\n")
 subprocess.run([sys.executable, str(root / "tools/guest_elf.py"), str(out), str(out), "probe"], check=True)

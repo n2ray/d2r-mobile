@@ -13,8 +13,11 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO = ROOT.parents[1]
+DEFAULT_BUILD = REPO.parent / (REPO.name + "-build") / "android-reference"
 TOOLS = Path(os.environ.get("DM_ANDROID_TOOLS", str(Path.home() / "dm-work/tools/android")))
-BIN = TOOLS / "ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin"
+NDK_PREBUILT = os.environ.get("DM_NDK_PREBUILT", "darwin-x86_64" if sys.platform == "darwin" else "linux-x86_64")
+BIN = TOOLS / "ndk/toolchains/llvm/prebuilt" / NDK_PREBUILT / "bin"
 
 GAME_ACTIVITY = "org.d2r.android.port.D2RActivity"
 LAUNCHER_NAME = "org.d2r.android.port.LauncherActivity"
@@ -117,12 +120,16 @@ def main():
         # come from the package imported on the phone** (the launcher already refuses to start without one). CI
         # ships this generic APK; a local build with --game-source still embeds the game code.
         print("Package-only build: game modules come from the imported package", flush=True)
-    build = Path(os.environ.get("DM_REFERENCE_BUILD", "/Volumes/T2/Projects/d2r-work/build/reference-integrated"))
+    build = Path(os.environ.get("DM_REFERENCE_BUILD", str(DEFAULT_BUILD)))
     build.mkdir(parents=True, exist_ok=True)
     if args.game_run: build_counter_timestamp(build)
     for required in [BIN / "aarch64-linux-android29-clang", TOOLS / "jdk/bin/java", TOOLS / "platform/android.jar"]:
         if not required.exists(): sys.exit("Missing tool: " + str(required) + "; run tools/bootstrap.py")
-    env = dict(os.environ, JAVA_HOME=str(TOOLS / "jdk"), PATH=str(TOOLS / "jdk/bin") + os.pathsep + os.environ["PATH"])
+    env = dict(os.environ, JAVA_HOME=str(TOOLS / "jdk"), PATH=str(TOOLS / "jdk/bin") + os.pathsep + os.environ["PATH"],
+               DM_REFERENCE_BUILD=str(build))
+    host_env = dict(env)
+    if args.no_turnip: host_env["DM_SYSTEM_DRIVER_ONLY"] = "1"
+    else: host_env.pop("DM_SYSTEM_DRIVER_ONLY", None)
     entry = build / "entry_elf.S"
     run([sys.executable, ROOT / "tools/generate_entry.py", entry])
     run([sys.executable, ROOT / "tools/strings.py", build])
@@ -153,17 +160,19 @@ def main():
         shutil.rmtree(build / "res" / "mipmap-anydpi-v33", ignore_errors=True)
     run([sys.executable, ROOT / "tools/make_probe.py", build / "probe", BIN])
     if not args.no_turnip:
-        run([sys.executable, ROOT / "tools/build_gpu_driver.py"])
-        run([sys.executable, ROOT / "tools/build_gpu_fixtures.py"])
+        run([sys.executable, ROOT / "tools/build_gpu_driver.py", "--output", build / "gpu-driver"])
+        run([sys.executable, ROOT / "tools/build_gpu_fixtures.py", "--output", build / "gpu-fixtures"])
     compiler = BIN / "aarch64-linux-android29-clang"
     common = [compiler, "-O1", "-g", "-Wall", "-Wextra", "-I", ROOT / "native", "-I", build, ROOT / "native/runtime.c", ROOT / "native/probe.c", entry]
+    if not args.no_turnip:
+        common += ["-I", build / "gpu-driver/include"]
     if args.no_turnip:
         common.insert(2, "-DDM_NO_ADRENOTOOLS")
         common.insert(2, "-DDM_SYSTEM_DRIVER_ONLY")
     run(common + ["-ldl", "-o", build / "runtime-smoke"])
     if args.game_run:
-        run([sys.executable, ROOT / "tools/host_link.py", "--activity"])
-        shutil.copyfile(build / "game-host/libdmandroid.so", build / "libdmandroid.so")
+        run([sys.executable, ROOT / "tools/host_link.py", "--activity"], env=host_env)
+        shutil.copyfile(build / "game-host-activity/libdmandroid.so", build / "libdmandroid.so")
     else:
         run(common + ["-fPIC", "-shared", "-DDM_NATIVE_APP",
                   * (["-DDM_NO_ADRENOTOOLS", "-DDM_SYSTEM_DRIVER_ONLY"] if args.no_turnip else []),

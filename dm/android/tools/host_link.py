@@ -11,10 +11,12 @@ import shlex
 import argparse
 
 ROOT = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
+DEFAULT_BUILD = REPO.parent / (REPO.name + "-build") / "android-reference"
 TOOLS = Path(os.environ.get("DM_ANDROID_TOOLS", str(Path.home() / "dm-work/tools/android")))
-ref_build = os.environ.get("DM_REFERENCE_BUILD", "/Volumes/T2/Projects/d2r-work/build/reference-integrated")
-OUT = Path(ref_build) / "game-host" if ref_build else ROOT / "android/build/host"
-CLANG = TOOLS / "ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android29-clang"
+NDK_PREBUILT = os.environ.get("DM_NDK_PREBUILT", "darwin-x86_64" if sys.platform == "darwin" else "linux-x86_64")
+BIN = TOOLS / "ndk/toolchains/llvm/prebuilt" / NDK_PREBUILT / "bin"
+CLANG = BIN / "aarch64-linux-android29-clang"
 
 
 def compile(item):
@@ -25,6 +27,8 @@ def compile(item):
                "-I", str(ROOT / "android/native"), "-I", str(ROOT / "gfx/nvn/include"), "-I", str(ROOT / "android/native/compat")]
     if os.environ.get("DM_SYSTEM_DRIVER_ONLY"):
         command += ["-DDM_NO_ADRENOTOOLS", "-DDM_SYSTEM_DRIVER_ONLY"]
+    else:
+        command += ["-I", str(Path(os.environ.get("DM_REFERENCE_BUILD", str(DEFAULT_BUILD))) / "gpu-driver/include")]
     if source.parent == ROOT / "host" or source.parent == ROOT / "gfx/nvn": command += ["-include", str(ROOT / "android/native/compat/host_preinclude.h")]
     if source.name == "main.c": command += ["-Dmain=dm_main"]
     command += extra + [str(source), "-o", str(obj)]
@@ -43,10 +47,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--activity", action="store_true", help="Build the real-game NativeActivity shared library")
     args = parser.parse_args()
-    if args.activity: OUT = OUT if ref_build else ROOT / "android/build/game-host"
+    ref_build = os.environ.get("DM_REFERENCE_BUILD", str(DEFAULT_BUILD))
+    OUT = Path(ref_build) / ("game-host-activity" if args.activity else "game-host-headless")
     OUT.mkdir(parents=True, exist_ok=True)
     if not os.environ.get("DM_SYSTEM_DRIVER_ONLY"):
-        subprocess.run([sys.executable,str(ROOT / "android/tools/build_gpu_driver.py")],check=True)
+        subprocess.run([sys.executable,str(ROOT / "android/tools/build_gpu_driver.py"), "--output", str(Path(ref_build) / "gpu-driver")],check=True)
     entry = OUT / "entry_elf.S"
     subprocess.run([sys.executable, str(ROOT / "android/tools/generate_entry.py"), str(entry)], check=True)
     subprocess.run([sys.executable, str(ROOT / "android/tools/generate_nvn.py"), str(OUT)], check=True)
