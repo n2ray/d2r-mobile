@@ -8,6 +8,13 @@ int main(void) {
     for (int i = 0; i < 32; i++) if (!dm_ui_trace_take_stage(&s, DM_UI_TRACE_TOUCH)) return 2;
     if (dm_ui_trace_take_stage(&s, DM_UI_TRACE_TOUCH)) return 3; // stage cap
     if (!dm_ui_trace_take_stage(&s, DM_UI_TRACE_PUMP)) return 4; // independent stage
+    if (dm_ui_trace_arm(&s, 1) != 1) return 13;
+    for (int i = 0; i < 32; i++) if (!dm_ui_trace_take_stage(&s, DM_UI_TRACE_TOUCH)) return 14;
+    if (dm_ui_trace_arm(&s, 1) != 0) return 15; // unchanged generation never rearms
+    if (dm_ui_trace_take_stage(&s, DM_UI_TRACE_TOUCH)) return 16;
+    if (dm_ui_trace_arm(&s, 2) != 1) return 17; // new generation resets
+    if (!dm_ui_trace_take_stage(&s, DM_UI_TRACE_TOUCH)) return 18;
+    if (dm_ui_trace_arm(&s, 2) != 0) return 19; // repeated new generation is not per-event
     dm_ui_trace_reset(&s, 1); // phase-3 cancel/reset starts a fresh bounded window
     if (!dm_ui_trace_take_stage(&s, DM_UI_TRACE_CANCEL)) return 5;
     dm_ui_trace_reset(&s, 0);
@@ -18,7 +25,7 @@ int main(void) {
     if (cancel_logs != 32) return 7; // real cancellation gate stays bounded
     for (int i = 0; i < 100; i++) if (dm_ui_trace_touch_take(&s, 1)) return 8;
     if (!dm_ui_trace_touch_take(&s, 2) || !dm_ui_trace_touch_take(&s, 3)) return 9;
-    int last_phase = -1;
+    _Atomic int last_phase = -1;
     if (!dm_ui_trace_pump_take(&s, &last_phase, 2)) return 10;
     for (int i = 0; i < 100; i++) if (dm_ui_trace_pump_take(&s, &last_phase, 2)) return 11;
     if (!dm_ui_trace_pump_take(&s, &last_phase, 3)) return 12;

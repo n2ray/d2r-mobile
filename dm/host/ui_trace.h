@@ -6,6 +6,7 @@
 
 typedef struct {
     atomic_int enabled;
+    atomic_uint generation;
     atomic_uint emitted[4];
 } dm_ui_trace_state;
 
@@ -21,7 +22,21 @@ enum {
 
 static inline void dm_ui_trace_reset(dm_ui_trace_state *s, int on) {
     atomic_store(&s->enabled, on ? 1 : 0);
+    atomic_store(&s->generation, 0);
     for (int i = 0; i < DM_UI_TRACE_STAGES; i++) atomic_store(&s->emitted[i], 0);
+}
+
+static inline int dm_ui_trace_arm(dm_ui_trace_state *s, unsigned generation) {
+    if (!generation) { atomic_store(&s->enabled, 0); atomic_store(&s->generation, 0); return 0; }
+    if (atomic_load(&s->generation) == generation) return 0;
+    atomic_store(&s->generation, generation);
+    for (int i = 0; i < DM_UI_TRACE_STAGES; i++) atomic_store(&s->emitted[i], 0);
+    atomic_store(&s->enabled, 1);
+    return 1;
+}
+
+static inline unsigned dm_ui_trace_generation(dm_ui_trace_state *s) {
+    return atomic_load(&s->generation);
 }
 
 static inline int dm_ui_trace_take_stage(dm_ui_trace_state *s, int stage) {
@@ -42,8 +57,9 @@ static inline int dm_ui_trace_touch_take(dm_ui_trace_state *s, int phase) {
 }
 
 // Pump tracing is transition-based; held frames do not consume the stage budget.
-static inline int dm_ui_trace_pump_take(dm_ui_trace_state *s, int *last_phase, int phase) {
-    int trace = (phase != *last_phase) && dm_ui_trace_take_stage(s, DM_UI_TRACE_PUMP);
-    *last_phase = phase;
+static inline int dm_ui_trace_pump_take(dm_ui_trace_state *s, _Atomic int *last_phase, int phase) {
+    int last = atomic_load(last_phase);
+    int trace = (phase != last) && dm_ui_trace_take_stage(s, DM_UI_TRACE_PUMP);
+    atomic_store(last_phase, phase);
     return trace;
 }
