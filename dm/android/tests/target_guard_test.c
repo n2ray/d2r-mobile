@@ -19,7 +19,7 @@ int main(void) {
     CHECK(mkdtemp(root) != NULL);
     char layout[512], target[512];
     snprintf(layout, sizeof layout, "%s/main.fixups.tsv", root);
-    snprintf(target, sizeof target, "%s/target", root);
+    snprintf(target, sizeof target, "%s/main.target", root);
     CHECK(write_file(layout, "# PATCH_OFF 0\n", 13) == 0);
     char error[160];
 

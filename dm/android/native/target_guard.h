@@ -15,14 +15,31 @@ static inline int dm_android_target_validate(const char *layout, char *error, si
         return -1;
     }
     const char *slash = strrchr(layout, '/');
-    if (!slash || (size_t)(slash - layout) + sizeof("/target") > 1024) {
+    if (!slash || !slash[1]) {
         if (error && cap) snprintf(error, cap, "target: malformed layout path");
+        return -1;
+    }
+    const char *base = slash + 1;
+    static const char suffix[] = ".fixups.tsv";
+    size_t base_len = strlen(base), suffix_len = sizeof suffix - 1;
+    if (base_len <= suffix_len || strcmp(base + base_len - suffix_len, suffix)) {
+        if (error && cap) snprintf(error, cap, "target: malformed layout name");
+        return -1;
+    }
+    size_t module_len = base_len - suffix_len;
+    if (module_len > 64 || memchr(base, '/', module_len)) {
+        if (error && cap) snprintf(error, cap, "target: malformed module name");
         return -1;
     }
     char path[1024];
     size_t dir_len = (size_t)(slash - layout);
-    memcpy(path, layout, dir_len);
-    memcpy(path + dir_len, "/target", sizeof("/target"));
+    if (dir_len + 1 + module_len + sizeof(".target") > sizeof path) {
+        if (error && cap) snprintf(error, cap, "target: marker path too long");
+        return -1;
+    }
+    memcpy(path, layout, dir_len + 1);
+    memcpy(path + dir_len + 1, base, module_len);
+    memcpy(path + dir_len + 1 + module_len, ".target", sizeof(".target"));
     FILE *f = fopen(path, "rb");
     if (!f) {
         if (error && cap) snprintf(error, cap, "target: missing marker");

@@ -22,7 +22,7 @@ int main(void) {
     CHECK(mkdir(root, 0700) == 0);
     char layout[512], target[512], error[256];
     snprintf(layout, sizeof layout, "%s/main.fixups.tsv", root);
-    snprintf(target, sizeof target, "%s/target", root);
+    snprintf(target, sizeof target, "%s/main.target", root);
     CHECK(write_file(layout, "# TEXT_END 0\n# PATCH_OFF 0x8000\n# KEY_PAGE_OFF 0x4000\n", 57) == 0);
 
     dm_android_module m;
@@ -36,6 +36,15 @@ int main(void) {
     CHECK(write_file(target, "android-context-v1\n", 19) == 0);
     CHECK(dm_android_load(&m, "/nonexistent/lib.so", layout, error, sizeof error) != 0);
     CHECK(strstr(error, "dlopen") != NULL);   // target gate passed; reached the next boundary
-    puts("PASS: dm_android_load rejects missing/wrong markers before dlopen; valid marker reaches dlopen");
+
+    // Mixed module outputs: a valid main.target must not authorize sdk.fixups.tsv.
+    char sdk_layout[512], sdk_target[512];
+    snprintf(sdk_layout, sizeof sdk_layout, "%s/sdk.fixups.tsv", root);
+    snprintf(sdk_target, sizeof sdk_target, "%s/sdk.target", root);
+    CHECK(write_file(sdk_layout, "# TEXT_END 0\n# PATCH_OFF 0x8000\n# KEY_PAGE_OFF 0x4000\n", 57) == 0);
+    CHECK(write_file(sdk_target, "apple-context-v1\n", 17) == 0);
+    CHECK(dm_android_load(&m, "/nonexistent/lib.so", sdk_layout, error, sizeof error) != 0);
+    CHECK(strstr(error, "target: wrong marker") != NULL);
+    puts("PASS: module-specific target markers; mixed Android/Apple module is rejected");
     return 0;
 }
