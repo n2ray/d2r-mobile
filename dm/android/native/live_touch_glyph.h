@@ -16,16 +16,21 @@ typedef struct {
     uint32_t raw_skill_id;
 } dm_live_touch_glyph;
 
-// Five entries in core target order: main, F1..F4. Stale snapshots follow the
-// original visual-only policy (draw the last captured glyph); input freshness
-// is not changed here. No allocation and no input mutation.
+// Five entries in core target order: main, F1..F4. The owner thread publishes
+// immutable copied records; the legacy read function only copies those records
+// and never touches mutable core/layout/group state. This keeps the Java UI
+// reader safe without holding a lock across Java work.
 int dm_live_touch_skill_glyphs(const dm_live_touch *touch,
                                const dm_tg_snapshot *snapshot,
                                uint64_t host_now_ns,
                                dm_live_touch_glyph out[5]);
+void dm_live_touch_glyph_publish(dm_live_touch *touch,
+                                 const dm_tg_snapshot *snapshot,
+                                 uint64_t host_now_ns);
 uint64_t dm_live_touch_glyph_signature(const dm_live_touch *touch,
                                        const dm_tg_snapshot *snapshot,
                                        uint64_t host_now_ns);
+void dm_live_touch_glyph_invalidate(void);
 
 #ifdef __cplusplus
 }

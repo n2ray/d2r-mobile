@@ -48,7 +48,8 @@ int main(void) {
 
     dm_tg_snapshot snap = make_snapshot(100, 101, 102, 1000000000);
     dm_live_touch_glyph g[5];
-    CHECK(dm_live_touch_skill_glyphs(touch, &snap, 1000000000, g));
+    dm_live_touch_glyph_publish(touch, &snap, 1000000000);
+    CHECK(dm_live_touch_skill_glyphs(NULL, NULL, 0, g));
     CHECK(g[0].status == DM_LIVE_GLYPH_GLYPH && g[0].atlas == 0 &&
           g[0].normal_frame == 2 && g[0].pressed_frame == 3);
     CHECK(g[1].status == DM_LIVE_GLYPH_GLYPH && g[1].atlas == 1 &&
@@ -61,18 +62,21 @@ int main(void) {
     CHECK(!dm_ta_frame_at(0, 99, &frame));
     CHECK(!dm_ta_frame_at(9, 0, &frame));
 
-    uint64_t before = dm_live_touch_glyph_signature(touch, &snap, 1000000000);
+    uint64_t before = dm_live_touch_glyph_signature(NULL, NULL, 0);
     snap.raw_skill_id[0] = UINT32_MAX;
-    CHECK(dm_live_touch_skill_glyphs(touch, &snap, 1000000000, g));
+    dm_live_touch_glyph_publish(touch, &snap, 1000000000);
+    CHECK(dm_live_touch_skill_glyphs(NULL, NULL, 0, g));
     CHECK(g[0].status == DM_LIVE_GLYPH_EMPTY);
-    CHECK(dm_live_touch_glyph_signature(touch, &snap, 1000000000) != before);
+    CHECK(dm_live_touch_glyph_signature(NULL, NULL, 0) != before);
 
     snap.raw_skill_id[0] = 103; // synthetic row with an out-of-atlas frame
-    CHECK(dm_live_touch_skill_glyphs(touch, &snap, 1000000000, g));
+    dm_live_touch_glyph_publish(touch, &snap, 1000000000);
+    CHECK(dm_live_touch_skill_glyphs(NULL, NULL, 0, g));
     CHECK(g[0].status == DM_LIVE_GLYPH_UNKNOWN);
 
     snap.raw_skill_id[0] = 100;
-    CHECK(dm_live_touch_skill_glyphs(touch, &snap, 2000000000, g));
+    dm_live_touch_glyph_publish(touch, &snap, 2000000000);
+    CHECK(dm_live_touch_skill_glyphs(NULL, NULL, 0, g));
     CHECK(g[0].status == DM_LIVE_GLYPH_GLYPH && g[0].normal_frame == 2);
 
     // Second group: actual core swap target, alt slot 6 -> synthetic ID 102.
@@ -82,7 +86,8 @@ int main(void) {
     CHECK(event(touch, DM_LIVE_ACTION_DOWN, 1, sx, sy, 2100000000));
     CHECK(event(touch, DM_LIVE_ACTION_UP, 1, sx, sy, 2101000000));
     CHECK(dm_live_touch_skill_set(touch) == 1);
-    CHECK(dm_live_touch_skill_glyphs(touch, &snap, 2101000000, g));
+    dm_live_touch_glyph_publish(touch, &snap, 2101000000);
+    CHECK(dm_live_touch_skill_glyphs(NULL, NULL, 0, g));
     CHECK(g[0].status == DM_LIVE_GLYPH_GLYPH && g[0].atlas == 1 &&
           g[0].normal_frame == 4);
 
