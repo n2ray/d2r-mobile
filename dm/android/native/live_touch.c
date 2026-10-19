@@ -77,7 +77,9 @@ int dm_live_touch_set_belt(dm_live_touch *touch, int rows, int open) {
     if (!touch) return 0;
     if (rows < 0 || rows > 4 || open < 0 || open > 1 ||
         (open && rows <= 1) || (rows == 0 && open != 0)) {
-        // Unknown/invalid host state must not leave a stale actionable request.
+        // Unknown/invalid host state must not leave stale gestures or requests.
+        touch->state.belt_rows = 0;
+        touch->state.belt_open = 0;
         touch->state.belt_request = 0;
         return 0;
     }
