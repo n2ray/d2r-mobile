@@ -591,7 +591,8 @@ static void live_touch_items_ensure(game_app *s) {
 }
 static void live_touch_cancel_sources_all(game_app *s) {
     if (!s) return;
-    if (frontend_ui_trace()) LOG("[ui-trace] cancel sources");
+    static unsigned cancel_trace_count;
+    if (frontend_ui_trace() && cancel_trace_count++ < 32) LOG("[ui-trace] cancel sources reason=4");
     if (s->live_items) dm_live_touch_items_cancel(s->live_items);
     dm_live_touch_cancel_sources(s->live_touch, (int64_t)now_ns(), ui_touch_cancel);
 }
@@ -836,9 +837,15 @@ static int input_ready(int fd,int events,void *data) {
             pthread_mutex_lock(&s->lock);ANativeWindow *window=s->window;int w=window?ANativeWindow_getWidth(window):1,h=window?ANativeWindow_getHeight(window):1;pthread_mutex_unlock(&s->lock);
             float gw=w,gh=w*9.f/16.f;if(gh>h){gh=h;gw=h*16.f/9.f;}float left=(w-gw)/2,top=(h-gh)/2;
             int live_on=s->live_touch&&live_touch_mode_enabled();dm_live_touch_geometry picture;
+            int ui_trace=frontend_ui_trace();
+            if(ui_trace){static int registered;if(!registered){dm_ui_trace_set(1);registered=1;}}
+            static int last_ingress_action=-1;
+            if(ui_trace&&action!=last_ingress_action&&atomic_fetch_add(&g_fe_ui_trace_count,1)<32)
+                LOG("[ui-trace] ingress action=%d pointer=%u source=%d ingame=%d live=%d surface=%dx%d reason=%d",action,lifted,source,dm_uiscreen_ingame(),live_on,w,h,live_on?0:1);
+            last_ingress_action=action;
             if(live_on){live_touch_sync(s);live_on=s->live_provider_available;}
             if(live_on){
-                if(!live_touch_prepare(s,w,h,&picture)){handled=1;}
+                if(!live_touch_prepare(s,w,h,&picture)){if(ui_trace&&atomic_fetch_add(&g_fe_ui_trace_count,1)<32)LOG("[ui-trace] route skip reason=3 surface=%dx%d",w,h);handled=1;}
                 else {gw=picture.width;gh=picture.height;left=picture.left;top=picture.top;
                     unsigned count=AMotionEvent_getPointerCount(event);int32_t ids[16];float xs[16],ys[16];
                 if(count<=16){
@@ -852,12 +859,13 @@ static int input_ready(int fd,int events,void *data) {
                         if(at<count){float nx=(xs[at]-left)/gw,ny=(ys[at]-top)/gh;if(nx<0)nx=0;if(nx>.999f)nx=.999f;if(ny<0)ny=0;if(ny>.999f)ny=.999f;
                             int phase=(action==AMOTION_EVENT_ACTION_DOWN||action==AMOTION_EVENT_ACTION_POINTER_DOWN)?0:action==AMOTION_EVENT_ACTION_MOVE?1:(action==AMOTION_EVENT_ACTION_UP||action==AMOTION_EVENT_ACTION_POINTER_UP)?2:3;
                             int trace=frontend_ui_trace();
-                            if(trace){static int registered;if(!registered){dm_ui_trace_set(1);registered=1;}}
                             int active_before=dm_ui_touch_active();
                             dm_ui_touch(phase,nx,ny);
                             int active_after=dm_ui_touch_active();
-                            if(trace&&atomic_fetch_add(&g_fe_ui_trace_count,1)<32)
-                                LOG("[ui-trace] fe action=%d id=%d source=%d ingame=%d live=%d geom=%dx%d@%.0f,%.0f raw=%.1f,%.1f norm=%.4f,%.4f phase=%d active=%d->%d",action,ids[at],source,dm_uiscreen_ingame(),live_on,w,h,left,top,xs[at],ys[at],nx,ny,phase,active_before,active_after);}
+                            static int last_fe_action=-1;
+                            if(trace&&action!=last_fe_action&&atomic_fetch_add(&g_fe_ui_trace_count,1)<32)
+                                LOG("[ui-trace] fe action=%d id=%d source=%d ingame=%d live=%d surface=%dx%d picture=%.0fx%.0f@%.0f,%.0f raw=%.1f,%.1f norm=%.4f,%.4f phase=%d reason=0 active=%d->%d",action,ids[at],source,dm_uiscreen_ingame(),live_on,w,h,gw,gh,left,top,xs[at],ys[at],nx,ny,phase,active_before,active_after);
+                            last_fe_action=action;}
                         handled=1;
                     }else if(live_touch_event_routed(s,action,action==AMOTION_EVENT_ACTION_MOVE?-1:(int)lifted,(int)count,ids,xs,ys,w,h,left,top,gw,gh,(int64_t)now_ns())){
                         pad_publish(s);
@@ -868,7 +876,7 @@ static int input_ready(int fd,int events,void *data) {
                         live_touch_consume_skill_bind(s);
                         handled=1;
                     }else handled=1;
-                }else LOG("[android-touch] pointer count %u exceeds 16; refusing the event",count);
+                }else {if(ui_trace&&atomic_fetch_add(&g_fe_ui_trace_count,1)<32)LOG("[ui-trace] route skip reason=2 count=%u",count);LOG("[android-touch] pointer count %u exceeds 16; refusing the event",count);}
                     if(dm_live_touch_needs_work(s->live_touch))touch_timer_start(s);else touch_timer_stop(s);
                 }
             }else{

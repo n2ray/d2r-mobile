@@ -467,7 +467,8 @@ uint64_t dm_guest_frame(void);
 // After release: Move + Down on the next frame, then Move + Up on the frame after (at least one frame of hover has already held before the press).
 static _Atomic int g_ut_phase;                      // 0 无 1 按着 2 待发按下 3 待发抬起 | 0 none, 1 held down, 2 press pending, 3 release pending
 static dm_ui_trace_state g_ui_trace;
-void dm_ui_trace_set(int on) { dm_ui_trace_reset(&g_ui_trace, on); }
+static int g_trace_last_pump_phase = -1;
+void dm_ui_trace_set(int on) { dm_ui_trace_reset(&g_ui_trace, on); g_trace_last_pump_phase = -1; }
 static _Atomic uint64_t g_ut_xy;                    // 归一化坐标各 16 位 | Normalized coordinates, 16 bits each
 // 职业选择页（实玩后重做）。读码（人物控件 HDCharacterSelectorWidget，虚表 main+0x20c6fb8，消息处理 main+0xc2d840）：
 //   · 控件状态字 +0x13f4：0 待机 / 1 出列中 / 2 已出列 / 3 归队中；设置状态并起动画的函数 main+0xc2cf24(控件, 状态)。
@@ -504,11 +505,11 @@ int dm_fe_bliss(void) { return atomic_load(&g_fe_bliss); }
 static _Atomic int g_fe_del_open, g_del_q, g_del_hold;   // 模式页 / 确认框开着；模式页上点了牌子以外 → 返回 | Mode page / confirmation box open; on the mode page a tap landed outside the plaques -> back
 int dm_restart_busy(void);   // 一键重开进行中（定义在下面）：界面触点一律丢掉 | One-key restart in progress (defined below): all UI touch points are dropped
 void dm_ui_touch(int phase, float nx, float ny) {
-    int trace = dm_ui_trace_take(&g_ui_trace);
-    if (phase != 3 && dm_restart_busy()) { if (trace) LOG("[ui-trace] touch dropped restart_busy phase=%d", phase); return; }   // phase：0 按下 1 移动 2 抬起 3 作废（按下后改成了滚动：这次不点）；nx / ny = 出图画面归一化坐标 [0,1] | phase: 0 down, 1 move, 2 up, 3 cancelled (turned into a scroll after the press: no click this time); nx / ny = coordinates normalized to the rendered picture [0,1]
+    int trace = dm_ui_trace_touch_take(&g_ui_trace, phase);
+    if (phase != 3 && dm_restart_busy()) { if (trace) LOG("[ui-trace] touch dropped restart_busy phase=%d reason=1", phase); return; }   // phase：0 按下 1 移动 2 抬起 3 作废（按下后改成了滚动：这次不点）；nx / ny = 出图画面归一化坐标 [0,1] | phase: 0 down, 1 move, 2 up, 3 cancelled (turned into a scroll after the press: no click this time); nx / ny = coordinates normalized to the rendered picture [0,1]
     int before = atomic_load(&g_ut_phase);
     if (trace) LOG("[ui-trace] touch phase=%d xy=%.4f,%.4f before=%d", phase, nx, ny, before);
-    if (phase == 3) { atomic_store(&g_ut_phase, 0); atomic_store(&g_del_q, 0); atomic_store(&g_del_hold, 0); if (trace) LOG("[ui-trace] touch cancel after=0"); return; }
+    if (phase == 3) { atomic_store(&g_ut_phase, 0); atomic_store(&g_del_q, 0); atomic_store(&g_del_hold, 0); if (trace) LOG("[ui-trace] touch cancel after=0 reason=2"); return; }
     if (phase != 1) DM_LAT("ui_touch %d", phase);
     nx = nx < 0 ? 0 : nx > 1 ? 1 : nx; ny = ny < 0 ? 0 : ny > 1 ? 1 : ny;
     atomic_store(&g_ut_xy, ((uint64_t)(uint32_t)(nx * 65535 + .5f) << 16) | (uint32_t)(ny * 65535 + .5f));
@@ -2785,7 +2786,7 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
             else atomic_store(&g_del_q, 0); }
         else atomic_store(&g_del_q, 0); }
     int ph = atomic_load(&g_ut_phase); if (!ph) return;
-    int trace = dm_ui_trace_take(&g_ui_trace);
+    int trace = dm_ui_trace_pump_take(&g_ui_trace, &g_trace_last_pump_phase, ph);
     if (trace) LOG("[ui-trace] pump frame=%llu phase=%d", (unsigned long long)fr, ph);
     last_frame = fr;
     module_t *m = main_module(); if (!m) return;
@@ -2842,8 +2843,8 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
         else if (st0) LOG("合成钮：手上已空，按下");
         else if (!(hh.valid && hh.holding) && ui_snap(m, root, &px, &py) && !strcmp(g_click_name, "convert")) LOG("合成钮：按下（HUD 读数 %s，手上 %d）——之后应有一行「合成读数：服务端收到合成请求」，没有就是请求没进游戏服务端", hh.valid ? "有效" : "无效", hh.holding);   // #22：空手这条路原来不记 | #22: the empty-hand path was not logged before
         st0 = 0; }
-    if (ph == 2) { if (trace) LOG("[ui-trace] pump send-down x=%d y=%d", x, y); ui_send_mouse(m, root, h_dn, x, y); int e = 2; atomic_compare_exchange_strong(&g_ut_phase, &e, 3); }
-    else if (ph == 3) { if (trace) LOG("[ui-trace] pump send-up x=%d y=%d", x, y); ui_send_mouse(m, root, h_up, x, y); int e = 3; atomic_compare_exchange_strong(&g_ut_phase, &e, 0);
+    if (ph == 2) { int trace_down = dm_ui_trace_take_stage(&g_ui_trace, DM_UI_TRACE_PUMP); if (trace_down) LOG("[ui-trace] pump send-down x=%d y=%d", x, y); ui_send_mouse(m, root, h_dn, x, y); int e = 2; atomic_compare_exchange_strong(&g_ut_phase, &e, 3); }
+    else if (ph == 3) { int trace_up = dm_ui_trace_take_stage(&g_ui_trace, DM_UI_TRACE_PUMP); if (trace_up) LOG("[ui-trace] pump send-up x=%d y=%d", x, y); ui_send_mouse(m, root, h_up, x, y); int e = 3; atomic_compare_exchange_strong(&g_ut_phase, &e, 0);
         DM_LAT("click %d,%d", x, y);
         if (logged < 400) { logged++; LOG("界面鼠标：点击 (%d,%d)", x, y); }
         // 设置页的「应用 / 放弃」：这页是手柄版逻辑，退出只认返回键（原版底部提示「B 关闭菜单」），这两个键鼠版按钮点了游戏会处理但不关页。
