@@ -23,7 +23,10 @@ field, provider or full mobile-input implementation.
   exactly the owned button. If platform removal throws, the Java and native
   cleanup handles retain the old view/token (click disabled) and a retry can
   finish removal without adding another overlay; a new install retries cleanup
-  first. The launcher is removed on window destruction and App destroy.
+  first. A failing terminal `destroy` keeps the native App state/cleanup owner
+  reachable instead of freeing it; a later retry that proves removal releases
+  exactly once, while permanent failure stays explicit and click-inert. The
+  launcher is removed on window destruction and App destroy.
 - JNI setup checks each loader/signature/registration/global-ref stage and
   clears pending exceptions before cleanup, so an optional launcher failure
   cannot poison later NativeActivity calls.

@@ -898,6 +898,10 @@ static int text_begin(app_state*s);
 static void text_end(app_state*s,const char*reason);
 static void destroy(ANativeActivity*a){app_state*s=a->instance;if(s){
     ime_entry_uninstall(s);
+    if(s->ime_entry_class){
+        LOG("IME touch entry cleanup pending; App state retained for retry");
+        return;
+    }
     if(s->text_bridge)text_end(s,"destroy");
     stop_input_timer(s);stop_frame_timer(s);
     if(s->wsi.enabled){
@@ -1278,7 +1282,7 @@ static int ime_entry_install(app_state*s){
         return 0;
     }
     jmethodID install_method=NULL,uninstall_method=NULL;
-    int result=0,install_called=0,install_attached=0,install_unknown=0;
+    int result=0,install_called=0;
     uint64_t token=++g_ime_entry_next_token;
     if(!token)token=++g_ime_entry_next_token;
     if(!(install_method=(*env)->GetStaticMethodID(env,entry_class,"install","(Landroid/app/Activity;J)Z"))){
@@ -1301,8 +1305,7 @@ static int ime_entry_install(app_state*s){
     }
     install_called=1;
     jboolean installed=(*env)->CallStaticBooleanMethod(env,entry_class,install_method,s->activity->clazz,(jlong)token);
-    if(text_jni_stage_failed(env,"ime entry install")){install_unknown=1;goto done;}
-    install_attached=installed?1:0;
+    if(text_jni_stage_failed(env,"ime entry install"))goto done;
     if(!installed){LOG("IME touch entry install rejected");goto done;}
     s->ime_entry_token=token;
     s->ime_entry_installed=1;
@@ -1315,7 +1318,7 @@ done:
         (*env)->ExceptionClear(env);
     }
     if(!result){
-        if(install_called&&(install_attached||install_unknown)&&uninstall_method){
+        if(install_called&&uninstall_method){
             jboolean removed=(*env)->CallStaticBooleanMethod(env,entry_class,uninstall_method,s->activity->clazz,(jlong)token);
             if((*env)->ExceptionCheck(env)){
                 (*env)->ExceptionDescribe(env);

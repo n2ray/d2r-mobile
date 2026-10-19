@@ -90,7 +90,8 @@ public final class DmImeTouchEntry {
      */
     public static boolean uninstall(Activity activity, long token) {
         requireMainLooper();
-        if (ownedView == null || ownedActivity != activity || ownedToken != token) {
+        if (ownedView == null) return true;
+        if (ownedActivity != activity || ownedToken != token) {
             return false;
         }
         clickAuthorized = false;

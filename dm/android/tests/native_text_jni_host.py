@@ -20,12 +20,14 @@ from native_callbacks_host import extract_function
 
 FUNCTIONS = ["text_jni_stage_failed", "native_text_event", "text_end",
              "text_begin_ready", "text_begin", "ime_entry_load_class",
-             "ime_entry_install", "ime_entry_uninstall", "native_ime_entry_request"]
+             "ime_entry_install", "ime_entry_uninstall", "native_ime_entry_request",
+             "destroy"]
 
 PRELUDE = r'''
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef void *jobject;
@@ -60,6 +62,7 @@ struct JNINativeInterface {
 };
 
 enum { DM_APP_STATE_CREATED = 0, DM_APP_STATE_OWNED_DIAGNOSTIC = 3 };
+enum { DM_WSI_EVENT_STOP = 0, DM_WSI_OK = 0, DM_WSI_STAGE_DRAIN = 0, DM_WSI_CODE_UNKNOWN = 0 };
 #define DM_TEXT_MAX_UTF16_UNITS 512
 #define EVENT_COMMIT 0
 #define EVENT_DELETE 1
@@ -68,7 +71,13 @@ enum { DM_APP_STATE_CREATED = 0, DM_APP_STATE_OWNED_DIAGNOSTIC = 3 };
 
 typedef struct { int state; void *surface; } dm_app_lifecycle;
 typedef struct { int width, height; } ANativeWindow;
-typedef struct ANativeActivity { JNIEnv *env; jobject clazz; } ANativeActivity;
+typedef struct { int device; } dm_vk;
+typedef struct { int enabled; } dm_wsi;
+typedef struct { int unused; } dm_wsi_report;
+typedef struct { int unused; } dm_input_arbiter;
+typedef struct { int buttons; } dm_npad_state;
+typedef struct { int unused; } AInputQueue;
+typedef struct ANativeActivity { JNIEnv *env; jobject clazz; void *instance; } ANativeActivity;
 
 typedef struct {
     ANativeActivity *activity;
@@ -89,6 +98,11 @@ typedef struct {
     jclass ime_entry_class;
     uint64_t ime_entry_token;
     int ime_entry_installed;
+    int timer_fd, frame_fd;
+    dm_vk vk;
+    dm_wsi wsi;
+    dm_wsi_report report;
+    AInputQueue *input;
 } app_state;
 
 static app_state *g_text_app;
@@ -100,6 +114,7 @@ static void text_end(app_state *, const char *);
 static int ime_entry_install(app_state *);
 static void ime_entry_uninstall(app_state *);
 static jboolean native_ime_entry_request(JNIEnv *, jclass, jlong);
+static void destroy(ANativeActivity *);
 static int touch_cancel_calls;
 static void touch_cancel(app_state *s, const char *reason, int64_t now) {
     (void)s; (void)reason; (void)now; touch_cancel_calls++;
@@ -107,6 +122,21 @@ static void touch_cancel(app_state *s, const char *reason, int64_t now) {
 static int64_t monotonic_ns(void) { return 1000000000LL; }
 static int dm_app_lifecycle_state(const dm_app_lifecycle *l) { return l ? l->state : 0; }
 static void *dm_app_lifecycle_surface(const dm_app_lifecycle *l) { return l ? l->surface : NULL; }
+static void stop_input_timer(app_state *s) { (void)s; }
+static void stop_frame_timer(app_state *s) { (void)s; }
+static int dm_wsi_stop(dm_wsi *w) { (void)w; return 0; }
+static void dm_wsi_report_event(dm_wsi_report *r, int event) { (void)r; (void)event; }
+static void wsi_report_fail(app_state *s, int stage, int code, int unsupported, int open_failure) {
+    (void)s; (void)stage; (void)code; (void)unsupported; (void)open_failure;
+}
+static void wsi_report_snapshot(app_state *s, const char *reason) { (void)s; (void)reason; }
+static void AInputQueue_detachLooper(AInputQueue *q) { (void)q; }
+static void controller_hotplug_stop(app_state *s) { (void)s; }
+static void gamepad_rearm(app_state *s) { (void)s; }
+static void dm_input_arbiter_destroy(dm_input_arbiter *a, dm_npad_state *n) { (void)a; (void)n; }
+static int dm_app_lifecycle_stop(dm_app_lifecycle *l) { (void)l; return 1; }
+static int dm_app_lifecycle_destroy(dm_app_lifecycle *l) { (void)l; return 1; }
+static void dm_vk_destroy(dm_vk *v) { (void)v; }
 #define LOG(...) do { } while (0)
 #define CHECK(c) do { if (!(c)) { \
     fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
@@ -493,6 +523,61 @@ static int test_entry_exception_cleanup(JNIEnv *env) {
     return 0;
 }
 
+static int test_entry_install_false_retained_rollback(JNIEnv *env) {
+    ANativeActivity act = {env, &activity_obj, NULL};
+    dm_app_lifecycle life = {DM_APP_STATE_OWNED_DIAGNOSTIC, NULL};
+    ANativeWindow window = {1, 1};
+    app_state *a = calloc(1, sizeof *a);
+    CHECK(a != NULL);
+    a->activity = &act; a->lifecycle = &life; a->window = &window;
+    a->resumed = a->focused = a->touch_allowed = 1;
+    a->timer_fd = a->frame_fd = -1;
+    life.surface = &window;
+    act.instance = a;
+    entry_install_result = 0;
+    entry_uninstall_result = 0;
+    CHECK(ime_entry_install(a) == 0);
+    CHECK(a->ime_entry_class == &entry_class && a->ime_entry_token != 0);
+    CHECK(!a->ime_entry_installed && entry_uninstall_calls == 1);
+    CHECK(native_ime_entry_request(env, NULL, (jlong)a->ime_entry_token) == JNI_FALSE);
+    entry_install_result = 1;
+    entry_uninstall_result = 1;
+    CHECK(ime_entry_install(a) == 1);
+    CHECK(a->ime_entry_installed && entry_uninstall_calls == 2);
+    ime_entry_uninstall(a);
+    CHECK(a->ime_entry_class == NULL && a->ime_entry_token == 0);
+    free(a);
+    return 0;
+}
+
+static int test_destroy_cleanup_retry(JNIEnv *env) {
+    ANativeActivity act = {env, &activity_obj, NULL};
+    dm_app_lifecycle life = {DM_APP_STATE_OWNED_DIAGNOSTIC, NULL};
+    ANativeWindow window = {1, 1};
+    app_state *a = calloc(1, sizeof *a);
+    CHECK(a != NULL);
+    a->activity = &act; a->lifecycle = &life; a->window = &window;
+    a->resumed = a->focused = a->touch_allowed = 1;
+    a->timer_fd = a->frame_fd = -1;
+    life.surface = &window;
+    act.instance = a;
+    CHECK(ime_entry_install(a) == 1);
+    entry_uninstall_result = 0;
+    destroy(&act);
+    CHECK(act.instance == a);
+    CHECK(a->ime_entry_class == &entry_class && a->ime_entry_token != 0);
+    CHECK(!a->ime_entry_installed && entry_uninstall_calls == 1);
+    CHECK(native_ime_entry_request(env, NULL, (jlong)a->ime_entry_token) == JNI_FALSE);
+    destroy(&act);
+    CHECK(act.instance == a);
+    CHECK(a->ime_entry_class == &entry_class && entry_uninstall_calls == 2);
+    entry_uninstall_result = 1;
+    destroy(&act);
+    CHECK(act.instance == NULL);
+    CHECK(entry_uninstall_calls == 3);
+    return 0;
+}
+
 int main(void) {
     JNIEnv env;
     reset_fake(&env); if (test_success_and_events(&env)) return 1;
@@ -502,6 +587,8 @@ int main(void) {
     reset_fake(&env); if (test_reentrant_terminal_during_show(&env)) return 1;
     reset_fake(&env); if (test_entry_owner_request(&env)) return 1;
     reset_fake(&env); if (test_entry_exception_cleanup(&env)) return 1;
+    reset_fake(&env); if (test_entry_install_false_retained_rollback(&env)) return 1;
+    reset_fake(&env); if (test_destroy_cleanup_retry(&env)) return 1;
     puts("PASS text JNI start/event/end + entry cleanup");
     return 0;
 }
@@ -517,7 +604,8 @@ def run(cc: str, source: str, work: Path, label: str) -> int:
     exe = work / label
     c.write_text(source)
     subprocess.run([cc, "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
-                    "-Wno-unused-parameter", "-o", str(exe), str(c)], check=True)
+                    "-Wno-unused-parameter", "-Wno-missing-field-initializers",
+                    "-o", str(exe), str(c)], check=True)
     return subprocess.run([str(exe)], check=False).returncode
 
 
