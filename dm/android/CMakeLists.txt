@@ -704,7 +704,7 @@ if(ANDROID)
     # Imported reference NVN→Vulkan backend. It compiles against this tree's
     # nvn_obj.h/nvn_dirty.h and is linked beside the existing diagnostic lane;
     # it does not replace native.c or register a second production loader.
-    add_library(dm_android_nvn_backend STATIC native/nvn_vulkan.c native/gpu_driver.c)
+    add_library(dm_android_nvn_backend STATIC native/nvn_vulkan.c native/gpu_driver.c ../gfx/nvn/nvn_dirty.c)
     target_include_directories(dm_android_nvn_backend PUBLIC
         native native/compat ../gfx/nvn ../gfx/nvn/include ../gfx/tex ../host)
     target_link_libraries(dm_android_nvn_backend PUBLIC dm_android_tex android log dl m vulkan)
