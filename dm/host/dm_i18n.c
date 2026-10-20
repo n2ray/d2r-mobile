@@ -20,6 +20,9 @@
 //   everything else.
 #include "dm_i18n.h"
 #include "dm_i18n_tab.h"
+#ifdef __ANDROID__
+#include "android_ui_text.h"
+#endif
 #include <TargetConditionals.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,6 +85,12 @@ int dm_lang_zh(void) { int l = dm_lang_index(); return l == 8 || l == 9; }   // 
 
 const char *dm_ui(const char *key) {
     for (unsigned i = 0; i < sizeof k_dm_i18n / sizeof *k_dm_i18n; i++) if (!strcmp(k_dm_i18n[i].k, key)) return dm_lang_zh() ? k_dm_i18n[i].zh : k_dm_i18n[i].en;
+#ifdef __ANDROID__
+    // Android-added keys live in the generated Android bilingual table; the
+    // upstream table above remains the first source and keeps its locale rule.
+    const char *android = dm_android_ui_text(key, dm_lang_zh());
+    if (android) return android;
+#endif
     return key;
 }
 
