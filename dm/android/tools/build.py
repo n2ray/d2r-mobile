@@ -190,7 +190,10 @@ def main():
     run([sys.executable, ROOT / "tools/make_probe.py", build / "probe", BIN])
     if not args.no_turnip:
         run([sys.executable, ROOT / "tools/build_gpu_driver.py", "--output", build / "gpu-driver"])
-        run([sys.executable, ROOT / "tools/build_gpu_fixtures.py", "--output", build / "gpu-fixtures"])
+        # GameActivity uses the real host; legacy diagnostic Activity alone
+        # needs the standalone GPU probe executables.
+        if not args.game_run:
+            run([sys.executable, ROOT / "tools/build_gpu_fixtures.py", "--output", build / "gpu-fixtures"])
     compiler = BIN / "aarch64-linux-android29-clang"
     common = [compiler, "-O1", "-g", "-Wall", "-Wextra", "-I", ROOT / "native", "-I", build, ROOT / "native/runtime.c", ROOT / "native/probe.c", entry]
     if not args.no_turnip:
