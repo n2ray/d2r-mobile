@@ -1,79 +1,75 @@
-# D2R Mobile — Android fork
+# D2R Mobile — Android
 
 中文：[README.zh-CN.md](README.zh-CN.md)
 
-**Android is not playable yet.** This fork targets smooth offline Diablo II: Resurrected play on **Xiaomi 15 Ultra / Snapdragon 8 Elite, Android ARM64**, with the complete game-specific touch system from [jhaizhou-ops/d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile) (called “r2d” in this project's goals). Sustained **60 fps at normal quality is a target awaiting measurement**, not an achieved result or a delivery promise.
+An experimental Android port of [jhaizhou-ops/d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile), bringing offline **Diablo II: Resurrected** and its game-specific touch interface to Android ARM64. The current test device is a **Xiaomi 15 Ultra / Snapdragon 8 Elite / Adreno 830**.
 
-The upstream project is by **jhaizhou** and is licensed under [MIT](LICENSE). Its Apple gameplay, 60 fps, power and loading-time results belong to upstream Apple builds. They do not establish Android compatibility or performance. The [upstream Apple introduction and instructions](https://github.com/jhaizhou-ops/d2r-mobile/blob/21cf97b91823111ead237858ea79929afacf71a5/README.md) remain available at the source baseline used by this fork; the [current upstream README](https://github.com/jhaizhou-ops/d2r-mobile#readme) may have changed since then.
+**The development build now runs the game on the target phone.** Startup, character selection, entering camp and normal save/exit have been tested. The user has also verified combat, skills, pickup, inventory dragging and stash dragging. Full device compatibility, complete iOS touch parity and sustained 60 fps remain work in progress.
 
-## Current evidence and gaps
+> **Use [`integration/android-reference`](https://github.com/n2ray/d2r-mobile/tree/integration/android-reference) for the current playable source.** The default `main` branch still contains the earlier implementation; the overall integration is under review in [PR #225](https://github.com/n2ray/d2r-mobile/pull/225). Updating this README does not merge that implementation into `main`.
 
-This summary describes the merged baseline reviewed for this documentation update (2026-10-18). Follow [the project checklist #1](https://github.com/n2ray/d2r-mobile/issues/1) and linked issues for later changes. A merged implementation slice does not complete its parent task; open PRs are pending review and acceptance.
+## Current status
 
-| Area | What exists | What remains unverified or incomplete |
+Updated **2026-10-21**, based on device observations through October 20. Follow [the project board #1](https://github.com/n2ray/d2r-mobile/issues/1) for current work and acceptance boundaries.
+
+| Area | Verified progress | Remaining work |
 |---|---|---|
-| Runtime and services | Offline module inspection/rewriting, owned runtime fixtures, bounded IPC and resource/toolchain foundations | Production synchronization/preemption, TLR/SVC36 contracts and strict admission remain open in [#3](https://github.com/n2ray/d2r-mobile/issues/3), [#4](https://github.com/n2ray/d2r-mobile/issues/4), [#5](https://github.com/n2ray/d2r-mobile/issues/5); full controlled SDK initialization and normal exit require [#10](https://github.com/n2ray/d2r-mobile/issues/10) |
-| Restricted SDK diagnostic | A separate restricted macOS diagnostic returned from `_init_libc0` and one `nnosInitialize` stage with cleanup | Production preparation still rejects the original SDK input. A private diagnostic quarantine is not production admission, complete SDK startup or Android game execution |
-| Graphics | Synthetic Vulkan compute/draw/readback checks; RGBA8 UNORM/SRGB resource slices; shader contract checks ([PR #47](https://github.com/n2ray/d2r-mobile/pull/47)) | Complete NVN → Vulkan resources, shader reflection/binding, drawing and continuous presentation: [#12](https://github.com/n2ray/d2r-mobile/issues/12), [#13](https://github.com/n2ray/d2r-mobile/issues/13), [#18](https://github.com/n2ray/d2r-mobile/issues/18). The shader build contract gate is opt-in (`DMSH_CONTRACT=1`), not proof of a complete Android shader path |
-| Touch | Upstream portable C gesture core reused with Android pointer-ID/timing adapter and owned tests in merged [PR #46](https://github.com/n2ray/d2r-mobile/pull/46) | Real NativeActivity event delivery, game-state/hit/HID bridges, HUD, IME and whole-device touch acceptance remain open; see below |
-| Device diagnostic | An earlier synthetic APK passed ARM64 gate, Vulkan pixel and window-post checks on the Xiaomi phone; details in [the diagnostic guide](dm/android/app/README.md) | Later runtime changes need new device evidence. These fixtures do not validate game scenes, full lifecycle, audio, saves or playable delivery |
+| Game startup and saves | Real game startup, character selection, camp and normal save/exit | Full game progression, failure recovery and lifecycle matrix ([#22](https://github.com/n2ray/d2r-mobile/issues/22)) |
+| Rendering | Actual NVN-to-Vulkan game rendering; user reports normal character-selection and camp images with Turnip | Other scenes, resource lifetime and graphics conformance ([#13](https://github.com/n2ray/d2r-mobile/issues/13), [#42](https://github.com/n2ray/d2r-mobile/issues/42)) |
+| Touch | Original D2R touch core connected; movement/release, attack, skills, pickup, inventory and stash dragging tested; MAP moved to the top-left with the original top-right map title still usable | UI/art finishing, complete shop-drag icon verification, remaining gestures, IME and physical-controller transitions ([#302](https://github.com/n2ray/d2r-mobile/issues/302), [#40](https://github.com/n2ray/d2r-mobile/issues/40)) |
+| Launcher and drivers | Imported-data status, FPS/power display toggle, driver selection, custom ZIP import/delete and incompatible-driver rejection tested | Broader device/driver compatibility and release packaging ([#24](https://github.com/n2ray/d2r-mobile/issues/24)) |
+| Performance | Reduced repeated buffer allocations, upload commands, range queries and inactive diagnostic work | CPU translation/command encoding, binding and copy costs; sustained frame times and energy measurement ([#23](https://github.com/n2ray/d2r-mobile/issues/23)) |
 
-Keep strict scanning, quarantine boundaries, W^X, ownership and failure rollback intact. Do not replace missing contracts or services with success stubs. Unknown gaps may lead to more tasks; there is no evidence-based completion percentage or completion date.
+**Turnip is the rendering baseline.** The system Qualcomm driver remains available as a fallback, but its earlier black patches and lighting defects were not resolved by the experimental UBO workaround. This project does not currently prioritize that driver-specific repair.
 
-## The complete touch target
+Performance varies by scene and over time. Reaching about 60 fps in some camp samples is not evidence of stable 60 fps in combat or a long session. Energy savings have not been established. Upstream iOS performance results describe the Apple build, not this Android port.
 
-The goal is the upstream D2R interaction system, including its game state and layout behavior. A generic virtual gamepad does not satisfy this goal. The [touch parity matrix](docs/android/touch-parity.md), delivered by [#31](https://github.com/n2ray/d2r-mobile/issues/31), freezes source behavior and dependencies; it is an inventory, not completed Android functionality. Its gap columns describe that frozen checkpoint; PR #46 supplies a later adapter slice.
+## Trying a development build
 
-| Work | Tracking |
-|---|---|
-| Pointer ownership, multi-touch timing, button pulses, cancellation and focus loss | [#32](https://github.com/n2ray/d2r-mobile/issues/32) |
-| Game/scene identity, panel state, UI hit testing and actual guest HID integration | [#33](https://github.com/n2ray/d2r-mobile/issues/33), parent [#19](https://github.com/n2ray/d2r-mobile/issues/19) |
-| Vulkan HUD, layout, density, safe areas and user-derived art | [#34](https://github.com/n2ray/d2r-mobile/issues/34) |
-| Movement, drag-to-aim, two skill groups/ZL timing, player and mercenary belts | [#35](https://github.com/n2ray/d2r-mobile/issues/35) |
-| Item tap/double-tap/long-press/drag/drop; shop, stash and cube operations | [#36](https://github.com/n2ray/d2r-mobile/issues/36) |
-| World interactions, menus, navigation and custom pages | [#37](https://github.com/n2ray/d2r-mobile/issues/37) |
-| System keyboard, Chinese/English IME and composition handling | [#38](https://github.com/n2ray/d2r-mobile/issues/38) |
-| Settings, persistent layout and touch/controller handoff | [#39](https://github.com/n2ray/d2r-mobile/issues/39) |
-| Complete Xiaomi 15 Ultra touch parity and touch-to-picture latency acceptance | [#40](https://github.com/n2ray/d2r-mobile/issues/40) |
+Use an engineering APK built from the integration branch. This is a device-tested development port, not a general compatibility or stable-release claim.
 
-## Start developing without game files
+1. Install the APK and open the launcher. To retain existing app data, use a compatible update with the same package name and signing key.
+2. Choose **Import data package** and select your locally prepared Android game-data ZIP. Wait for the installed/ready state.
+3. On the supported Qualcomm test phone, use **bundled Turnip**. A custom driver ZIP may be imported; incompatible drivers are rejected before game startup. Imported drivers can be deleted from the launcher. There is currently one custom-driver slot; a successful new import replaces it.
+4. Start with **Phone aspect / Auto**. This keeps the game at the phone's aspect ratio without requiring native-display rendering resolution. Compare quality and frame time before increasing resolution.
+5. Start the game. When finished, use the game's save/exit and the application's normal exit flow.
 
-Run from the repository root on an ARM64 development host. See [the Android developer guide](dm/android/README.md) for dependencies, offline dependency preparation, output overrides and historical evidence. Set `DM_ROOT` explicitly to an external-disk workspace (T2 in the maintainers' setup), especially in a worktree; the default is computed relative to the checkout and may point somewhere else.
+**What does importing the ZIP do?** The launcher extracts and validates its contents into the app's own data directories: resources use app-specific storage, while game modules and saves use internal app storage. The ZIP is an import source; the game does not read it on every launch. Once a successful import and launch are confirmed, the copy in Downloads can be removed. Keep a separate backup if you may need to reinstall. Clearing app data or uninstalling can remove imported data and saves; export saves first. Game data is not added to the already installed APK.
+
+Only a prepared Android package is accepted by this import flow; an arbitrary Switch archive is not a ready-to-import Android package. Use your own legally owned Switch **1.0.34.0 with Reign of the Warlock** (repository data version **3.3.94012**). See [game-file preparation](docs/GAME_FILES.md) for source-file/version requirements; its Apple deployment steps differ from the Android launcher. No game files, keys or saves are supplied here.
+
+## Known limitations and priorities
+
+- Holding movement across a camp/area transition can stop movement until the finger is lifted and pressed again ([#303](https://github.com/n2ray/d2r-mobile/issues/303)).
+- The complete iOS touch presentation is still being adapted. Remaining map-goal/rift HUD art and haptic integration, shop icon appearance and full interaction/device coverage stay open; working combat and dragging do not close all touch tasks.
+- Sustained performance is the current priority: profile the CPU translation path and improve measured hotspots while preserving GPU synchronization, resource ownership and validation. A working ADPF API experiment did not demonstrate a repeatable FPS improvement and was not adopted.
+- Background/resume, keyboard, controllers, audio, save recovery and a complete playthrough require broader acceptance. Historical diagnostic or contract tasks archived during cleanup are not claimed as proven by the real-game first run.
+
+## Development
 
 ```sh
-# Replace this example with your external-disk workspace.
+git clone --branch integration/android-reference https://github.com/n2ray/d2r-mobile.git
+cd d2r-mobile
+
+# Game-free host tests and Android ARM64 cross-compilation.
 export DM_ROOT=/path/to/external-disk/d2r-work
-
-# Owned host fixtures; no game files. Disable GPU dependencies for this CPU entry.
 ./dm/android/test.sh -DDM_ANDROID_VULKAN=OFF
-
-# Cross-compile Android ARM64 tools; requires an installed NDK, no phone execution.
 ./dm/android/build.sh -DDM_ANDROID_VULKAN=OFF
+
+# Inspect the separate playable-APK build entry and its options.
+python3 dm/android/tools/build.py --help
 ```
 
-CMake 3.22+, a C compiler and Capstone 5 are needed for the host entry; native execution cases require ARM64. Install NDK r28+ (r29 is the default lookup) for cross-compilation. The first configuration fetches pinned LZ4/Mbed TLS dependencies unless prepared locally; “offline” describes game-free local development, not an automatic air-gapped bootstrap.
+The game-free tools use CMake 3.22+, a C compiler and Capstone 5; native ARM64 cases need an ARM64 host. Android cross-compilation requires the NDK (r29 is used in current builds). First configuration may download pinned dependencies. See the [Android developer notes](dm/android/README.md) for tool setup and historical fixtures.
 
-Building the [synthetic diagnostic APK](dm/android/app/README.md) is a separate step:
+The playable-APK entry is [`dm/android/tools/build.py`](https://github.com/n2ray/d2r-mobile/blob/integration/android-reference/dm/android/tools/build.py) with `--game-run`. It needs the reference toolchain, SDK/build tools, JDK, shader tooling and locally prepared resources; its `--turnip` and `--touch-art` inputs must be supplied as appropriate. A generic APK can import game modules on the phone. Do not publish builds embedding game code or derived game artwork. `dm/android/app/build.sh` builds the older synthetic diagnostic APK; `setup.sh` is the upstream Apple preparation flow.
 
-```sh
-# Requires GPU tooling plus Android SDK platform/build-tools 35, JDK/keytool and zip.
-bash dm/android/app/build.sh
-```
+Start contributions from [#1](https://github.com/n2ray/d2r-mobile/issues/1), agree on a bounded issue and submit a topic PR to `integration/android-reference`. Report the exact source commit, tests and actual device conditions. Keep unsupported paths explicit, preserve scanning/W^X/ownership/failure checks, and separate implementation from device acceptance. Keep game content, credentials, saves and raw device logs out of GitHub. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-This builds a debug-signed engineering APK with owned fixtures. It does not install or launch it, and it does not build a playable game. `setup.sh` prepares Apple artifacts and is not the Android entry point.
+## Credits and license
 
-## Game files, acceptance and contribution
+Original project: **jhaizhou** and the [upstream contributors](https://github.com/jhaizhou-ops/d2r-mobile/graphs/contributors). This Android fork also adapts MIT-licensed work from [sydeEvans/d2r-android](https://github.com/sydeEvans/d2r-android) and [dodola/d2r-mobile](https://github.com/dodola/d2r-mobile); individual ports retain source attribution and pinned references in their PRs. Turnip is part of [Mesa](https://www.mesa3d.org/); driver distributions retain their own notices.
 
-Use your own legally owned Switch release **1.0.34.0 with Reign of the Warlock** (repository version **3.3.94012**). [Game-file preparation](docs/GAME_FILES.md) and [Android storage/checking instructions](dm/android/README.md#storage-and-game-files) explain the inputs. Already-exported ExeFS/RomFS need no keys. No game content is supplied by this repository.
+Upstream [architecture](dm/README.md), [graphics](dm/gfx/README.md), [iOS](dm/ios/README.md) and [verification](dm/verify/README.md) guides remain useful platform-specific references. See the [dependency/license inventory](docs/DEPENDENCIES.md), [derived interface information](docs/DERIVED.md) and [MIT license](LICENSE), copyright (c) 2026 jhaizhou. Third-party notices remain with their code.
 
-Before a playable delivery, the project still needs safe startup/shutdown, full rendering, actual HID/touch, audio, durable saves, resource import and lifecycle integration, then real game/device acceptance. [#23](https://github.com/n2ray/d2r-mobile/issues/23) defines sustained-performance measurement: reproducible town/combat/traversal scenes, cold and at least 30-minute warm runs, frame-time distributions, thermal/power conditions and touch-to-picture latency. Numerical acceptance thresholds follow a measured device baseline. [#22](https://github.com/n2ray/d2r-mobile/issues/22) tracks full game/lifecycle acceptance; [#24](https://github.com/n2ray/d2r-mobile/issues/24) tracks installable delivery and known limitations. An installable diagnostic is not that delivery.
-
-Contributors should start from [#1](https://github.com/n2ray/d2r-mobile/issues/1), claim an issue with a bounded scope, work on a topic branch, and submit reproducible evidence for independent review. Distinguish design, code, owned-fixture, SDK and device/game acceptance. Keep large files, builds and caches in the external workspace. Do not publish games, keys, saves, credentials, private paths/IPs or raw local logs; share only reviewed, sanitized diagnostics. General upstream guidance is in [CONTRIBUTING.md](CONTRIBUTING.md); its Apple commands are not Android acceptance commands.
-
-## Source, credits and license
-
-This fork retains upstream Apple code and documentation for reference and reuse: [architecture](dm/README.md), [graphics](dm/gfx/README.md), [iOS shell](dm/ios/README.md) and [verification](dm/verify/README.md). Those guides describe their respective platforms and do not certify Android support.
-
-Credit to **jhaizhou** and the [upstream contributors](https://github.com/jhaizhou-ops/d2r-mobile/graphs/contributors). The [upstream acknowledgements](https://github.com/jhaizhou-ops/d2r-mobile/blob/21cf97b91823111ead237858ea79929afacf71a5/README.md#acknowledgements) and [dependency/license inventory](docs/DEPENDENCIES.md) credit Ryujinx, deko3d, nvn.h, libdeflate, bcdec, FLIP and other tools and community work. See also [derived interface information](docs/DERIVED.md). The repository remains [MIT licensed, copyright (c) 2026 jhaizhou](LICENSE); bundled third-party licenses remain in their directories.
-
-Diablo and Blizzard Entertainment are Blizzard Entertainment trademarks; Nintendo Switch is a Nintendo trademark. This is an independent, non-commercial project, unaffiliated with and not endorsed or sponsored by those companies.
+Diablo and Blizzard Entertainment are Blizzard Entertainment trademarks; Nintendo Switch is a Nintendo trademark. This independent, non-commercial project is unaffiliated with and not endorsed or sponsored by those companies.
