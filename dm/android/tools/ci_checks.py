@@ -127,6 +127,8 @@ def main():
         # unable to start.
         for source, test, label in (("SaveArchive.java", "SaveArchiveTest", "存档包"),
                                     ("PackageArchive.java", "PackageArchiveTest", "数据包导入"),
+                                    ("LauncherState.java", "LauncherStateTest", "启动界面状态"),
+                                    ("LaunchSettings.java", "LaunchSettingsTest", "启动设置持久化"),
                                     ("TouchVisibility.java", "TouchVisibilityTest", "触控显隐"),
                                     ("TouchOverlayGeometry.java", "TouchOverlayGeometryTest", "触控叠层坐标"),
                                     ("TouchGlyph.java", "TouchGlyphTest", "技能图标图集"),

@@ -392,6 +392,11 @@ public final class D2RActivity extends NativeActivity {
         debugView.setClickable(false);
         debugView.setFocusable(false);
         debugView.setImportantForAccessibility(android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        // 启动时就按配置决定可见性；native 随后的 setDebugOverlay 只是同步同一状态。这样即使首个 JNI 回调
+        // 早于弹窗显示，也不会留下默认 VISIBLE。
+        // The startup visibility already follows the config; the later native setDebugOverlay only synchronizes the
+        // same state, so an early JNI callback cannot leave the default VISIBLE behind.
+        debugView.setVisibility(overlayEnabled ? android.view.View.VISIBLE : android.view.View.GONE);
         int padding = (int)(8 * getResources().getDisplayMetrics().density);
         debugView.setPadding(padding, padding, padding, padding);
         // Vulkan 拥有主窗口缓冲；独立应用内窗口才能稳定叠加系统绘制的文字。
