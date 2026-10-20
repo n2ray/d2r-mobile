@@ -13,6 +13,10 @@ static void pickup_waits_for_game_receipt(void) {
     dm_tc_pointer_item(&t->state, 1);
     dm_tc_move_at(&t->state, 0, 220, 170, 1.01);
     assert(t->state.pointer_pulse_active == 1);
+    // Actual input callback publishes, then attempts its short-pulse shortcut.
+    // A pointer pickup must survive that callback and wait for owner receipts.
+    assert(!dm_live_touch_end_released_pulse(t));
+    assert(t->state.pulse_button == DM_BTN_A && !t->state.pointer_pickup_done);
     dm_live_touch_scheduler_step(t, 1010000000, 10, 1);
     dm_live_touch_scheduler_step(t, 1360000000, 10, 1);
     if (t->state.pulse_button != DM_BTN_A) {

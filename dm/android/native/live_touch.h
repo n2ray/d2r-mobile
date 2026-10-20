@@ -203,6 +203,7 @@ int dm_live_touch_scheduler_step(dm_live_touch *touch, int64_t time_ns,
 // End a short zero-hold core pulse after it has been published once. The host
 // press-edge latch is what makes the short A tap visible to the game; this is
 // not an acknowledgement that the game consumed an action.
+// Pointer pickup/drop pulses are excluded: only the receipt scheduler ends them.
 int dm_live_touch_end_released_pulse(dm_live_touch *touch);
 
 #ifdef __cplusplus

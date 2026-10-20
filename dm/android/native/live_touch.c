@@ -807,6 +807,9 @@ void dm_live_touch_item_snapshot_get(const dm_live_touch *touch,
 
 int dm_live_touch_end_released_pulse(dm_live_touch *touch) {
     if (!touch || !touch->state.pulse_button || touch->state.pulse_hold_s > 0) return 0;
+    // The input callback's publish-once shortcut must not lift a pickup or
+    // release a drop before the owner scheduler observes game input receipts.
+    if (touch->state.pointer_pulse_active || touch->state.pointer_pulse_pending) return 0;
     int ended = dm_tc_pulse_end(&touch->state, touch->state.pulse_epoch);
     touch->pulse_started_ns = 0;
     return ended;
