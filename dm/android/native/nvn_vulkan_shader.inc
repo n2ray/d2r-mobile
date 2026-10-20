@@ -306,6 +306,8 @@ static VkDescriptorBufferInfo uniform_buffer(shader_entry *s,const shader_bindin
         // 未绑定 uniform 的完整范围同为零，可共享一个不可变页，不占每 draw 的 arena 空间。
         // Unbound uniforms have the same all-zero range, so share an immutable page without per-draw arena space.
         if(!n){if(!zero.buffer){zero=buffer_create(65536);memset(zero.mapped,0,65536);immutable_buffer_bytes+=zero.capacity;}return (VkDescriptorBufferInfo){zero.buffer,0,65536};}
+        VkDescriptorBufferInfo captured;
+        if(ghost_buffer_override((uintptr_t)u->addr,n,&captured))return uniform_dynamic_split(b,captured,dynamic_offset);
         return uniform_dynamic_split(b,uniform_read_cached(u->addr,n),dynamic_offset);}
     die("Unsupported Vulkan constant slot %u",b->slot);
 }

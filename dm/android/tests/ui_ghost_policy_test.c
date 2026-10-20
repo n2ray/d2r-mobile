@@ -25,7 +25,8 @@ typedef struct { uint64_t address, size; } NVNbufferRange;
 typedef struct { int fmt, stream, offset; } va_st;
 typedef struct { int stride, divisor; } vs_st;
 typedef struct { int kind, slot, count, flags; uint32_t type; uint32_t handle; } shader_binding;
-typedef struct { int stage; unsigned count; shader_binding *bindings; uint32_t attributes[32]; } shader_entry;
+typedef struct { int storage_slot, uniform_pointer; } shader_binding_plan;
+typedef struct { int stage; unsigned count; shader_binding *bindings; shader_binding_plan *binding_plan; uint32_t attributes[32]; } shader_entry;
 typedef struct { const shader_entry *program; unsigned nstage; } prog_t;
 typedef struct { unsigned n; int *color[8]; int depth; } p_set_rt;
 typedef struct { uint64_t addr, size; } p_bind_buf;
@@ -41,6 +42,7 @@ typedef struct { forward_result result; void *slice; } forward_slice;
 
 static int fake_gpu_producer;
 static int fake_draw_calls;
+static uint32_t fake_replayed_texture;
 static int fake_post_count;
 static post_op fake_posts[8];
 static int fake_live_buffers;
@@ -96,13 +98,13 @@ static forward_result forward_find(uintptr_t a, uint64_t s, uint64_t al, void *m
     out->result = FORWARD_NONE; return FORWARD_NONE;
 }
 static shader_entry *program_shader(const prog_t *p, unsigned i) { (void)p; return i ? &fake_fs : &fake_vs; }
-static uint32_t shader_handle(const shader_binding *b, unsigned stage, unsigned element) { (void)stage; (void)element; return b->handle; }
+static uint32_t shader_handle(const shader_binding *b, unsigned stage, unsigned element) { (void)element; return state.textures[stage][b->slot]; }
 static texture_descriptor descriptor_texture(int id) { (void)id; return texture_descriptors[0]; }
 static image_entry *image_find(uint64_t serial) { return serial == texture_descriptors[0].texture.serial ? &fake_image : NULL; }
 static int graphics_image_is_attachment(const image_entry *i) { (void)i; return 0; }
 static VkSampler sampler_get_for_type(int id, uint32_t type) { (void)id; (void)type; return fake_sampler; }
 static int graphics_shader_writes(const shader_entry *s) { (void)s; return 0; }
-static void draw_graphics(const p_draw *d, const p_draw_idx *i) { (void)d; (void)i; fake_draw_calls++; state.viewports.v[0][0] = 99; state.scissor.x = 99; }
+static void draw_graphics(const p_draw *d, const p_draw_idx *i) { (void)d; (void)i; fake_replayed_texture = state.textures[1][0]; fake_draw_calls++; state.viewports.v[0][0] = 99; state.scissor.x = 99; }
 
 #include "../native/nvn_vulkan_ui_ghost.inc"
 
@@ -154,6 +156,36 @@ int main(void) {
     CHECK(ghost_found_valid == 1);
     float r[4];
     CHECK(mtl_ui_ghost_rect(r) == 1);
+
+    // The first matching layer is the repeated slot tile, not the item icon.
+    // Count even eligible quads outside the dragged slot before selecting.
+    dm_vk_ui_ghost_request(1, .25f, .25f, grid, .75f, .75f, 0, NULL, 0);
+    state.textures[1][0] = 1;
+    ghost_note(&draw, NULL);
+    state.viewports.v[0][0] = 640;
+    for (unsigned i = 0; i < 8; i++) ghost_note(&draw, NULL);
+    state.viewports.v[0][0] = 0;
+    state.textures[1][0] = 2;
+    ghost_note(&draw, NULL);
+    CHECK(ghost.count == 2);
+    fake_draw_calls = 0;
+    ghost_flush();
+    CHECK(fake_draw_calls == 1 && fake_replayed_texture == 2);
+    fake_complete_posts();
+    CHECK(fake_live_buffers == 0);
+
+    // Guest UBO slots are reflected as slot+3; storage slots come from the
+    // backend binding plan, not the reflection ordinal.
+    ghost_candidate_t captured = {0};
+    shader_binding bindings[] = {{.kind = 1, .slot = 4, .count = 1},
+                                 {.kind = 2, .slot = 12, .count = 1}};
+    shader_binding_plan plans[] = {{0}, {.storage_slot = 5}};
+    shader_entry shader = {.stage = 0, .count = 2, .bindings = bindings, .binding_plan = plans};
+    state.ubo[0][1] = (p_bind_buf){0x3000, 64};
+    state.ssbo[0][5] = (p_bind_buf){0x4000, 64};
+    CHECK(ghost_capture_shader(&captured, &shader));
+    CHECK(captured.nb == 2 && captured.buffers[0].addr == 0x3000 && captured.buffers[1].addr == 0x4000);
+    for (unsigned i = 0; i < captured.nb; i++) buffer_destroy(&captured.buffers[i].buffer);
 
     // Physical cancellation must invalidate before any later capture/flush.
     mtl_ui_ghost(0, 0, 0, NULL, 0, 0);

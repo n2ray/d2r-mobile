@@ -28,6 +28,7 @@ typedef struct {
     __typeof__(state) state;
     p_draw draw;
     float rect[4], area;
+    uint32_t texture;
     ghost_buffer_t buffers[34];
     unsigned nb;
     ghost_texture_t textures[16];
@@ -41,6 +42,8 @@ typedef struct {
     ghost_candidate_t *candidate[4];
     unsigned count;
     float area;
+    uint32_t texture[128], uses[128];
+    unsigned nt;
 } ghost_state_t;
 
 static pthread_mutex_t ghost_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -107,6 +110,7 @@ static void ghost_clear(void) {
     }
     ghost.count = 0;
     ghost.area = 0;
+    ghost.nt = 0;
 }
 
 static int ghost_gpu_producer(uintptr_t addr, uint64_t size) {
@@ -140,11 +144,16 @@ static int ghost_add_buffer(ghost_candidate_t *c, uintptr_t addr, uint64_t size)
 static int ghost_capture_shader(ghost_candidate_t *c, shader_entry *s) {
     for (unsigned i = 0; i < s->count; i++) {
         const shader_binding *b = &s->bindings[i];
-        if (b->count != 1 || b->slot < 0) return 0;
-        if (b->kind == 2 || b->kind == 9) {
-            if (b->flags || b->slot >= 16) return 0;
-            const p_bind_buf *u = b->kind == 2 ? &state.ubo[s->stage][b->slot]
-                                                : &state.ssbo[s->stage][b->slot];
+        if (b->count != 1) return 0;
+        if (b->kind == 1 && b->slot >= 3) {
+            if (b->slot >= 19) return 0;
+            const p_bind_buf *u = &state.ubo[s->stage][b->slot - 3];
+            if (!ghost_add_buffer(c, (uintptr_t)u->addr, u->size)) return 0;
+        } else if (b->kind == 2) {
+            const shader_binding_plan *plan = &s->binding_plan[i];
+            if (b->flags || plan->storage_slot < 0 || plan->storage_slot >= 16) return 0;
+            const p_bind_buf *u = plan->uniform_pointer ? &state.ubo[s->stage][plan->storage_slot]
+                                                       : &state.ssbo[s->stage][plan->storage_slot];
             if (!ghost_add_buffer(c, (uintptr_t)u->addr, u->size)) return 0;
         } else if (b->kind == 3 || b->kind == 4) {
             if (b->slot >= 128 || c->nt == 16) return 0;
@@ -207,6 +216,21 @@ static void ghost_note(const p_draw *draw, const p_draw_idx *indexed) {
     if (ghost.pass != render_passes || ghost.epoch != presents || ghost.serial != q.serial) {
         ghost_clear(); ghost.pass = render_passes; ghost.epoch = presents; ghost.serial = q.serial;
     }
+    uint32_t texture = 0;
+    int sampled = 0;
+    for (unsigned i = 0; i < fs->count; i++) {
+        const shader_binding *b = &fs->bindings[i];
+        if ((b->kind == 3 || b->kind == 4) && b->count == 1) {
+            texture = shader_handle(b, fs->stage, 0); sampled = 1; break;
+        }
+    }
+    if (!sampled) return;
+    unsigned k = 0;
+    while (k < ghost.nt && ghost.texture[k] != texture) k++;
+    if (k == ghost.nt && ghost.nt < 128) {
+        ghost.texture[k] = texture; ghost.uses[k] = 0; ghost.nt++;
+    }
+    if (k < ghost.nt && ghost.uses[k] != UINT32_MAX) ghost.uses[k]++;
     uint8_t vertices[80];
     float matrix[16], rect[4];
     if (state.ubo[0][0].size < 64 || snapshot_read((uintptr_t)state.ubo[0][0].addr, matrix, 64) ||
@@ -221,12 +245,22 @@ static void ghost_note(const p_draw *draw, const p_draw_idx *indexed) {
     if (ghost.count && area > ghost.area * 1.03f) return;
     ghost_candidate_t *c = calloc(1, sizeof *c);
     if (!c) return;
-    c->state = state; c->draw = *draw; c->area = area; memcpy(c->rect, rect, sizeof rect);
+    c->state = state; c->draw = *draw; c->area = area; c->texture = texture; memcpy(c->rect, rect, sizeof rect);
     if (!ghost_add_buffer(c, (uintptr_t)state.vertices[0].address, 80) ||
         !ghost_add_buffer(c, (uintptr_t)state.ubo[0][0].addr, state.ubo[0][0].size) ||
         !ghost_capture_shader(c, vs) || !ghost_capture_shader(c, fs)) {
         for (unsigned j = 0; j < c->nb; j++) buffer_destroy(&c->buffers[j].buffer);
         free(c); return;
+    }
+    // A smaller matching quad supersedes larger slot backgrounds. Keep the
+    // per-pass texture counts, which distinguish repeated tiles from icons.
+    if (ghost.count && area < ghost.area * .97f) {
+        for (unsigned i = 0; i < ghost.count; i++) {
+            ghost_candidate_t *old = ghost.candidate[i];
+            for (unsigned j = 0; j < old->nb; j++) buffer_destroy(&old->buffers[j].buffer);
+            free(old);
+        }
+        ghost.count = 0;
     }
     if (ghost.count == 4) {
         ghost_candidate_t *old = ghost.candidate[0];
@@ -253,8 +287,15 @@ static void ghost_flush(void) {
     if (!ghost_request_read(&q) || q.serial != ghost.serial ||
         ghost.pass != render_passes || ghost.epoch != presents) { ghost_clear(); return; }
     int best = -1;
-    for (unsigned i = 0; i < ghost.count; i++)
-        if (ghost_textures_valid(ghost.candidate[i])) { best = i; break; }
+    unsigned fewest = UINT32_MAX;
+    for (unsigned i = 0; i < ghost.count; i++) {
+        unsigned uses = UINT32_MAX;
+        for (unsigned k = 0; k < ghost.nt; k++)
+            if (ghost.texture[k] == ghost.candidate[i]->texture) uses = ghost.uses[k];
+        if (uses < fewest && ghost_textures_valid(ghost.candidate[i])) {
+            best = i; fewest = uses;
+        }
+    }
     if (best < 0) { ghost_clear(); return; }
     ghost_candidate_t *c = ghost.candidate[best];
     __typeof__(state) saved = state;
