@@ -20,10 +20,11 @@ typedef enum {
 // bounded caller switch did not opt out.
 int dm_nvn_present_filter_extension_enabled(int advertised, int linear_override);
 
-// Choose CUBIC only for an enabled extension whose actual source format has
-// the cubic sampled-filter feature. Anything else stays LINEAR.
+// Choose CUBIC only for an enabled extension whose actual 2D source format has
+// the cubic sampled-filter feature. Vulkan blit filtering rejects 1D/3D
+// sources (VUID-VkImageBlit-filter-00237), so anything else stays LINEAR.
 dm_nvn_present_filter dm_nvn_present_filter_select(
-    int extension_enabled, VkFormatFeatureFlags source_features,
+    int extension_enabled, int source_is_2d, VkFormatFeatureFlags source_features,
     int linear_override);
 
 #endif

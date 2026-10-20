@@ -321,6 +321,14 @@ static int present_cubic_advertised(void) {
     return supported;
 }
 
+static const char *present_filter_property(void) {
+#ifdef __ANDROID__
+    static char value[PROP_VALUE_MAX];
+    if(__system_property_get("debug.d2r.present_filter",value)>0)return value;
+#endif
+    return NULL;
+}
+
 static VkFormatFeatureFlags present_source_features(VkFormat format) {
     if(!present_cubic_extension||format==VK_FORMAT_UNDEFINED)return 0;
     for(unsigned i=0;i<present_format_count;i++)
@@ -337,7 +345,16 @@ static VkFormatFeatureFlags present_source_features(VkFormat format) {
 static void initialize(void) {
     present_format_count=0; present_filter_logged=0;
     const char *present_filter_env=getenv("DM_PRESENT_FILTER");
-    present_linear_override=present_filter_env&&!strcmp(present_filter_env,"linear");
+    const char *present_filter_prop=present_filter_property();
+    const char *present_override_source="default",*present_override_value="";
+    present_linear_override=0;
+    // Explicit env wins, then the app debug property; only exact "linear" opts out.
+    // 显式 env 优先，其次是 app debug property；只有精确的 "linear" 才关闭 cubic。
+    if(present_filter_env&&!strcmp(present_filter_env,"linear")){
+        present_linear_override=1;present_override_source="env";present_override_value=present_filter_env;
+    }else if(present_filter_prop&&!strcmp(present_filter_prop,"linear")){
+        present_linear_override=1;present_override_source="property";present_override_value=present_filter_prop;
+    }
     // 与原 NVN 后端使用相同默认状态；显式指令随后覆盖，不能改写合法深度范围。
     // Match the original NVN defaults; explicit commands override them without rewriting legal depth ranges.
     state.mask.mask=UINT32_MAX;state.depth_range=(p_depth_range){0,1};
@@ -432,7 +449,7 @@ driver_retry:;
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi, .pEnabledFeatures = &enable}; gpu_depth_bias_clamp = enable.depthBiasClamp == VK_TRUE;
     int cubic_advertised=present_cubic_advertised();
     present_cubic_extension=dm_nvn_present_filter_extension_enabled(cubic_advertised,present_linear_override);
-    LOG("[vulkan-present-filter] extension=%s enabled=%d linear_override=%d",cubic_advertised?VK_EXT_FILTER_CUBIC_EXTENSION_NAME:"unavailable",present_cubic_extension,present_linear_override);
+    LOG("[vulkan-present-filter] extension=%s enabled=%d linear_override=%d source=%s value=%s property=debug.d2r.present_filter",cubic_advertised?VK_EXT_FILTER_CUBIC_EXTENSION_NAME:"unavailable",present_cubic_extension,present_linear_override,present_override_source,present_override_value);
     const char *device_extensions[2]; unsigned device_extension_count=0;
     if(surface)device_extensions[device_extension_count++]=VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     if(present_cubic_extension)device_extensions[device_extension_count++]=VK_EXT_FILTER_CUBIC_EXTENSION_NAME;
@@ -1009,10 +1026,11 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         int dw = sw * scale, dh = sh * scale, x = (screen_extent.width - dw) / 2, y = (screen_extent.height - dh) / 2;
         VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, .srcOffsets = {{sx,sy,0},{sx+sw,sy+sh,1}}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, .dstOffsets = {{x,y,0},{x+dw,y+dh,1}}};
         VkFormatFeatureFlags source_features=present_source_features(e->format);
-        dm_nvn_present_filter selected=dm_nvn_present_filter_select(present_cubic_extension,source_features,present_linear_override);
+        int source_is_2d=e->image_type==VK_IMAGE_TYPE_2D;
+        dm_nvn_present_filter selected=dm_nvn_present_filter_select(present_cubic_extension,source_is_2d,source_features,present_linear_override);
         VkFilter present_filter=selected==DM_NVN_PRESENT_FILTER_CUBIC?VK_FILTER_CUBIC_EXT:VK_FILTER_LINEAR;
-        if(!present_filter_logged){present_filter_logged=1;LOG("[vulkan-present-filter] format=%#x cubic_feature=%d selected=%s",(unsigned)e->format,
-            (source_features&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT)!=0,selected==DM_NVN_PRESENT_FILTER_CUBIC?"cubic":"linear");}
+        if(!present_filter_logged){present_filter_logged=1;LOG("[vulkan-present-filter] format=%#x type=%#x 2d=%d cubic_feature=%d selected=%s",(unsigned)e->format,
+            (unsigned)e->image_type,source_is_2d,(source_features&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT)!=0,selected==DM_NVN_PRESENT_FILTER_CUBIC?"cubic":"linear");}
         vkCmdBlitImage(command, e->image, VK_IMAGE_LAYOUT_GENERAL, screen_images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, present_filter);
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask = 0; barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);

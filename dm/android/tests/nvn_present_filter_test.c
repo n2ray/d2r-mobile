@@ -17,22 +17,26 @@ int main(void) {
 
     // Absent extension: never enable it; LINEAR even if the format claims cubic.
     CHECK(!dm_nvn_present_filter_extension_enabled(0, 0));
-    CHECK(dm_nvn_present_filter_select(0, cubic, 0) == DM_NVN_PRESENT_FILTER_LINEAR);
+    CHECK(dm_nvn_present_filter_select(0, 1, cubic, 0) == DM_NVN_PRESENT_FILTER_LINEAR);
 
     // Advertised extension but the actual source format lacks cubic support.
     CHECK(dm_nvn_present_filter_extension_enabled(1, 0));
-    CHECK(dm_nvn_present_filter_select(1, linear, 0) == DM_NVN_PRESENT_FILTER_LINEAR);
-    CHECK(dm_nvn_present_filter_select(1, 0, 0) == DM_NVN_PRESENT_FILTER_LINEAR);
+    CHECK(dm_nvn_present_filter_select(1, 1, linear, 0) == DM_NVN_PRESENT_FILTER_LINEAR);
+    CHECK(dm_nvn_present_filter_select(1, 1, 0, 0) == DM_NVN_PRESENT_FILTER_LINEAR);
 
-    // Supported extension and source format: the caller selects cubic.
-    CHECK(dm_nvn_present_filter_select(1, cubic | linear, 0) == DM_NVN_PRESENT_FILTER_CUBIC);
+    // Supported extension and 2D source format: the caller selects cubic.
+    CHECK(dm_nvn_present_filter_select(1, 1, cubic | linear, 0) == DM_NVN_PRESENT_FILTER_CUBIC);
+
+    // Production allocator also supports 1D/3D; cubic blit is invalid there.
+    CHECK(dm_nvn_present_filter_select(1, 0, cubic | linear, 0) == DM_NVN_PRESENT_FILTER_LINEAR);
 
     // Bounded root A/B: linear opt-out disables the extension and forces LINEAR.
     CHECK(!dm_nvn_present_filter_extension_enabled(1, 1));
-    CHECK(dm_nvn_present_filter_select(1, cubic, 1) == DM_NVN_PRESENT_FILTER_LINEAR);
+    CHECK(dm_nvn_present_filter_select(1, 1, cubic, 1) == DM_NVN_PRESENT_FILTER_LINEAR);
 
     // A stale/unknown caller flag never upgrades a missing capability.
-    CHECK(dm_nvn_present_filter_select(-1, cubic, 0) == DM_NVN_PRESENT_FILTER_LINEAR);
+    CHECK(dm_nvn_present_filter_select(-1, 1, cubic, 0) == DM_NVN_PRESENT_FILTER_LINEAR);
+    CHECK(dm_nvn_present_filter_select(1, -1, cubic, 0) == DM_NVN_PRESENT_FILTER_LINEAR);
     CHECK(dm_nvn_present_filter_extension_enabled(-1, 0) == 0);
 
     printf("nvn_present_filter: %d checks, %d failures\n", checks, failures);
