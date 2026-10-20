@@ -32,6 +32,9 @@ typedef struct uniform_read_counters {
 } uniform_read_counters;
 static uniform_read_counters uniform_read_stats;
 static descriptor_version *descriptor_versions[2048];
+static descriptor_version *descriptor_front[2048];
+static int descriptor_front_enabled=1;
+static uint64_t descriptor_front_hits,descriptor_payload_hashes;
 static descriptor_version_chunk *descriptor_version_chunks,*descriptor_version_current;
 static uint64_t *descriptor_payload;
 static size_t descriptor_payload_words,descriptor_payload_capacity;
@@ -39,7 +42,7 @@ static uint64_t descriptor_payload_hash;
 static uint64_t uniform_version_hits,uniform_version_misses,uniform_version_read_bytes,uniform_version_compare_bytes,uniform_version_copy_bytes;
 static uint64_t descriptor_version_hits,descriptor_version_misses;
 static void binding_cache_reset(void) {
-    memset(uniform_versions,0,sizeof uniform_versions);memset(descriptor_versions,0,sizeof descriptor_versions);
+    memset(uniform_versions,0,sizeof uniform_versions);memset(descriptor_versions,0,sizeof descriptor_versions);memset(descriptor_front,0,sizeof descriptor_front);
     for(uniform_version_chunk *c=uniform_version_chunks;c;c=c->next)c->used=0;uniform_version_current=uniform_version_chunks;
     for(descriptor_version_chunk *c=descriptor_version_chunks;c;c=c->next)c->used=0;descriptor_version_current=descriptor_version_chunks;
 }
@@ -97,10 +100,13 @@ static void descriptor_payload_build(const VkWriteDescriptorSet *writes,unsigned
             else {const VkDescriptorImageInfo *image=&w->pImageInfo[j];descriptor_payload[cursor++]=(uintptr_t)image->sampler;descriptor_payload[cursor++]=(uintptr_t)image->imageView;descriptor_payload[cursor++]=image->imageLayout;}
         }
     }
-    descriptor_payload_words=cursor;descriptor_payload_hash=14695981039346656037ull;
+    descriptor_payload_words=cursor;
+}
+static void descriptor_payload_hash_build(void) {
+    descriptor_payload_hash=14695981039346656037ull;descriptor_payload_hashes++;
     // 显式字段编码，不把 Vulkan 结构体未定义的 padding 当作内容。
     // Encode explicit fields rather than treating unspecified Vulkan structure padding as content.
-    for(size_t i=0;i<cursor;i++){descriptor_payload_hash^=descriptor_payload[i];descriptor_payload_hash*=1099511628211ull;}
+    for(size_t i=0;i<descriptor_payload_words;i++){descriptor_payload_hash^=descriptor_payload[i];descriptor_payload_hash*=1099511628211ull;}
     // 64 KiB arena offset 的低位相同，末尾混合高位防止所有模型版本挤进同一个桶。
     // Arena offsets share low 64 KiB bits; mix high bits at the end so model versions do not all land in one bucket.
     descriptor_payload_hash^=descriptor_payload_hash>>33;descriptor_payload_hash*=0xff51afd7ed558ccdull;descriptor_payload_hash^=descriptor_payload_hash>>33;
@@ -110,9 +116,14 @@ static VkDescriptorSet descriptor_cache_find(VkDescriptorSetLayout layout,const 
     uint64_t phase=dm_cpu_phase_begin();VkDescriptorSet set=descriptor_cache_find_read(layout,writes,count);dm_cpu_phase_end(DM_CPU_PHASE_DESCRIPTOR,phase);return set;
 }
 static VkDescriptorSet descriptor_cache_find_read(VkDescriptorSetLayout layout,const VkWriteDescriptorSet *writes,unsigned count) {
-    descriptor_payload_build(writes,count);unsigned bucket=(descriptor_payload_hash^(uintptr_t)layout)&2047;
+    descriptor_payload_build(writes,count);
+    unsigned front=((uintptr_t)layout>>4)&2047;descriptor_version *recent=descriptor_front[front];
+    // 比较的仍是本次实际解析的完整内容；只省去重复哈希，不跳过资源更新或同步。
+    // Compare the complete freshly resolved payload; omit only rehashing, never resource updates or synchronization.
+    if(descriptor_front_enabled&&recent&&recent->layout==layout&&recent->words==descriptor_payload_words&&(!recent->words||!memcmp(recent->payload,descriptor_payload,recent->words*sizeof *recent->payload))){descriptor_front_hits++;descriptor_version_hits++;return recent->set;}
+    descriptor_payload_hash_build();unsigned bucket=(descriptor_payload_hash^(uintptr_t)layout)&2047;
     for(descriptor_version *entry=descriptor_versions[bucket];entry;entry=entry->next)
-        if(entry->layout==layout&&entry->hash==descriptor_payload_hash&&entry->words==descriptor_payload_words&&(!entry->words||!memcmp(entry->payload,descriptor_payload,entry->words*sizeof *entry->payload))){descriptor_version_hits++;return entry->set;}
+        if(entry->layout==layout&&entry->hash==descriptor_payload_hash&&entry->words==descriptor_payload_words&&(!entry->words||!memcmp(entry->payload,descriptor_payload,entry->words*sizeof *entry->payload))){if(descriptor_front_enabled)descriptor_front[front]=entry;descriptor_version_hits++;return entry->set;}
     descriptor_version_misses++;return VK_NULL_HANDLE;
 }
 static void descriptor_cache_store(VkDescriptorSetLayout layout,VkDescriptorSet set) {
@@ -124,5 +135,16 @@ static void descriptor_cache_store(VkDescriptorSetLayout layout,VkDescriptorSet 
     entry->layout=layout;entry->set=set;entry->hash=descriptor_payload_hash;entry->words=descriptor_payload_words;
     if(entry->words)memcpy(entry->payload,descriptor_payload,entry->words*sizeof *entry->payload);
     unsigned bucket=(entry->hash^(uintptr_t)layout)&2047;entry->next=descriptor_versions[bucket];descriptor_versions[bucket]=entry;
+    if(descriptor_front_enabled)descriptor_front[((uintptr_t)layout>>4)&2047]=entry;
     dm_cpu_phase_end(DM_CPU_PHASE_DESCRIPTOR,phase);
+}
+static void descriptor_front_tick(uint64_t frame) {
+    static uint64_t hits,hashes;unsigned frames=frame==60?59:60;
+    char value[92]={0};int next=descriptor_front_enabled;
+#ifdef __ANDROID__
+    __system_property_get("debug.d2r.descriptor_front",value);
+#endif
+    if(!strcmp(value,"0"))next=0;else if(!strcmp(value,"1"))next=1;
+    LOG("[vulkan-descriptor-front] frame=%llu enabled=%d next_enabled=%d hits/frame=%.1f hashes/frame=%.1f",(unsigned long long)frame,descriptor_front_enabled,next,(descriptor_front_hits-hits)/(double)frames,(descriptor_payload_hashes-hashes)/(double)frames);
+    hits=descriptor_front_hits;hashes=descriptor_payload_hashes;descriptor_front_enabled=next;
 }

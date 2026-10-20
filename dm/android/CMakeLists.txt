@@ -725,6 +725,12 @@ if(NOT ANDROID)
                 ${CMAKE_CURRENT_BINARY_DIR}/vulkan_buffer_cache_fixture.c ${CMAKE_C_COMPILER})
         set_tests_properties(vulkan_buffer_cache_host PROPERTIES TIMEOUT 30)
 
+        add_test(NAME vulkan_descriptor_cache_host
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/vulkan_descriptor_cache_host.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/native/nvn_vulkan_binding_cache.inc
+                ${CMAKE_CURRENT_BINARY_DIR}/vulkan_descriptor_cache_fixture.c ${CMAKE_C_COMPILER})
+        set_tests_properties(vulkan_descriptor_cache_host PROPERTIES TIMEOUT 30)
+
         add_test(NAME vulkan_cpu_phases_host
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/vulkan_cpu_phases_host.py
                 ${CMAKE_CURRENT_SOURCE_DIR}/native/nvn_vulkan_cpu_phases.inc
