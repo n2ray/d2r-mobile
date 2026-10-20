@@ -406,7 +406,7 @@ public final class D2RActivity extends NativeActivity {
         debugPopup.setTouchModal(false);
         debugPopup.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
         debugPopup.setBackgroundDrawable(new ColorDrawable(0));
-        getWindow().getDecorView().post(() -> { if (!isFinishing() && !isDestroyed()) debugPopup.showAtLocation(getWindow().getDecorView(), Gravity.TOP | Gravity.LEFT, padding, padding); });
+        getWindow().getDecorView().post(() -> setDebugOverlay(overlayEnabled));
         // 粘性广播：注册即回调一次当前值，之后只在系统电量变化时推送，不产生轮询开销。
         // Sticky broadcast: registering delivers the current value once, then only on system battery changes; no polling.
         batteryReceiver = new BroadcastReceiver() {
@@ -564,14 +564,17 @@ public final class D2RActivity extends NativeActivity {
         runOnUiThread(() -> { if (debugView != null && !isFinishing() && !isDestroyed()) debugView.setText(text); });
     }
 
-    // 由原生调试线程在启动时调用一次；关掉时把浮层内容整个隐藏，而不只是停止刷新。
-    // 弹窗本身留着不销毁（它是 setTouchable(false)，不抢输入），只是没有可见内容。
-    // Called once at startup by the native debug thread. Hiding removes the overlay content entirely rather than
-    // merely stopping refreshes; the popup itself stays (it is setTouchable(false) and takes no input), just empty.
+    // 关闭整个窗口；只隐藏弹窗根视图会在部分设备上留下最后一帧。
+    // Dismiss the window: hiding only its root view can leave the last frame visible on some devices.
     public void setDebugOverlay(boolean visible) {
         runOnUiThread(() -> {
-            if (debugView != null && !isFinishing() && !isDestroyed())
-                debugView.setVisibility(visible ? android.view.View.VISIBLE : android.view.View.GONE);
+            if (debugView == null || debugPopup == null || isFinishing() || isDestroyed()) return;
+            debugView.setVisibility(visible ? android.view.View.VISIBLE : android.view.View.GONE);
+            if (!visible) debugPopup.dismiss();
+            else if (!debugPopup.isShowing()) {
+                int padding = (int)(8 * getResources().getDisplayMetrics().density);
+                debugPopup.showAtLocation(getWindow().getDecorView(), Gravity.TOP | Gravity.LEFT, padding, padding);
+            }
         });
     }
 
