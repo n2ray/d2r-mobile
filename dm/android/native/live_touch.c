@@ -641,6 +641,10 @@ unacknowledged:
 }
 
 uint64_t dm_live_touch_buttons(const dm_live_touch *touch) { return touch ? touch->state.buttons : 0; }
+int dm_live_touch_skill_set(const dm_live_touch *touch) { return touch ? touch->state.skill_set : 0; }
+uint64_t dm_live_touch_target_button(const dm_live_touch *touch, int target) {
+    return touch && target >= 0 && target < DM_TC_COUNT ? touch->state.layout.target[target].button : 0;
+}
 int32_t dm_live_touch_lx(const dm_live_touch *touch) { return touch ? touch->state.lx : 0; }
 int32_t dm_live_touch_ly(const dm_live_touch *touch) { return touch ? touch->state.ly : 0; }
 int32_t dm_live_touch_rx(const dm_live_touch *touch) { return touch ? touch->state.rx : 0; }
