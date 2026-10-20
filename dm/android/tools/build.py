@@ -101,6 +101,35 @@ def version_code(version):
     return numbers[0] * 10000 + numbers[1] * 100 + numbers[2]
 
 
+def stage_mapgoal_art(source, assets):
+    """Stage only the owned assets/mapgoal directory. The build directory is
+    reused, so a previous larger/older generated set must not survive a build
+    with no source or a reduced source. Never touch unrelated assets."""
+    dest = assets / "mapgoal"
+    if source is not None:
+        source = Path(source)
+        if not source.is_dir():
+            raise SystemExit("mapgoal art: not a directory: " + str(source))
+        if source.resolve() == dest.resolve():
+            raise SystemExit("mapgoal art: source and destination are the same: " + str(source))
+    if dest.is_symlink() or dest.is_file():
+        dest.unlink()
+    elif dest.is_dir():
+        shutil.rmtree(dest)
+    if source is None:
+        return 0
+    dest.mkdir(parents=True)
+    count = 0
+    for path in sorted(source.iterdir()):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if path.suffix.lower() not in (".png", ".json"):
+            continue
+        shutil.copyfile(path, dest / path.name)
+        count += 1
+    return count
+
+
 def validate_touch_art(source):
     """Validate the root-provided generated atlases against the frozen source
     manifest. The art itself is never committed; this only checks bytes and PNG
@@ -233,17 +262,8 @@ def main():
         gen_root = Path(os.environ.get("DM_GEN_ASSETS", str(REPO / "dm/ios/Gen/assets")))
         candidate = gen_root / "NativeHUD" / "mapgoal"
         source = candidate if candidate.is_dir() else None
+    count = stage_mapgoal_art(source, assets)
     if source:
-        if not source.is_dir():
-            raise SystemExit("mapgoal art: not a directory: " + str(source))
-        dest = assets / "mapgoal"; dest.mkdir(exist_ok=True)
-        count = 0
-        for path in sorted(source.iterdir()):
-            if not path.is_file() or path.is_symlink():
-                continue
-            if path.suffix.lower() not in (".png", ".json"):
-                continue
-            shutil.copyfile(path, dest / path.name); count += 1
         print("Map goal art: packaged %d generated files from %s" % (count, source), flush=True)
     else:
         print("Map goal art: not supplied; objective markers remain absent", flush=True)

@@ -8,6 +8,7 @@
 #include "../../ios/Sources/dm_touch_controls.h"
 #include "../../ios/Sources/dm_touch_game_state.h"
 #include "../../host/dm_rift.h"
+#include "../../host/dm_world.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,6 +49,13 @@ int dm_live_touch_take_map_request(dm_live_touch *touch, float *nx, float *ny);
 // destination instead of publishing an indeterminate struct.
 void dm_live_touch_rift_cache(dm_rift_hud_t *dst, int *on,
                               const dm_rift_hud_t *src, int src_on);
+// Fold the owner's minimap-goal geometry/IDs into the visual signature. This
+// includes the fullscreen origin (sx/sy) and the minimap rectangle, which Java
+// consumes but touch-state fields do not cover.
+uint64_t dm_live_touch_goal_signature(uint64_t signature, const dm_map_goal_view *goals,
+                                      int valid, int mode, float cell,
+                                      const float minimap[4], int lang_zh,
+                                      int lang_index, int old);
 // Owner-thread access for the original frontend's continuous gesture hooks.
 dm_tc_state *dm_live_touch_controls(dm_live_touch *touch);
 // Update the real host belt snapshot used by the original core. rows=0/open=0

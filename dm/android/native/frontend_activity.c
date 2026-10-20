@@ -620,17 +620,7 @@ static void live_touch_publish_visual(game_app *s) {
       s->live_goal_cell_pt=cell_pt;memcpy(s->live_goal_minimap,mm,sizeof mm);
       s->live_goal_lang_zh=lang_zh;s->live_goal_lang_index=lang_i;s->live_goal_old=old;
       pthread_mutex_unlock(&s->lock);
-      uint32_t cell_bits=0; memcpy(&cell_bits,&cell_pt,sizeof cell_bits);
-      const uint64_t goal_parts[]={(uint64_t)valid,(uint64_t)mode,(uint64_t)cell_bits,
-        (uint64_t)(uint32_t)goals.n,(uint64_t)(uint32_t)goals.px,(uint64_t)(uint32_t)goals.py,
-        (uint64_t)(uint32_t)lang_zh,(uint64_t)(uint32_t)lang_i,(uint64_t)(uint32_t)old};
-      for(unsigned i=0;i<sizeof goal_parts/sizeof *goal_parts;i++)
-          signature=(signature^goal_parts[i])*1099511628211ull;
-      for(int i=0;i<goals.n&&i<12;i++){
-          signature=(signature^((uint64_t)(uint32_t)goals.x[i]))*1099511628211ull;
-          signature=(signature^((uint64_t)(uint32_t)goals.y[i]))*1099511628211ull;
-          signature=(signature^((uint64_t)goals.art[i]))*1099511628211ull;
-      }
+      signature=dm_live_touch_goal_signature(signature,&goals,valid,mode,cell_pt,mm,lang_zh,lang_i,old);
     }
     if (signature == s->live_visual_signature) return;
     s->live_visual_signature = signature;

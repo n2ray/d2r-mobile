@@ -200,6 +200,27 @@ void dm_live_touch_rift_cache(dm_rift_hud_t *dst, int *on,
     if (!src_on || !src) { memset(dst, 0, sizeof *dst); *on = 0; return; }
     *dst = *src; *on = 1;
 }
+uint64_t dm_live_touch_goal_signature(uint64_t h, const dm_map_goal_view *g,
+                                      int valid, int mode, float cell,
+                                      const float mm[4], int lang_zh,
+                                      int lang_index, int old) {
+    uint32_t cb=0,sx=0,sy=0,m[4]={0,0,0,0};
+    memcpy(&cb,&cell,4);
+    if (g) { memcpy(&sx,&g->sx,4); memcpy(&sy,&g->sy,4); }
+    if (mm) for (int i=0;i<4;i++) memcpy(&m[i],&mm[i],4);
+    const uint64_t parts[]={(uint64_t)valid,(uint64_t)mode,(uint64_t)cb,
+        (uint64_t)(uint32_t)(g?g->n:0),(uint64_t)(uint32_t)(g?g->px:0),
+        (uint64_t)(uint32_t)(g?g->py:0),(uint64_t)sx,(uint64_t)sy,
+        (uint64_t)m[0],(uint64_t)m[1],(uint64_t)m[2],(uint64_t)m[3],
+        (uint64_t)(uint32_t)lang_zh,(uint64_t)(uint32_t)lang_index,(uint64_t)(uint32_t)old};
+    for (unsigned i=0;i<sizeof parts/sizeof *parts;i++) h=(h^parts[i])*1099511628211ull;
+    if (g) for (int i=0;i<g->n&&i<12;i++) {
+        h=(h^((uint64_t)(uint32_t)g->x[i]))*1099511628211ull;
+        h=(h^((uint64_t)(uint32_t)g->y[i]))*1099511628211ull;
+        h=(h^((uint64_t)g->art[i]))*1099511628211ull;
+    }
+    return h;
+}
 static int minimap_title_hit(const dm_live_touch *touch, float x, float y) {
     if (!touch->minimap_valid || touch->state.navigation_mode) return 0;
     int target = dm_tc_hit(&touch->state.layout, x, y);

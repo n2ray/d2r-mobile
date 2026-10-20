@@ -12,7 +12,7 @@ sed -n '/^static void live_frontend_touch(game_app \*s,int phase,int id,float nx
   -I "$here/../../ios/Sources" -I "$here/../../host" "$here/live_touch_frontend_host.c" \
   "$here/../native/live_touch.c" "$here/../../ios/Sources/dm_touch_controls.c" -lm -o "$work/test"
 "$work/test"
-for test in live_touch_map_test live_touch_rift_test live_touch_items_test live_touch_scheduler_test; do
+for test in live_touch_map_test live_touch_rift_test live_touch_goal_signature_test live_touch_items_test live_touch_scheduler_test; do
     # The scheduler fixture includes live_touch.c itself.
     sources=("$here/../native/live_touch_items.c")
     if [[ "$test" != live_touch_scheduler_test ]]; then sources+=("$here/../native/live_touch.c"); fi
