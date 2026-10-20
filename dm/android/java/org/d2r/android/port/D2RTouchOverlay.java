@@ -4,8 +4,12 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Rect;
+import android.graphics.RectF;
+import android.graphics.Shader;
 import android.graphics.drawable.ColorDrawable;
 import android.view.Gravity;
 import android.view.View;
@@ -23,6 +27,10 @@ import java.io.InputStream;
  * circles match the same logical layout used by the gesture core. The game
  * provides the skill/HUD glyphs; where no Android glyph path exists we draw an
  * explicit "?" placeholder rather than inventing a skill icon or cooldown.
+ *
+ * Socket treatment is adapted from the upstream MIT-licensed
+ * DmTouchControlArt.h / dm_mobile_socket.png (commit 46cb318), translated to
+ * Canvas gradients so Android does not need the iOS UIKit asset pipeline.
  */
 final class D2RTouchOverlay extends View {
     private final D2RActivity activity;
@@ -148,8 +156,15 @@ final class D2RTouchOverlay extends View {
             float cy = my(v, v[25 + i * 3]);
             float r = v[26 + i * 3] * v[2] / v[4];
             if (r <= 0) continue;
-            int bg = (i == 10) ? 0x995a4430 : 0x77101820;
-            circle(canvas, cx, cy, r, bg, i == 0 ? 0xeed8c49a : 0xaad8c49a);
+            int glyphStatus = i <= 4 ? glyphs[i * 4] : TouchGlyph.GLYPH;
+            boolean empty = i <= 4 && glyphStatus == TouchGlyph.EMPTY;
+            if (i <= 5) {
+                drawSocket(canvas, cx, cy, r, (state[0] & TouchGlyph.button(i)) != 0,
+                           empty, i == 0);
+            } else {
+                int bg = (i == 10) ? 0x995a4430 : 0x77101820;
+                circle(canvas, cx, cy, r, bg, i == 0 ? 0xeed8c49a : 0xaad8c49a);
+            }
             if (i <= 4) {
                 if (!navigation && drawSkillGlyph(canvas, i, cx, cy, r, state[0])) continue;
                 text(canvas, "?", cx, cy + label.getTextSize() * .36f);
@@ -190,8 +205,47 @@ final class D2RTouchOverlay extends View {
         }
     }
 
+    private void drawSocket(Canvas canvas, float x, float y, float r,
+                            boolean held, boolean empty, boolean primary) {
+        // Upstream socket: narrow iron rim over a charcoal well, with only a
+        // silver held edge. Procedural gradients keep this draw-only overlay
+        // independent of the iOS PNG/UIKit pipeline.
+        float side = r * 2f;
+        RectF rim = new RectF(x - r + side * .018f, y - r + side * .018f,
+                              x + r - side * .018f, y + r - side * .018f);
+        RectF face = new RectF(x - r + side * .055f, y - r + side * .055f,
+                               x + r - side * .055f, y + r - side * .055f);
+        fill.setShader(new LinearGradient(x, rim.top, x, rim.bottom,
+            new int[]{0x2a2e2e00 | (empty ? 0x30000000 : 0xe6000000),
+                      0x0e101200 | (empty ? 0x30000000 : 0xf2000000),
+                      0x291c1900 | (empty ? 0x28000000 : 0xb3000000)},
+            new float[]{0f, .55f, 1f}, Shader.TileMode.CLAMP));
+        canvas.drawOval(rim, fill);
+        fill.setShader(null);
+        stroke.setStyle(Paint.Style.STROKE);
+        stroke.setStrokeWidth(side * .025f);
+        stroke.setColor(empty ? 0x61000000 : 0xe6000000);
+        canvas.drawOval(rim, stroke);
+        fill.setShader(new LinearGradient(x, face.top, x, face.bottom,
+            new int[]{empty ? 0x14050505 : 0xf0050505,
+                      empty ? 0x290d0d0d : 0xf00d0d0d},
+            null, Shader.TileMode.CLAMP));
+        canvas.drawOval(face, fill);
+        fill.setShader(null);
+        stroke.setStrokeWidth(side * (held ? .018f : .009f));
+        stroke.setColor(held ? 0xb8a3a3a3 : (empty ? 0x2e4a4a4a : 0x8c424742));
+        canvas.drawOval(face, stroke);
+        if (primary && !empty) {
+            stroke.setStrokeWidth(side * .012f);
+            stroke.setColor(0x854f3b38);
+            canvas.drawOval(new RectF(x - r + side * .035f, y - r + side * .035f,
+                                      x + r - side * .035f, y + r - side * .035f), stroke);
+        }
+    }
+
     private void drawPlus(Canvas canvas, float x, float y, float r) {
         stroke.setColor(0xccd8c49a);
+        stroke.setStrokeWidth(Math.max(1.5f, r * .085f));
         float a = r * .30f;
         canvas.drawLine(x - a, y, x + a, y, stroke);
         canvas.drawLine(x, y - a, x, y + a, stroke);
@@ -252,10 +306,15 @@ final class D2RTouchOverlay extends View {
         if (glyph == null) return false;
         // glyphBitmap already cropped the atlas; its coordinates start at zero.
         src.set(0, 0, glyph.getWidth(), glyph.getHeight());
-        float size = r * 1.28f;
+        float size = r * (target == 0 ? 1.52f : 1.36f);
         dst.set(Math.round(cx - size * .5f), Math.round(cy - size * .5f),
                 Math.round(cx + size * .5f), Math.round(cy + size * .5f));
+        Path clip = new Path();
+        clip.addCircle(cx, cy, r * .86f, Path.Direction.CW);
+        int save = canvas.save();
+        canvas.clipPath(clip);
         canvas.drawBitmap(glyph, src, dst, null);
+        canvas.restoreToCount(save);
         return true;
     }
 
