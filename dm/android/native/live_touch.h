@@ -7,6 +7,7 @@
 #include "live_touch_geometry.h"
 #include "../../ios/Sources/dm_touch_controls.h"
 #include "../../ios/Sources/dm_touch_game_state.h"
+#include "../../host/dm_rift.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,6 +43,11 @@ void dm_live_touch_set_holding(dm_live_touch *touch, int holding, int targeting)
 void dm_live_touch_set_minimap(dm_live_touch *touch, const float rect[4], int full);
 // 1 = query world at nx/ny, then open full map only if no target; 2 = return mini.
 int dm_live_touch_take_map_request(dm_live_touch *touch, float *nx, float *ny);
+// Copy a host rift snapshot into presentation state. dm_rift_hud returns 0
+// without writing its output when no run is active, so on==0 must clear the
+// destination instead of publishing an indeterminate struct.
+void dm_live_touch_rift_cache(dm_rift_hud_t *dst, int *on,
+                              const dm_rift_hud_t *src, int src_on);
 // Owner-thread access for the original frontend's continuous gesture hooks.
 dm_tc_state *dm_live_touch_controls(dm_live_touch *touch);
 // Update the real host belt snapshot used by the original core. rows=0/open=0

@@ -35,9 +35,12 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
+import android.view.View;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class D2RActivity extends NativeActivity {
     private AlertDialog textDialog;
@@ -47,6 +50,7 @@ public final class D2RActivity extends NativeActivity {
     private TouchControls touchControls;
     private D2RTouchOverlay touchOverlay;
     private boolean activityResumed;
+    private final AtomicInteger hapticGeneration = new AtomicInteger();
     private BroadcastReceiver batteryReceiver;
     private volatile int batteryVoltageMv = -1;
     private volatile int batteryLevel = -1;
@@ -459,6 +463,34 @@ public final class D2RActivity extends NativeActivity {
         });
     }
 
+    // One-shot host drop haptic. Native consumes the tier first; this side
+    // rejects it unless the activity is genuinely resumed and focused, so a
+    // queued vibration cannot fire behind a dialog/pause.
+    public void onDropHaptic(int tier) {
+        if (tier < 1 || tier > 3 || isFinishing() || isDestroyed()) return;
+        final int generation = hapticGeneration.get();
+        runOnUiThread(() -> {
+            if (!TouchHaptic.allowed(generation, hapticGeneration.get(),
+                    activityResumed, hasWindowFocus(), isFinishing(), isDestroyed())) return;
+            int feedback = tier == 1 ? HapticFeedbackConstants.LONG_PRESS
+                : tier == 2 ? HapticFeedbackConstants.CONTEXT_CLICK
+                : HapticFeedbackConstants.KEYBOARD_TAP;
+            View decor = getWindow() != null ? getWindow().getDecorView() : null;
+            if (decor != null) decor.performHapticFeedback(feedback);
+        });
+    }
+
+    private void discardDropHaptics() {
+        hapticGeneration.updateAndGet(TouchHaptic::nextGeneration);
+        try { discardDropHapticsNative(); }
+        catch (UnsatisfiedLinkError ignored) { }
+    }
+
+    int readLiveTouchRiftSnapshot(float[] values, String[] lines) {
+        try { return getLiveTouchRiftSnapshot(values, lines); }
+        catch (UnsatisfiedLinkError error) { return 0; }
+    }
+
     int readLiveTouchOverlay(float[] values, long[] state) {
         try { return getLiveTouchOverlaySnapshot(values, state); }
         catch (UnsatisfiedLinkError error) { return 0; }
@@ -474,6 +506,8 @@ public final class D2RActivity extends NativeActivity {
     private native int getLiveTouchOverlaySnapshot(float[] values, long[] state);
     private native int getLiveTouchGlyphSnapshot(int[] glyphs);
     private native int getLiveTouchAtlasInfo(int[] info);
+    private native int getLiveTouchRiftSnapshot(float[] values, String[] lines);
+    private native void discardDropHapticsNative();
 
     // NativeActivity 的真实 AInputQueue 已接上原 D2R 手势核心时，旧的 Switch 按钮层让位；未接上则保留明确 fallback。
     // When NativeActivity's real AInputQueue is connected to the original D2R gesture core, the legacy Switch-button
@@ -546,12 +580,14 @@ public final class D2RActivity extends NativeActivity {
 
     @Override protected void onPause() {
         activityResumed = false;
+        discardDropHaptics();
         updateTouchVisibility();
         super.onPause();
     }
 
     @Override public void onWindowFocusChanged(boolean focus) {
         super.onWindowFocusChanged(focus);
+        if (!focus) discardDropHaptics();
         updateTouchVisibility();
     }
 
@@ -651,6 +687,7 @@ public final class D2RActivity extends NativeActivity {
         if (touchOverlay != null) touchOverlay.destroy();
         if (debugPopup != null) debugPopup.dismiss();
         if (textDialog != null) finishText(textRequest, "", false);
+        discardDropHaptics();
         super.onDestroy();
     }
 }

@@ -32,6 +32,10 @@ static uint64_t now_ns(void){return clock_ns;}
 static int hit,bind,ready=1,stat_adds,skill_adds,full,map_calls,world_result,ingame;
 static int drag_begins,drag_moves,drag_ends,last_drag,touches,fe_ok=1;
 static int world_taps;
+static int haptic_pending,haptic_take_count,haptic_seen;
+int dm_drop_haptic_take(void){int t=haptic_pending;haptic_pending=0;if(t)haptic_take_count++;return t;}
+int dm_custom_get(const char *key){(void)key;return 1;}
+static void live_touch_notify_drop_haptic(game_app *s,int tier){(void)s;(void)tier;haptic_seen++;}
 void dm_ui_world_tap(float ux,float uy,float wx,float wy){assert(ux==wx&&uy==wy);assert(wx>=0&&wx<=1&&wy>=0&&wy<=1);world_taps++;}
 static uint32_t hit_id;
 static dm_points_info points;
@@ -80,6 +84,8 @@ int main(void){
     a.live_observation.scene_epoch=a.live_observation.world_epoch=a.live_observation.ui_identity=1;
     dm_live_touch_set_context(a.live_touch,1,0,1,1,1,0);
     full=1;tick(&a,900000000);assert(!map_calls);full=0;ingame=1;
+    haptic_pending=2;tick(&a,950000000);assert(haptic_take_count==1&&haptic_seen==1);
+    tick(&a,960000000);assert(haptic_take_count==1&&haptic_seen==1);
     event(&a,DM_LIVE_ACTION_DOWN,260,110,1000000000);
     uint64_t owner_token=atomic_load(&ghost_contact);
     assert(owner_token&&ghost_pointer_id==1);

@@ -10,6 +10,7 @@ import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
+import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.view.Gravity;
 import android.view.View;
@@ -40,6 +41,8 @@ final class D2RTouchOverlay extends View {
     private final long[] state = new long[4];
     private final int[] glyphs = new int[20];
     private final int[] atlasInfo = new int[45];
+    private final float[] riftValues = new float[16];
+    private final String[] riftLines = new String[4];
     private final Bitmap[] atlases = new Bitmap[TouchGlyph.ATLAS_COUNT];
     private final Bitmap[] glyphCache = new Bitmap[TouchGlyph.ATLAS_COUNT * 128];
     private final int[] glyphRect = new int[4];
@@ -49,6 +52,7 @@ final class D2RTouchOverlay extends View {
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint hudText = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final View.OnLayoutChangeListener layoutListener;
     private boolean visible, destroyed;
 
@@ -203,8 +207,92 @@ final class D2RTouchOverlay extends View {
                 }
             }
         }
+        if (TouchRift.visible((int)v[23], (int)v[89],
+                activity.readLiveTouchRiftSnapshot(riftValues, riftLines))) {
+            drawRift(canvas, v, riftValues, riftLines);
+        }
     }
 
+    private void drawRift(Canvas canvas, float[] v, float[] r, String[] lines) {
+        float u = v[3] / 614f;
+        if (!(u > 0f)) return;
+        float x = v[0] + 28f * u, y = v[1] + 150f * u, w = 250f * u, h = 78f * u;
+        if (!(w > 0f && h > 0f)) return;
+        int gold = 0xffc7b377, red = 0xffc83228, white = 0xffd7d2c8, grey = 0xff969187;
+        boolean guardian = (int)r[5] != 0;
+        boolean done = (int)r[4] != 0;
+        int secs = (int)r[3]; if (secs < 0) secs = 0;
+        float progress = done ? 1f : Math.max(0f, Math.min(1f, r[2]));
+
+        fill.setShader(null);
+        fill.setColor(0xaa000000);
+        canvas.drawRect(x, y, x + w, y + h, fill);
+        fill.setColor(0xe678643c);
+        canvas.drawRect(x, y, x + w, y + Math.max(1f, u), fill);
+        canvas.drawRect(x, y + h - Math.max(1f, u), x + w, y + h, fill);
+        fill.setColor(0xff967d4b);
+        canvas.drawRect(x, y, x + 2f * u, y + h, fill);
+
+        hudText.setTypeface(Typeface.DEFAULT_BOLD);
+        hudText.setTextAlign(Paint.Align.LEFT);
+        hudText.setColor(guardian ? red : gold);
+        hudText.setTextSize(17f * u);
+        canvas.drawText(lines[0] != null ? lines[0] : "", x + 10f * u, y + 22f * u, hudText);
+        hudText.setColor(white);
+        hudText.setTextSize(14f * u);
+        canvas.drawText(lines[1] != null ? lines[1] : "", x + 48f * u, y + 25f * u, hudText);
+        hudText.setTextAlign(Paint.Align.RIGHT);
+        hudText.setTextSize(17f * u);
+        hudText.setColor(secs <= 60 && !done ? red : gold);
+        String timer = lines[2] != null ? lines[2] : "";
+        canvas.drawText(timer, x + w - 10f * u, y + 22f * u, hudText);
+        hudText.setTextAlign(Paint.Align.LEFT);
+        hudText.setTextSize(12f * u);
+        hudText.setColor(grey);
+        canvas.drawText(lines[3] != null ? lines[3] : "", x + 10f * u, y + 47f * u, hudText);
+
+        float bw = Math.max(1f, u);
+        RectF track = new RectF(x + 11f * u, y + 55f * u, x + w - 11f * u, y + 65f * u);
+        fill.setShader(null);
+        fill.setColor(0xff19140e);
+        canvas.drawRect(track, fill);
+        stroke.setStyle(Paint.Style.STROKE);
+        stroke.setStrokeWidth(bw);
+        stroke.setColor(0xff5f4e30);
+        canvas.drawRect(track, stroke);
+        float innerW = Math.max(0f, track.width() - 2f * bw);
+        if (innerW > 0f) {
+            float fw = innerW * progress;
+            if (fw > 0f) {
+                fill.setShader(new LinearGradient(track.left, 0f, track.right, 0f,
+                    guardian ? new int[]{0xffbe3228, 0xff6e140f}
+                             : new int[]{0xffcda050, 0xff8c6428},
+                    null, Shader.TileMode.CLAMP));
+                canvas.drawRect(track.left + bw, track.top + bw,
+                                track.left + bw + fw, track.bottom - bw, fill);
+                fill.setShader(null);
+            }
+        }
+        stroke.setStrokeWidth(Math.max(1f, u));
+        stroke.setColor(0x6e000000);
+        for (int i = 0; i < 9; i++) {
+            float tx = track.left + bw + innerW * (i + 1) / 10f;
+            canvas.drawLine(tx, track.top + bw, tx, track.bottom - bw, stroke);
+        }
+        for (int i = 0; i < 2; i++) {
+            float cx = i == 0 ? track.left - 4f * u : track.right + 4f * u;
+            float cy = (track.top + track.bottom) * .5f, rad = 4f * u;
+            Path pin = new Path();
+            pin.moveTo(cx, cy - rad); pin.lineTo(cx + rad, cy); pin.lineTo(cx, cy + rad);
+            pin.lineTo(cx - rad, cy); pin.close();
+            fill.setShader(null);
+            fill.setColor(0xffa08750);
+            canvas.drawPath(pin, fill);
+            stroke.setStrokeWidth(Math.max(1f, u * .8f));
+            stroke.setColor(0xff3c301e);
+            canvas.drawPath(pin, stroke);
+        }
+    }
     private void drawSocket(Canvas canvas, float x, float y, float r,
                             boolean held, boolean empty, boolean primary) {
         // Upstream socket: narrow iron rim over a charcoal well, with only a

@@ -12,6 +12,8 @@
 #include "../../host/ui_trace.h"
 #include "../../host/dm_actions.h"
 #include "../../host/dm_world.h"
+#include "../../host/dm_rift.h"
+#include "../../host/dm_custom.h"
 #include "debug_stats.h"
 #include "game_output.h"
 #include "touch_pointer_map.h"
@@ -74,6 +76,8 @@ typedef struct {
     dm_live_touch_scene_observation live_observation;
     dm_live_touch_geometry live_geometry;
     uint64_t live_visual_signature;
+    dm_rift_hud_t live_rift;
+    int live_rift_on;
     int live_bind_state;
     unsigned map_world_seq, tap_move_seen, world_tap_seen;
     uint32_t selected_point;
@@ -547,6 +551,19 @@ static void live_touch_notify_visual(game_app *s) {
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
     if (klass) (*env)->DeleteLocalRef(env, klass);
 }
+// One-shot drop haptic handoff. The host tiers are 1 heavy / 2 medium / 3 light;
+// Java re-checks resumed/focus on the UI thread and discards a stale callback.
+static void live_touch_notify_drop_haptic(game_app *s, int tier) {
+    if (!s || !s->activity || s->live_readiness.destroyed || !s->live_touch) return;
+    ANativeActivity *a = s->activity;
+    JNIEnv *env = NULL;
+    if ((*a->vm)->GetEnv(a->vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) return;
+    jclass klass = (*env)->GetObjectClass(env, a->clazz);
+    jmethodID method = klass ? (*env)->GetMethodID(env, klass, "onDropHaptic", "(I)V") : NULL;
+    if (method && !(*env)->ExceptionCheck(env)) (*env)->CallVoidMethod(env, a->clazz, method, tier);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (klass) (*env)->DeleteLocalRef(env, klass);
+}
 static void live_touch_publish_visual(game_app *s) {
     if (!s || !s->live_provider_available || !s->live_geometry.valid) {
         dm_live_touch_glyph_invalidate();
@@ -568,6 +585,23 @@ static void live_touch_publish_visual(game_app *s) {
       dm_live_touch_glyph_publish(s->live_touch, have ? &glyph_snapshot : NULL, now_ns());
       uint64_t glyph = dm_live_touch_glyph_signature(NULL, NULL, 0);
       signature = (signature ^ glyph) * 1099511628211ull; }
+    // The objective HUD is host-owned and changes independently of touch state.
+    // Include its read-only snapshot so the draw-only overlay is invalidated when
+    // the countdown/progress changes, without polling game state from Canvas.
+    { dm_rift_hud_t rift = {0}; int on = dm_rift_hud(&rift); uint32_t progress_bits=0;
+      pthread_mutex_lock(&s->lock);
+      dm_live_touch_rift_cache(&s->live_rift,&s->live_rift_on,&rift,on);
+      pthread_mutex_unlock(&s->lock);
+      memcpy(&progress_bits,&rift.progress,sizeof progress_bits);
+      const uint64_t rift_parts[] = {(uint64_t)(on ? 1 : 0), (uint64_t)(uint32_t)rift.tier,
+        (uint64_t)(uint32_t)rift.secs_left, (uint64_t)(uint32_t)rift.done,
+        (uint64_t)(uint32_t)rift.guardian, (uint64_t)(uint32_t)rift.inc,
+        (uint64_t)(uint32_t)rift.next, (uint64_t)(uint32_t)rift.overtime,
+        (uint64_t)(uint32_t)rift.goal, (uint64_t)(uint32_t)rift.gdead,
+        (uint64_t)(uint32_t)rift.gtotal, (uint64_t)(uint32_t)rift.wave,
+        (uint64_t)(uint32_t)rift.nwave, (uint64_t)progress_bits};
+      for (unsigned i = 0; i < sizeof rift_parts / sizeof *rift_parts; i++)
+          signature = (signature ^ rift_parts[i]) * 1099511628211ull; }
     if (signature == s->live_visual_signature) return;
     s->live_visual_signature = signature;
     live_touch_notify_visual(s);
@@ -764,6 +798,8 @@ static void live_touch_frontend_tick(game_app *s) {
     dm_tc_state *c=dm_live_touch_controls(s->live_touch);
     if(!c||!s->live_provider_available)return;
     double now=(double)now_ns()/1e9;
+    { int dm_drop_haptic_take(void); int tier=dm_drop_haptic_take();
+      if(tier>=1&&tier<=3&&dm_custom_get("drop_haptic"))live_touch_notify_drop_haptic(s,tier); }
     // The guest's map callback requires a loaded run; its boot-time flags are not a map.
     if(c->navigation_mode&&dm_uiscreen_ingame()&&dm_ui_map_is_full())dm_ui_map_full(0);
     static int labels_done;
@@ -1092,6 +1128,52 @@ __attribute__((visibility("default"))) jint Java_org_d2r_android_port_D2RActivit
     jint values[45]={0};
     for(int i=0;i<DM_TA_ATLASES;i++){const dm_ta_atlas *a=&dm_ta_atlases[i];values[i*5]=a->width;values[i*5+1]=a->height;values[i*5+2]=a->frame_width;values[i*5+3]=a->pitch;values[i*5+4]=a->count;}
     (*env)->SetIntArrayRegion(env,out,0,45,values);return 1;
+}
+// Read-only rift objective snapshot. The host decides every sentence (goal,
+// overtime, next tier); this layer only formats the same localized strings as
+// dm_rift_hud.m. Returns 0 outside a rift so Java clears the overlay.
+__attribute__((visibility("default"))) jint Java_org_d2r_android_port_D2RActivity_getLiveTouchRiftSnapshot(JNIEnv *env,jclass klass,jfloatArray values,jobjectArray lines) {
+    (void)klass;
+    if(!values||!lines||(*env)->GetArrayLength(env,values)<16||(*env)->GetArrayLength(env,lines)<4)return 0;
+    float out[16]={0}; dm_rift_hud_t h; memset(&h,0,sizeof h);
+    game_app *s=application; int on=0;
+    if(s&&s->live_provider_available&&s->live_touch){
+        pthread_mutex_lock(&s->lock);
+        h=s->live_rift; on=s->live_rift_on;
+        pthread_mutex_unlock(&s->lock);
+    }
+    char text[4][256]={{0}};
+    if(on){
+        int s=h.secs_left<0?0:h.secs_left, g=h.guardian;
+        snprintf(text[0],sizeof text[0],"%s",dm_ui("dmRiftHudTitle"));
+        if(h.done)snprintf(text[1],sizeof text[1],dm_ui(h.inc?"dmRiftHudDone":"dmRiftHudLate"),h.tier);
+        else if(g)snprintf(text[1],sizeof text[1],"%s",dm_ui("dmRiftHudGuard"));
+        else snprintf(text[1],sizeof text[1],dm_ui("dmRiftTierN"),h.tier);
+        snprintf(text[2],sizeof text[2],"%d:%02d",s/60,s%60);
+        if(h.done){
+            if(!h.inc)snprintf(text[3],sizeof text[3],"%s",dm_ui("dmRiftHudSame"));
+            else if(h.next>h.tier)snprintf(text[3],sizeof text[3],dm_ui("dmRiftHudNext"),h.next);
+            else snprintf(text[3],sizeof text[3],"%s",dm_ui("dmRiftHudTop"));
+        } else if(h.goal==5)snprintf(text[3],sizeof text[3],dm_ui("dmRiftHudOverKillN"),h.gdead,h.gtotal);
+        else if(h.goal==4)snprintf(text[3],sizeof text[3],"%s",dm_ui("dmRiftHudOverKill"));
+        else if(h.goal==3)snprintf(text[3],sizeof text[3],"%s",dm_ui("dmRiftHudOver"));
+        else if((h.goal==1||h.goal==2)&&h.nwave>1)snprintf(text[3],sizeof text[3],dm_ui("dmRiftHudKillWave"),h.wave,h.nwave,h.gdead,h.gtotal);
+        else if(h.goal==2)snprintf(text[3],sizeof text[3],dm_ui("dmRiftHudKillN"),h.gdead,h.gtotal);
+        else if(h.goal==1)snprintf(text[3],sizeof text[3],"%s",dm_ui("dmRiftHudKill"));
+        else snprintf(text[3],sizeof text[3],dm_ui("dmRiftHudGoal"),(int)(h.progress*100));
+        out[0]=1;out[1]=(float)h.tier;out[2]=h.progress;out[3]=(float)h.secs_left;
+        out[4]=(float)h.done;out[5]=(float)h.guardian;out[6]=(float)h.inc;out[7]=(float)h.next;
+        out[8]=(float)h.overtime;out[9]=(float)h.goal;out[10]=(float)h.gdead;
+        out[11]=(float)h.gtotal;out[12]=(float)h.wave;out[13]=(float)h.nwave;
+    }
+    (*env)->SetFloatArrayRegion(env,values,0,16,out);
+    for(int i=0;i<4;i++){jstring js=(*env)->NewStringUTF(env,text[i]);if(!js)return 0;(*env)->SetObjectArrayElement(env,lines,i,js);(*env)->DeleteLocalRef(env,js);}
+    return on?1:0;
+}
+// Lifecycle boundary: consume any queued tier so a paused/unfocused activity
+// cannot fire a stale vibration when it resumes.
+__attribute__((visibility("default"))) void Java_org_d2r_android_port_D2RActivity_discardDropHapticsNative(JNIEnv *env,jclass klass) {
+    (void)env;(void)klass;int dm_drop_haptic_take(void);(void)dm_drop_haptic_take();
 }
 static int32_t stick_value(float value) {if(value>1)value=1;if(value<-1)value=-1;return value>-.15f&&value<.15f?0:(int32_t)(value*DM_STICK_MAX);}
 static uint64_t pad_key(int key) {

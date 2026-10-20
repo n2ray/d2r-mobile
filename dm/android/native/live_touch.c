@@ -194,6 +194,12 @@ int dm_live_touch_take_map_request(dm_live_touch *touch, float *nx, float *ny) {
     if (ny) *ny = touch->map_y;
     return request;
 }
+void dm_live_touch_rift_cache(dm_rift_hud_t *dst, int *on,
+                              const dm_rift_hud_t *src, int src_on) {
+    if (!dst || !on) return;
+    if (!src_on || !src) { memset(dst, 0, sizeof *dst); *on = 0; return; }
+    *dst = *src; *on = 1;
+}
 static int minimap_title_hit(const dm_live_touch *touch, float x, float y) {
     if (!touch->minimap_valid || touch->state.navigation_mode) return 0;
     int target = dm_tc_hit(&touch->state.layout, x, y);
