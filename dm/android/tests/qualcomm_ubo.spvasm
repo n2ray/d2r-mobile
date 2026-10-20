@@ -1,0 +1,40 @@
+; Owned fixture: one dynamic component read from a guest UBO, not game code.
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %main "main" %index %output
+OpDecorate %index BuiltIn VertexIndex
+OpDecorate %output BuiltIn Position
+OpDecorate %array ArrayStride 16
+OpMemberDecorate %block 0 Offset 0
+OpDecorate %block Block
+OpDecorate %ubo DescriptorSet 0
+OpDecorate %ubo Binding 3
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%int = OpTypeInt 32 1
+%float = OpTypeFloat 32
+%vec = OpTypeVector %float 4
+%zero = OpConstant %uint 0
+%four = OpConstant %uint 4
+%mask = OpConstant %int 3
+%one = OpConstant %float 1
+%array = OpTypeArray %vec %four
+%block = OpTypeStruct %array
+%blockptr = OpTypePointer Uniform %block
+%scalarptr = OpTypePointer Uniform %float
+%indexptr = OpTypePointer Input %int
+%outptr = OpTypePointer Output %vec
+%ubo = OpVariable %blockptr Uniform
+%index = OpVariable %indexptr Input
+%output = OpVariable %outptr Output
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%raw = OpLoad %int %index
+%component = OpBitwiseAnd %int %raw %mask
+%pointer = OpAccessChain %scalarptr %ubo %zero %zero %component
+%value = OpLoad %float %pointer
+%color = OpCompositeConstruct %vec %value %value %value %one
+OpStore %output %color
+OpReturn
+OpFunctionEnd

@@ -996,6 +996,12 @@ if(NOT ANDROID)
     add_test(NAME nvn_host_latch COMMAND dm_nvn_host_latch_test)
     set_tests_properties(nvn_host_latch PROPERTIES TIMEOUT 30)
 
+    add_executable(dm_qualcomm_ubo_test tests/qualcomm_ubo_test.c)
+    target_include_directories(dm_qualcomm_ubo_test PRIVATE native)
+    target_compile_options(dm_qualcomm_ubo_test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME qualcomm_ubo COMMAND dm_qualcomm_ubo_test)
+    set_tests_properties(qualcomm_ubo PROPERTIES TIMEOUT 30)
+
     add_executable(dm_nvn_shader_feature_decisions_test tests/nvn_shader_feature_decisions.c)
     target_include_directories(dm_nvn_shader_feature_decisions_test PRIVATE native)
     target_compile_options(dm_nvn_shader_feature_decisions_test PRIVATE -Wall -Wextra -Werror)

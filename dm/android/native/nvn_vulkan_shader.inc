@@ -1,3 +1,4 @@
+#include "nvn_qualcomm_ubo.h"
 // 预编译 SPIR-V、描述符绑定及计算提交。| Precompiled SPIR-V, descriptor binding and compute submission.
 typedef struct { uint32_t kind,binding,slot,cb_slot,cb_offset,handle,type,count,flags,separate; } shader_binding;
 typedef struct { VkDescriptorType type; uint32_t offset; int storage_slot,uniform_pointer,dynamic_index; } shader_binding_plan;
@@ -158,6 +159,22 @@ static shader_entry *shader_load_by_key(const char *key,int stats,int fatal) {
     }
 #endif
     shader_entry *s=calloc(1,sizeof *s);if(!s)die("Vulkan shader allocation");strcpy(s->key,key);s->stage=meta[2];s->set=meta[3];s->count=meta[4];s->c1_size=meta[5];s->bindings=(void*)(meta+7);s->c1=(uint8_t*)s->bindings+s->count*40;memcpy(s->attributes,s->c1+s->c1_size,128);
+#ifdef __ANDROID__
+    static int ubo_disabled=-1;
+    if(ubo_disabled<0){char value[PROP_VALUE_MAX]={0};__system_property_get("debug.d2r.qualcomm_ubo",value);ubo_disabled=!strcmp(value,"off");LOG("[vulkan-qualcomm-ubo] enabled=%d driver=%u restart_required=1",vk_api.actual_driver_id==VK_DRIVER_ID_QUALCOMM_PROPRIETARY&&!ubo_disabled,vk_api.actual_driver_id);}
+    if(dm_qualcomm_ubo_should_lower(vk_api.actual_driver_id==VK_DRIVER_ID_QUALCOMM_PROPRIETARY,s->stage,ubo_disabled)) {
+        uint64_t guest_bindings=0;
+        for(unsigned i=0;i<s->count;i++) {
+            const shader_binding *b=&s->bindings[i];
+            if(b->kind==1&&b->slot>=3&&b->slot<19&&b->binding<64)guest_bindings|=UINT64_C(1)<<b->binding;
+        }
+        unsigned accesses=0;size_t adapted_size=bytes;
+        void *adapted=dm_skin_ubo_apply(code,&adapted_size,&accesses,guest_bindings);
+        if(!adapted){free(code);free(meta);free(s);pthread_mutex_unlock(&graphics_object_lock);if(fatal)die("Vulkan shader %s UBO adaptation rejected",key);return NULL;}
+        code=adapted;bytes=adapted_size;
+        if(accesses)LOG("[vulkan-qualcomm-ubo] shader=%s stage=%u accesses=%u bytes=%zu",key,s->stage,accesses,bytes);
+    }
+#endif
     VkShaderModuleCreateInfo mi={.sType=VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,.codeSize=bytes,.pCode=code};
     VkResult module_result=shader_module_create_or_skip(shader_module_create_dispatch,device,&mi,&s->module,fatal,key,code,meta,s,&graphics_object_lock);
     if(module_result!=VK_SUCCESS)return NULL;
