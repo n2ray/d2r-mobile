@@ -31,6 +31,11 @@ void dm_live_touch_resize(dm_live_touch *touch, float width_pt, float height_pt)
 // navigation = menu/front-end/panel state supplied by the real host.
 // mask is the core target mask; callers use dm_tc_nav_mask/game mode mask.
 void dm_live_touch_set_mode(dm_live_touch *touch, int navigation, uint32_t mask);
+// In-game the top-right map is entered by tapping the host minimap title strip,
+// not by a floating MAP button (the upstream game mask omits DM_TC_MAP).
+static inline uint32_t dm_live_touch_game_mask(void) {
+    return ((1u << DM_TC_COUNT) - 1u) & ~(1u << DM_TC_MAP);
+}
 // Original iOS tick: an identification scroll is not a dragged item.
 void dm_live_touch_set_holding(dm_live_touch *touch, int holding, int targeting);
 // iOS frontend map gestures: rect is the host's normalized minimap rectangle.
