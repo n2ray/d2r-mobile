@@ -13,7 +13,7 @@ struct dm_live_touch {
     float width, height;
     int64_t last_ns;
     int64_t pulse_started_ns, pulse_seen_ns, pulse_free_ns;
-    uint64_t pulse_epoch, pulse_samples_start;
+    uint64_t pulse_epoch, pulse_samples_start, pulse_samples_free;
     uint32_t belt_fingers;
     int portal_request;
     int have_context;
@@ -607,11 +607,16 @@ int dm_live_touch_scheduler_step(dm_live_touch *touch, int64_t time_ns,
         if (samples < touch->pulse_samples_start) goto unacknowledged;
         if (!touch->pulse_seen_ns && samples > touch->pulse_samples_start)
             touch->pulse_seen_ns = time_ns;
-        if (touch->pulse_seen_ns && !touch->pulse_free_ns && !cursor_pending)
+        if (cursor_pending) touch->pulse_free_ns = 0;
+        if (touch->pulse_seen_ns && !touch->pulse_free_ns && !cursor_pending) {
             touch->pulse_free_ns = time_ns;
+            touch->pulse_samples_free = samples;
+        }
         int64_t hold = (int64_t)(touch->state.pulse_hold_s * 1000000000.0);
-        int taken = touch->pulse_seen_ns && time_ns - touch->pulse_seen_ns >= 120000000 &&
-            samples - touch->pulse_samples_start >= 3 && !cursor_pending &&
+        // Withheld A polls do not acknowledge a pickup: keep its origin fixed
+        // for three polls and 120ms after the cursor releases A to the game.
+        int taken = touch->pulse_free_ns && time_ns - touch->pulse_free_ns >= 120000000 &&
+            samples >= touch->pulse_samples_free && samples - touch->pulse_samples_free >= 3 && !cursor_pending &&
             (hold <= 0 || (touch->pulse_free_ns && time_ns - touch->pulse_free_ns >= hold));
         if (taken) {
             dm_tc_pulse_end(&touch->state, touch->pulse_epoch);

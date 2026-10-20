@@ -26,14 +26,17 @@ static void pickup_waits_for_game_receipt(void) {
     dm_live_touch_scheduler_step(t, 1530000000, 20, 1);
     assert(t->state.pulse_button == DM_BTN_A); // polls alone do not free cursor-held A
     dm_live_touch_scheduler_step(t, 1540000000, 20, 0);
+    assert(t->state.pulse_button == DM_BTN_A); // withheld polls are not delivered A
+    assert(!t->state.pointer_pickup_done);
+    dm_live_touch_scheduler_step(t, 1670000000, 23, 0);
     assert(!t->state.pulse_button && t->state.pointer_pulse_pending);
-    dm_live_touch_scheduler_step(t, 1550000000, 20, 0);
+    dm_live_touch_scheduler_step(t, 1680000000, 23, 0);
     assert(!t->state.pulse_button);
-    dm_live_touch_scheduler_step(t, 1560000000, 21, 0);
+    dm_live_touch_scheduler_step(t, 1690000000, 24, 0);
     assert(!t->state.pulse_button);
-    dm_live_touch_scheduler_step(t, 1570000000, 22, 0);
+    dm_live_touch_scheduler_step(t, 1700000000, 25, 0);
     assert(t->state.pulse_button == DM_BTN_A); // two real released polls separate pickup/drop
-    dm_live_touch_cancel_all(t, 1580000000);
+    dm_live_touch_cancel_all(t, 1710000000);
     dm_tc_begin_at(&t->state, 0, 200, 150, 2.0);
     dm_tc_pointer_item(&t->state, 1);
     dm_tc_move_at(&t->state, 0, 220, 170, 2.01);
