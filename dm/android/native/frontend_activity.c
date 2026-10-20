@@ -721,7 +721,7 @@ static void shop_ghost_contact_event(game_app *s,int action,int32_t id) {
     }
 }
 static void shop_ghost_sync(game_app *s,const dm_tc_state *c,const dm_tc_finger *f) {
-    if (!f || !f->active || !f->shop_drag || !s->ui_drag_active || c->navigation_mode ||
+    if (!f || !f->active || !f->shop_drag || !c->navigation_mode ||
         c->layout.width <= 0 || c->layout.height <= 0) {
         mtl_ui_ghost(0,0,0,NULL,0,0);
         return;

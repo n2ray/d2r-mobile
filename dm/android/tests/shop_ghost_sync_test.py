@@ -68,8 +68,10 @@ static void dm_vk_ui_ghost_request(int on, float px, float py, const float g[4],
 
 main = r'''
 int main(void) {
-    game_app s = {.ui_drag_active = 1, .live_touch = &s};
-    dm_tc_state c = {.layout = {640, 360}, .navigation_mode = 0};
+    // Shop items drag in panel/navigation mode; ui_drag is reserved for
+    // unrelated list/slider gestures and remains inactive for shop goods.
+    game_app s = {.ui_drag_active = 0, .live_touch = &s};
+    dm_tc_state c = {.layout = {640, 360}, .navigation_mode = 1};
     dm_tc_finger f = {.active = 1, .shop_drag = 1, .aim_origin_x = 100, .aim_origin_y = 100, .x = 320, .y = 180};
     shop_ghost_contact_event(&s,DM_LIVE_ACTION_DOWN,7);
     uint64_t first=atomic_load(&ghost_contact);
@@ -105,7 +107,7 @@ int main(void) {
     if (off_calls!=before+1) return 15;
 
     // Unknown state fails closed.
-    s.ui_drag_active = 0; before = off_calls;
+    c.navigation_mode = 0; before = off_calls;
     shop_ghost_sync(&s, &c, &f);
     if (off_calls != before + 1) return 10;
     puts("PASS shop ghost sync: lift units at 640x360/1280x720, live token, release, unknown");
