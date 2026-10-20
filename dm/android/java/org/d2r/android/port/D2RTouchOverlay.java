@@ -219,7 +219,7 @@ final class D2RTouchOverlay extends View {
             new int[]{TouchSocketColor.argb(.26f, .28f, .28f, empty ? .22f : .9f),
                       TouchSocketColor.argb(.055f, .065f, .07f, empty ? .22f : .95f),
                       TouchSocketColor.argb(.16f, .11f, .10f, empty ? .16f : .7f)},
-            new float[]{0f, .55f, 1f}, Shader.TileMode.CLAMP));
+            new float[]{0f, .5f, 1f}, Shader.TileMode.CLAMP));
         canvas.drawOval(rim, fill);
         fill.setShader(null);
         stroke.setStyle(Paint.Style.STROKE);
@@ -232,10 +232,8 @@ final class D2RTouchOverlay extends View {
             null, Shader.TileMode.CLAMP));
         canvas.drawOval(face, fill);
         fill.setShader(null);
-        stroke.setStrokeWidth(side * (held ? .018f : .009f));
-        stroke.setColor(TouchSocketColor.argb(held ? .64f : .26f, held ? .64f : .29f,
-                                              held ? .64f : .28f,
-                                              held ? .72f : (empty ? .18f : .55f)));
+        stroke.setStrokeWidth(TouchSocketColor.faceWidth(side, held, empty));
+        stroke.setColor(TouchSocketColor.faceColor(held, empty));
         canvas.drawOval(face, stroke);
         if (primary && !empty) {
             stroke.setStrokeWidth(side * .012f);
@@ -246,12 +244,13 @@ final class D2RTouchOverlay extends View {
     }
 
     private void drawPlus(Canvas canvas, float x, float y, float r, boolean held) {
-        stroke.setColor(TouchSocketColor.argb(.60f, .65f, .64f, held ? .75f : .25f));
+        stroke.setColor(TouchSocketColor.emptyCrossColor(held));
         stroke.setStrokeWidth(Math.max(1f, r * .036f));
         stroke.setStrokeCap(Paint.Cap.ROUND);
         float a = r * .11f;
         canvas.drawLine(x - a, y, x + a, y, stroke);
         canvas.drawLine(x, y - a, x, y + a, stroke);
+        stroke.setStrokeCap(Paint.Cap.BUTT); // CoreGraphics save/restore: do not leak ROUND
     }
 
     private Bitmap loadAtlas(int atlas) {
