@@ -170,6 +170,10 @@ void dm_live_touch_destroy(dm_live_touch *touch) {
     free(touch);
 }
 
+void dm_live_touch_set_holding(dm_live_touch *touch, int holding, int targeting) {
+    if (touch) dm_tc_set_holding(&touch->state, holding && !targeting);
+}
+
 void dm_live_touch_resize(dm_live_touch *touch, float width_pt, float height_pt) {
     if (!touch || !isfinite(width_pt) || !isfinite(height_pt) || width_pt <= 0 || height_pt <= 0) return;
     if (touch->width == width_pt && touch->height == height_pt) return;

@@ -31,6 +31,8 @@ void dm_live_touch_resize(dm_live_touch *touch, float width_pt, float height_pt)
 // navigation = menu/front-end/panel state supplied by the real host.
 // mask is the core target mask; callers use dm_tc_nav_mask/game mode mask.
 void dm_live_touch_set_mode(dm_live_touch *touch, int navigation, uint32_t mask);
+// Original iOS tick: an identification scroll is not a dragged item.
+void dm_live_touch_set_holding(dm_live_touch *touch, int holding, int targeting);
 // Update the real host belt snapshot used by the original core. rows=0/open=0
 // is the explicit unknown/clear form; rows 1..4 and open 0/1 are valid. Invalid
 // values clear any old request and do not enable belt gestures.

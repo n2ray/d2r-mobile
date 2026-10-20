@@ -74,7 +74,7 @@ typedef struct {
     dm_live_touch_geometry live_geometry;
     uint64_t live_visual_signature;
     int live_bind_state;
-    int touch_timer_fd;
+    int touch_timer_fd, touch_timer_active;
     int padmode_requested;
     int padmode_touch_swallow;
     dm_touch_pointer_map touch_map;
@@ -572,13 +572,24 @@ static void live_touch_sync(game_app *s) {
       dm_touch_game_set_scene(snapshot.scene==DM_LIVE_TOUCH_SCENE_GAME,
                               snapshot.scene_epoch,snapshot.world_epoch); }
     live_touch_set_available(s,1);
+    // Match tickTouchControls: item gestures need authoritative host state,
+    // including a held item left over from an unsuccessful drop.
+    { dm_hud_info hi; dm_hud_get(&hi);
+      dm_live_touch_set_holding(s->live_touch,hi.valid && hi.holding,dm_ui_targeting()); }
+    dm_tc_set_tap_box(dm_ui_tap_box());
+    dm_tc_set_cur_stack(dm_ui_cur_stack_id());
+    dm_tc_set_hover_unid(dm_ui_hover_unid());
+    dm_tc_set_panel_state((int)snapshot.panel_bits);
     int bind_state=dm_ui_bind_active();
-    int navigation=bind_state||snapshot.scene!=DM_LIVE_TOUCH_SCENE_GAME||snapshot.panel_bits||atomic_load(&menu_open);
+    int blocked=dm_ui_panel_stack_count();
+    int navigation=bind_state||snapshot.scene!=DM_LIVE_TOUCH_SCENE_GAME||snapshot.panel_bits||blocked<0||atomic_load(&menu_open);
     // Android has no front-end setter; publish the same original panel stack
     // reading the iOS front end uses, so host panel layout and gesture mode
     // agree during inventory/open/close.
-    { int blocked=dm_ui_panel_stack_count(); dm_uiscreen_set_panel(blocked>0); }
-    uint32_t mask=navigation?(dm_tc_nav_mask(1)|(1u<<DM_TC_MENU)):
+    dm_uiscreen_set_panel(blocked>0);
+    // iOS defaults to touch-only panels; diagnostic controller circles cover
+    // inventory slots. Only an NPC dialogue keeps the bottom menu target.
+    uint32_t mask=navigation?(blocked<0?(1u<<DM_TC_MENU):0):
         (((1u<<DM_TC_COUNT)-1)&~(1u<<DM_TC_MAP));
     dm_live_touch_set_context(s->live_touch,navigation,mask,
                               snapshot.scene_epoch,snapshot.world_epoch,
@@ -750,11 +761,14 @@ static int touch_owner_valid(game_app *s) {
         stopped||s->live_readiness.destroyed,s->live_geometry.valid);
 }
 static void touch_timer_set_period(game_app *s,int active) {
-    if(s->touch_timer_fd<0)return;
+    // Re-arming on every MOVE postpones the deadline indefinitely during a drag.
+    if(s->touch_timer_fd<0||s->touch_timer_active==!!active)return;
     int64_t ns=(int64_t)dm_live_owner_interval_ms(active)*1000000ll;
     struct itimerspec interval={{0,ns},{0,ns}};
-    if(timerfd_settime(s->touch_timer_fd,0,&interval,NULL)<0)
-        LOG("[android-touch] owner tick reprogram failed: %s",strerror(errno));
+    if(timerfd_settime(s->touch_timer_fd,0,&interval,NULL)<0) {
+        LOG("[android-touch] owner tick reprogram failed: %s",strerror(errno));return;
+    }
+    s->touch_timer_active=!!active;
 }
 static int touch_timer_tick(int fd,int events,void *data) {
     (void)events;game_app *s=data;uint64_t expirations;
@@ -784,7 +798,7 @@ static void touch_timer_start(game_app *s) {
     struct itimerspec interval={{0,ns},{0,ns}};
     if(timerfd_settime(fd,0,&interval,NULL)<0){LOG("[android-touch] owner tick timer set failed: %s",strerror(errno));close(fd);return;}
     if(ALooper_addFd(looper,fd,ALOOPER_POLL_CALLBACK,ALOOPER_EVENT_INPUT,touch_timer_tick,s)<0){LOG("[android-touch] owner tick timer attach failed");close(fd);return;}
-    s->touch_timer_fd=fd;
+    s->touch_timer_fd=fd;s->touch_timer_active=!!needs;
     LOG("[android-touch] owner tick timer started (%s)",needs?"16ms":"100ms idle");
 }
 static void touch_timer_wake(game_app *s) {
@@ -1218,6 +1232,8 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
         {"onTouchPad","(JIIII)V",(void*)Java_org_d2r_android_port_D2RActivity_onTouchPad},
         {"isLiveTouchReady","()Z",(void*)Java_org_d2r_android_port_D2RActivity_isLiveTouchReady},
         {"getLiveTouchOverlaySnapshot","([F[J)I",(void*)Java_org_d2r_android_port_D2RActivity_getLiveTouchOverlaySnapshot},
+        {"getLiveTouchGlyphSnapshot","([I)I",(void*)Java_org_d2r_android_port_D2RActivity_getLiveTouchGlyphSnapshot},
+        {"getLiveTouchAtlasInfo","([I)I",(void*)Java_org_d2r_android_port_D2RActivity_getLiveTouchAtlasInfo},
         {"setOverlayEnabled","(Z)V",(void*)Java_org_d2r_android_port_D2RActivity_setOverlayEnabled},
         {"setQualityPreset","(I)V",(void*)Java_org_d2r_android_port_D2RActivity_setQualityPreset},
         {"setMenuOpen","(Z)V",(void*)Java_org_d2r_android_port_D2RActivity_setMenuOpen},

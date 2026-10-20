@@ -51,7 +51,28 @@ static void pickup_waits_for_game_receipt(void) {
     dm_live_touch_destroy(t);
 }
 
+static void held_item_tap_uses_drop_path(void) {
+    dm_live_touch *t = dm_live_touch_create(667, 375);
+    assert(t);
+    dm_live_touch_set_mode(t, 1, dm_tc_nav_mask(1));
+    dm_live_touch_set_holding(t, 1, 0);
+    dm_tc_begin_at(&t->state, 0, 200, 150, 1.0);
+    dm_tc_pointer_item(&t->state, 1);
+    dm_tc_end_at(&t->state, 0, 1.05);
+    assert(t->state.pointer_pulse_active == 2);
+    assert(t->state.pulse_button == DM_BTN_A);
+    assert(!t->state.item_tap_seq); // drop, not a new tooltip selection
+    dm_live_touch_cancel_all(t, 1060000000);
+    dm_live_touch_set_holding(t, 1, 1);
+    assert(!t->state.holding); // identification scroll is not a dragged item
+    dm_live_touch_set_holding(t, 1, 0);
+    dm_live_touch_set_holding(t, 0, 0);
+    assert(!t->state.holding);
+    dm_live_touch_destroy(t);
+}
+
 int main(void) {
+    held_item_tap_uses_drop_path();
     pickup_waits_for_game_receipt();
     dm_live_touch *t = dm_live_touch_create(667, 375);
     assert(t);
