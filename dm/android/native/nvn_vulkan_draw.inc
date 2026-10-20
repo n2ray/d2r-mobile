@@ -118,12 +118,17 @@ static void draw_graphics_inner(const p_draw *draw,const p_draw_idx *indexed) {
     }
     if(state.rt.depth){image_entry *e=image_get(state.rt.depth);const view_t *v=state.rt.has_dview?&state.rt.dview:NULL;VkImageSubresourceRange range=texture_range(e,v);uint32_t w=dimension(e->texture.d.width,range.baseMipLevel),h=dimension(e->texture.d.height,range.baseMipLevel);if(w<width)width=w;if(h<height)height=h;ranges[na]=range;images[na]=e;views[na]=attachment_view(e,v);attachments[na]=(VkAttachmentDescription){.format=e->format,.samples=VK_SAMPLE_COUNT_1_BIT,.loadOp=e->populated?VK_ATTACHMENT_LOAD_OP_LOAD:VK_ATTACHMENT_LOAD_OP_DONT_CARE,.storeOp=VK_ATTACHMENT_STORE_OP_STORE,.stencilLoadOp=e->populated?VK_ATTACHMENT_LOAD_OP_LOAD:VK_ATTACHMENT_LOAD_OP_DONT_CARE,.stencilStoreOp=VK_ATTACHMENT_STORE_OP_STORE,.initialLayout=VK_IMAGE_LAYOUT_GENERAL,.finalLayout=VK_IMAGE_LAYOUT_GENERAL};depth.attachment=na++;image_gpu_written(e);}
     if(!na)die("Vulkan draw has no attachments");
+    VkClearValue clears[9]={0};int fold[9]={0};
+    for(unsigned i=0;i<na;i++)if(deferred_clear_matches(images[i],&ranges[i],width,height)){
+        int unique=1;for(unsigned j=0;j<na;j++)if(j!=i&&images[j]==images[i])unique=0;
+        if(unique){fold[i]=1;attachments[i].loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;clears[i].color=images[i]->clear_color;}
+    }
     graphics_pass_key pass_key=graphics_pass_key_make(na,state.rt.n,attachments,colors,depth);graphics_frame_entry *frame;
     if(graphics_pass_matches(&pass_key,views,width,height))frame=graphics_active_frame;
     else {
         graphics_pass_end();
         for(unsigned i=0;i<na;i++)if(i==depth.attachment)image_access(images[i],VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
-            else image_access(images[i],VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_COLOR_ATTACHMENT_READ_BIT|VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+            else deferred_clear_attachment_access(images[i],fold[i],VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_COLOR_ATTACHMENT_READ_BIT|VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
         graphics_pass_entry *pass=graphics_pass_get(pass_key,attachments,colors,depth,1);frame=graphics_frame_get(pass,views,images,width,height);
     }
     // 只复制索引真正可访问的顶点前缀，避免每次绘制读取整段大型绑定池。
@@ -175,7 +180,7 @@ static void draw_graphics_inner(const p_draw *draw,const p_draw_idx *indexed) {
         pso_record_graphics(vs,fs,&frame->key.pass->key,&key);}else pipeline_reuses++;
     graphics_last_pipeline=cached;
     int trace_begin=graphics_active_frame!=frame;
-    graphics_pass_begin(frame);
+    graphics_pass_begin(frame,clears);
     // 只在通道真正开始时记录实际选用的 key（load/stencil load 已含 populated 决定）。
     // Record the actually selected key only when the pass really begins (load/stencil load already encode populated).
     if(trace_begin&&frame_trace_reserve(&frame_trace))FRAME_TRACE_LOG("pass draw=%llu extent=%ux%u attachments=%u colors=%u depth_index=%d",(unsigned long long)draw_count+1,width,height,na,(unsigned)state.rt.n,depth.attachment==VK_ATTACHMENT_UNUSED?-1:(int)depth.attachment);

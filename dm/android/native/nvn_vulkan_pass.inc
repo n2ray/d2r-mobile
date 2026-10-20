@@ -90,9 +90,12 @@ static void graphics_pass_end(void) {
     vkCmdEndQuery(command,draw_queries,graphics_active_query);post_new(5)->value=graphics_active_query;
     vkCmdEndRenderPass(command);graphics_active_frame=NULL;
 }
-static void graphics_pass_begin(graphics_frame_entry *frame) {
+static void graphics_pass_begin(graphics_frame_entry *frame,const VkClearValue *clears) {
     if(graphics_active_frame==frame)return;graphics_pass_end();
-    VkRenderPassBeginInfo info={.sType=VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,.renderPass=frame->key.pass->pass,.framebuffer=frame->frame,.renderArea={{0,0},{frame->key.width,frame->key.height}}};
+    VkRenderPassBeginInfo info={.sType=VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,.renderPass=frame->key.pass->pass,.framebuffer=frame->frame,.renderArea={{0,0},{frame->key.width,frame->key.height}},.clearValueCount=frame->key.pass->key.attachments,.pClearValues=clears};
+    for(unsigned i=0;i<frame->key.pass->key.attachments;i++)if(frame->key.pass->key.load[i]==VK_ATTACHMENT_LOAD_OP_CLEAR){
+        deferred_clear_take(frame->images[i]);
+    }
     if(used_queries>=1024)die("Vulkan occlusion batch capacity");graphics_active_query=used_queries++;
     vkCmdBeginRenderPass(command,&info,VK_SUBPASS_CONTENTS_INLINE);graphics_active_frame=frame;render_passes++;
     vkCmdBeginQuery(command,draw_queries,graphics_active_query,gpu_features.occlusionQueryPrecise?VK_QUERY_CONTROL_PRECISE_BIT:0);

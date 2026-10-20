@@ -55,6 +55,7 @@ static void forward_reset(void);
 static uint64_t timestamp_delta(uint64_t begin,uint64_t end,unsigned bits);
 typedef struct image_entry image_entry;
 static void graphics_pass_end(void);
+static void deferred_clear_flush_all(void);
 static int graphics_image_is_attachment(const image_entry *image);
 static void graphics_cache_forget_image(image_entry *image);
 static void dependencies_prepare_range(uintptr_t address,uint64_t size);
@@ -847,6 +848,7 @@ void mtl_sub_counter(uint64_t addr, uint32_t type) { graphics_pass_end();post_op
 uint64_t mtl_sub_commit(void) {
     if (!recording) die("NVN commit without begin");
     graphics_pass_end();
+    deferred_clear_flush_all();
     if(batch_times)vkCmdWriteTimestamp(command,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,batch_times,1);
     async_record_query_readback_locked();
     VK_CHECK(vkEndCommandBuffer(command));
@@ -1006,7 +1008,7 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     if(previous_acquire&&!mtl_wait(previous_acquire,UINT64_MAX))die("Vulkan prior acquire consumer wait failed");
     uint64_t previous_acquire_ns=dm_android_clock_ns(CLOCK_MONOTONIC)-previous_start;
     dm_cpu_phase_end(DM_CPU_PHASE_WAIT_PRIOR,previous_start);
-    uint64_t ticket=++presents;graphics_probe_capture(ticket);frame_trace_present(ticket);texture_upload_report(ticket);
+    uint64_t ticket=++presents;graphics_probe_capture(ticket);frame_trace_present(ticket);texture_upload_report(ticket);deferred_clear_report(ticket);
     if(!(ticket%60))LOG("[vulkan-prior-acquire] frame=%llu queued=%llu prior_consumer=%llu wait=%.3f ms scope=prior_binary_acquire_consumer current_guest_publication=async",(unsigned long long)ticket,(unsigned long long)completion_ticket,(unsigned long long)previous_acquire,previous_acquire_ns/1e6);
     if (swapchain) {
         // 前次 blit 已消费 acquire token；当前帧通过独立返回的真实票号追踪完成。

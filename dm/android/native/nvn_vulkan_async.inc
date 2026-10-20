@@ -54,6 +54,7 @@ static void async_chunk_boundary_locked(void) {
     if(screen_submission||batch->chunk_index+1>=ASYNC_CHUNK_CAPACITY||batch_draws-batch->chunk_draws<ASYNC_CHUNK_MIN_DRAWS)return;
     uint64_t now=dm_android_clock_ns(CLOCK_MONOTONIC);
     if(!now||!batch->chunk_started||now<batch->chunk_started||now-batch->chunk_started<ASYNC_CHUNK_RECORD_NS)return;
+    deferred_clear_flush_all();
     VK_CHECK(vkEndCommandBuffer(command));
     VkSubmitInfo submit={.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,.commandBufferCount=1,.pCommandBuffers=&command};
     // 同队列最终 fence 覆盖此前各段；客体 ticket 和 WSI 信号仍只在最终提交公布。

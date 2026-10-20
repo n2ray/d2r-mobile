@@ -10,6 +10,8 @@ typedef struct image_entry {
     uint64_t source_stamp,source_hash,source_seen;int source_valid,source_tracked;
     VkPipelineStageFlags last_stage;VkAccessFlags last_access;int gpu_written;
     cached_image_view *views;
+    int clear_pending,clear_listed;VkClearColorValue clear_color;VkImageSubresourceRange clear_range;
+    struct image_entry *clear_next;
     struct image_entry *next,*hash_next;
 } image_entry;
 typedef struct { int valid; tex_t texture; view_t view; uint64_t revision; } texture_descriptor;
@@ -189,7 +191,11 @@ static VkFormat vk_format(int format) {
 }
 // 按真正的读写风险同步；连续只读与通道内同附件写入不加全局屏障。
 // Synchronize actual read/write hazards; avoid global barriers for consecutive reads or same-pass attachment writes.
+static void image_access(image_entry *e,VkPipelineStageFlags stage,VkAccessFlags access);
+static uint32_t dimension(uint32_t v,unsigned level);
+#include "nvn_vulkan_clear.inc"
 static void image_access(image_entry *e,VkPipelineStageFlags stage,VkAccessFlags access) {
+    deferred_clear_flush(e);
     VkAccessFlags writes=VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT|VK_ACCESS_TRANSFER_WRITE_BIT|VK_ACCESS_HOST_WRITE_BIT|VK_ACCESS_MEMORY_WRITE_BIT;
     if(graphics_image_is_attachment(e)&&stage==e->last_stage&&access==e->last_access&&(access&(VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)))return;
     if(e->last_access&&((e->last_access|access)&writes)){
@@ -316,7 +322,7 @@ static void clear_color(const p_clear_color *c) {
     // 非完整剪裁必须保留未覆盖像素；不能用整张清除替代。
     // A partial scissor must preserve uncovered pixels; never substitute a whole-image clear.
     if(state.scissor.w>0&&(state.scissor.x||state.scissor.y||state.scissor.w<(int)dimension(e->texture.d.width,r.baseMipLevel)||state.scissor.h<(int)dimension(e->texture.d.height,r.baseMipLevel)))die("Vulkan scissored clear pending");
-    frame_trace_transfer("clear_color",state.rt.color[c->index],r,0,0,(int)dimension(e->texture.d.width,r.baseMipLevel),(int)dimension(e->texture.d.height,r.baseMipLevel));graphics_pass_end();VkClearColorValue color;memcpy(color.float32,c->rgba,sizeof c->rgba);image_access(e,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);vkCmdClearColorImage(command,e->image,VK_IMAGE_LAYOUT_GENERAL,&color,1,&r);image_gpu_written(e);
+    frame_trace_transfer("clear_color",state.rt.color[c->index],r,0,0,(int)dimension(e->texture.d.width,r.baseMipLevel),(int)dimension(e->texture.d.height,r.baseMipLevel));graphics_pass_end();VkClearColorValue color;memcpy(color.float32,c->rgba,sizeof c->rgba);deferred_clear_queue(e,r,color);image_gpu_written(e);
 }
 static void clear_depth(const p_clear_ds *c) {
     if(!state.rt.depth)return;image_entry *e=image_get(state.rt.depth);VkImageSubresourceRange r=texture_range(e,state.rt.has_dview?&state.rt.dview:NULL);r.aspectMask=0;
@@ -441,6 +447,7 @@ void mtl_tex_release(tex_t *t) {
 }
 static void image_release_serial(uint64_t serial) {
     image_entry **link=&image_list;while(*link&&(*link)->serial!=serial)link=&(*link)->next;
+    if(*link&&((*link)->clear_pending||(*link)->clear_listed))die("Vulkan image released with deferred clear");
     if(*link){image_entry *e=*link;graphics_cache_forget_image(e);*link=e->next;image_entry **hash=&image_index[e->serial&4095];while(*hash&&*hash!=e)hash=&(*hash)->hash_next;if(!*hash)die("Vulkan image index corruption");*hash=e->hash_next;while(e->views){cached_image_view *v=e->views;e->views=v->next;vkDestroyImageView(device,v->view,NULL);free(v);}vkDestroyImageView(device,e->view,NULL);vkDestroyImage(device,e->image,NULL);vkFreeMemory(device,e->memory,NULL);free(e);}
 }
 void mtl_read_texels(const tex_t *t,unsigned level,unsigned layer,const NVNcopyRegion *r,uint8_t *dst,size_t row,size_t img) {
