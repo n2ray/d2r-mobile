@@ -57,7 +57,8 @@ static void buffer_memory_release(vk_buffer *buffer) {
 static void buffer_memory_report(uint64_t ticket) {
     pthread_mutex_lock(&buffer_cache_lock);
     uint64_t pages=buffer_memory_page_count,allocations=buffer_memory_page_allocations,suballocations=buffer_memory_suballocations;
+    uint64_t cached=buffer_cache_bytes,evictions=buffer_cache_evictions;
     int enabled=buffer_memory_enabled;
     pthread_mutex_unlock(&buffer_cache_lock);
-    LOG("[vulkan-buffer-memory] frame=%llu enabled=%d pages=%llu pooled=%.3f MiB page_allocations=%llu suballocations=%llu",(unsigned long long)ticket,enabled,(unsigned long long)pages,pages/4.,(unsigned long long)allocations,(unsigned long long)suballocations);
+    LOG("[vulkan-buffer-memory] frame=%llu enabled=%d pages=%llu pooled=%.3f MiB page_allocations=%llu suballocations=%llu free_cache=%.3f MiB evictions=%llu",(unsigned long long)ticket,enabled,(unsigned long long)pages,pages/4.,(unsigned long long)allocations,(unsigned long long)suballocations,cached/1048576.,(unsigned long long)evictions);
 }

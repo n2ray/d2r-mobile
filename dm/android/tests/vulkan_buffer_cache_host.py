@@ -57,6 +57,16 @@ prefix+=source[start:end]
 # Baseline does not declare the new diagnostic accounting variable.
 if 'buffer_cache_large_bytes' not in prefix: prefix+='\nstatic uint64_t buffer_cache_large_bytes;\n'
 body=r'''
+static vk_buffer fresh(uint64_t capacity);
+static void clear_cache(void){
+    while(buffer_cache){cached_buffer *entry=buffer_cache;buffer_cache_unlink(entry);buffer_release_backing(&entry->buffer);free(entry);}
+    assert(!buffer_cache_tail&&!buffer_cache_bytes&&!buffer_cache_large_bytes);
+}
+static void check_links(void){
+    cached_buffer *previous=NULL;uint64_t bytes=0;
+    for(cached_buffer *e=buffer_cache;e;e=e->next){assert(e->prev==previous);previous=e;bytes+=e->buffer.capacity;}
+    assert(previous==buffer_cache_tail&&bytes==buffer_cache_bytes);
+}
 static void memory_pages_test(void){
     VkMemoryRequirements req={4096,64,3};vk_buffer buffers[70]={0};
     for(unsigned i=0;i<70;i++){buffers[i]=(vk_buffer){.buffer=i+2,.capacity=4096,.size=80,.owner=calloc(1,sizeof(buffer_owner))};assert(buffers[i].owner);
@@ -88,10 +98,12 @@ static void memory_pages_test(void){
     assert(allocations==before&&!buffer_memory_pages);
     vk_buffer held={.buffer=92,.capacity=4096,.size=80,.owner=calloc(1,sizeof(buffer_owner))};assert(held.owner);
     atomic_init(&held.owner->references,1);assert(buffer_memory_bind(&held,&req,0,0));active_buffer_bytes=4096;
-    buffer_cache_bytes=64u<<20;vk_buffer alias=buffer_borrow(held);buffer_destroy(&held);
+    vk_buffer alias=buffer_borrow(held);buffer_destroy(&held);
     assert(!held.buffer&&buffer_memory_page_count==1&&atomic_load(&alias.owner->references)==1);
-    buffer_destroy(&alias);assert(!alias.buffer&&!buffer_memory_page_count&&!active_buffer_bytes&&released==1);
-    buffer_cache_bytes=0;released=0;
+    buffer_destroy(&alias);assert(!alias.buffer&&buffer_memory_page_count==1&&!active_buffer_bytes&&buffer_cache_bytes==4096);
+    for(unsigned i=0;i<8;i++){vk_buffer large=fresh(8u<<20);buffer_destroy(&large);check_links();}
+    assert(!buffer_memory_page_count&&released==1&&buffer_cache_bytes==(64u<<20));
+    clear_cache();released=0;
     buffer_memory_report(0);puts("actual buffer memory: disjoint slots, spill, partial/final release, memory type, dedicated/alignment fallback PASS");
 }
 static vk_buffer fresh(uint64_t capacity){
@@ -112,13 +124,24 @@ int main(void){
     for(unsigned i=0;i<8;i++){vk_buffer small=fresh(8ull<<20);buffer_destroy(&small);}
     assert(buffer_cache_bytes==(96ull<<20) && buffer_cache_large_bytes==(32ull<<20));
     vk_buffer overflow=fresh(4096);buffer_destroy(&overflow);assert(released==2);
+    assert(buffer_cache->buffer.capacity==4096&&buffer_cache_bytes==((88ull<<20)+4096)&&buffer_cache_large_bytes==(32ull<<20));check_links();
     vk_buffer oversize=fresh(64ull<<20);buffer_destroy(&oversize);assert(released==3);
-    assert(active_buffer_bytes==0 && buffer_cache_bytes==(96ull<<20));
-    while(buffer_cache){cached_buffer *entry=buffer_cache;buffer_cache=entry->next;free(entry->buffer.owner);free(entry);}
-    puts("actual buffer release: last reference, single large slot, small budget, overflow PASS");
+    assert(active_buffer_bytes==0 && buffer_cache_bytes==((88ull<<20)+4096));
+    cached_buffer *head=buffer_cache,*tail=buffer_cache_tail,*middle=head->next;
+    buffer_cache_unlink(middle);buffer_release_backing(&middle->buffer);free(middle);check_links();
+    buffer_cache_unlink(head);buffer_release_backing(&head->buffer);free(head);check_links();
+    buffer_cache_unlink(tail);buffer_release_backing(&tail->buffer);free(tail);check_links();assert(!buffer_cache_large_bytes);
+    clear_cache();
+    for(unsigned i=1;i<=64;i++){vk_buffer cold=fresh(1u<<20);cold.size=i;buffer_destroy(&cold);}
+    unsigned released_before=released;uint64_t evictions_before=buffer_cache_evictions;
+    vk_buffer hot=fresh(8u<<20);buffer_destroy(&hot);check_links();
+    assert(released==released_before+8&&buffer_cache_evictions==evictions_before+8);
+    assert(buffer_cache_bytes==(64u<<20)&&buffer_cache->buffer.capacity==(8u<<20)&&buffer_cache_tail->buffer.size==9);
+    clear_cache();
+    puts("actual buffer release: final reference, independent large slot, bounded LRU, multi-eviction, unlink endpoints PASS");
 }
 '''
 memory=Path(sys.argv[1]).with_name('nvn_vulkan_buffer_memory.inc').read_text()
-path=Path(sys.argv[2]); path.write_text(prefix+memory+extract('buffer_borrow')+'\n'+extract('buffer_destroy')+body)
+path=Path(sys.argv[2]); path.write_text(prefix+memory+extract('buffer_cache_unlink')+'\n'+extract('buffer_release_backing')+'\n'+extract('buffer_borrow')+'\n'+extract('buffer_destroy')+body)
 subprocess.run([sys.argv[3] if len(sys.argv)>3 else 'clang','-std=c11','-pthread','-Wall','-Wextra','-Wno-unused-variable','-Werror','-fsanitize=address,undefined',str(path),'-o',str(path.with_suffix(''))],check=True)
 subprocess.run([str(path.with_suffix(''))],check=True)
