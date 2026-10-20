@@ -216,37 +216,40 @@ final class D2RTouchOverlay extends View {
         RectF face = new RectF(x - r + side * .055f, y - r + side * .055f,
                                x + r - side * .055f, y + r - side * .055f);
         fill.setShader(new LinearGradient(x, rim.top, x, rim.bottom,
-            new int[]{0x2a2e2e00 | (empty ? 0x30000000 : 0xe6000000),
-                      0x0e101200 | (empty ? 0x30000000 : 0xf2000000),
-                      0x291c1900 | (empty ? 0x28000000 : 0xb3000000)},
+            new int[]{TouchSocketColor.argb(.26f, .28f, .28f, empty ? .22f : .9f),
+                      TouchSocketColor.argb(.055f, .065f, .07f, empty ? .22f : .95f),
+                      TouchSocketColor.argb(.16f, .11f, .10f, empty ? .16f : .7f)},
             new float[]{0f, .55f, 1f}, Shader.TileMode.CLAMP));
         canvas.drawOval(rim, fill);
         fill.setShader(null);
         stroke.setStyle(Paint.Style.STROKE);
         stroke.setStrokeWidth(side * .025f);
-        stroke.setColor(empty ? 0x61000000 : 0xe6000000);
+        stroke.setColor(TouchSocketColor.argb(.008f, .012f, .015f, empty ? .38f : .9f));
         canvas.drawOval(rim, stroke);
         fill.setShader(new LinearGradient(x, face.top, x, face.bottom,
-            new int[]{empty ? 0x14050505 : 0xf0050505,
-                      empty ? 0x290d0d0d : 0xf00d0d0d},
+            new int[]{TouchSocketColor.argb(.021f, .021f, .021f, empty ? .08f : .94f),
+                      TouchSocketColor.argb(.050f, .050f, .050f, empty ? .16f : .94f)},
             null, Shader.TileMode.CLAMP));
         canvas.drawOval(face, fill);
         fill.setShader(null);
         stroke.setStrokeWidth(side * (held ? .018f : .009f));
-        stroke.setColor(held ? 0xb8a3a3a3 : (empty ? 0x2e4a4a4a : 0x8c424742));
+        stroke.setColor(TouchSocketColor.argb(held ? .64f : .26f, held ? .64f : .29f,
+                                              held ? .64f : .28f,
+                                              held ? .72f : (empty ? .18f : .55f)));
         canvas.drawOval(face, stroke);
         if (primary && !empty) {
             stroke.setStrokeWidth(side * .012f);
-            stroke.setColor(0x854f3b38);
+            stroke.setColor(TouchSocketColor.argb(.31f, .23f, .22f, .52f));
             canvas.drawOval(new RectF(x - r + side * .035f, y - r + side * .035f,
                                       x + r - side * .035f, y + r - side * .035f), stroke);
         }
     }
 
-    private void drawPlus(Canvas canvas, float x, float y, float r) {
-        stroke.setColor(0xccd8c49a);
-        stroke.setStrokeWidth(Math.max(1.5f, r * .085f));
-        float a = r * .30f;
+    private void drawPlus(Canvas canvas, float x, float y, float r, boolean held) {
+        stroke.setColor(TouchSocketColor.argb(.60f, .65f, .64f, held ? .75f : .25f));
+        stroke.setStrokeWidth(Math.max(1f, r * .036f));
+        stroke.setStrokeCap(Paint.Cap.ROUND);
+        float a = r * .11f;
         canvas.drawLine(x - a, y, x + a, y, stroke);
         canvas.drawLine(x, y - a, x, y + a, stroke);
     }
@@ -294,7 +297,7 @@ final class D2RTouchOverlay extends View {
         if (base < 0 || base + 3 >= glyphs.length) return false;
         int status = glyphs[base];
         if (status == TouchGlyph.EMPTY) {
-            drawPlus(canvas, cx, cy, r);
+            drawPlus(canvas, cx, cy, r, (buttons & TouchGlyph.button(target)) != 0);
             return true;
         }
         if (status != TouchGlyph.GLYPH) return false;
