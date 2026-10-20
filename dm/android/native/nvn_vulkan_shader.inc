@@ -376,7 +376,9 @@ static VkDescriptorSet bind_shader(shader_entry *s,post_op *lifetime,uint32_t *d
                 const p_bind_buf *u=uniform_ptr?&state.ubo[s->stage][slot]:&state.ssbo[s->stage][slot];uint64_t bytes=u->size?u->size:65536;vk_buffer buffer;
                 // BufferUsageFlags.Write 是位 0；图像 flags 的位号不可用于 SSBO。
                 // BufferUsageFlags.Write is bit 0; image flag bits do not apply to SSBOs.
-                if(u->addr&&!(b->flags&1))buffers[j]=forward_readonly_shader_buffer(s,b,j,slot,UINT32_MAX,uniform_ptr?2:1,u->size,u->addr,bytes,gpu_limits.minStorageBufferOffsetAlignment,shader_pipeline_stage(s),VK_ACCESS_SHADER_READ_BIT);
+                VkDescriptorBufferInfo ghost_info;
+                if(u->addr&&ghost_buffer_override((uintptr_t)u->addr,bytes,&ghost_info)) buffers[j]=ghost_info;
+                else if(u->addr&&!(b->flags&1))buffers[j]=forward_readonly_shader_buffer(s,b,j,slot,UINT32_MAX,uniform_ptr?2:1,u->size,u->addr,bytes,gpu_limits.minStorageBufferOffsetAlignment,shader_pipeline_stage(s),VK_ACCESS_SHADER_READ_BIT);
                 else{post_op *p=post_new(u->addr?0:3);p->destination=(void*)(uintptr_t)u->addr;p->size=bytes;p->output=buffer_create(bytes);if(u->addr){post_register_range(p);forward_seed(&p->output,u->addr,bytes,shader_pipeline_stage(s));}else memset(p->output.mapped,0,bytes);buffer=p->output;buffers[j]=(VkDescriptorBufferInfo){buffer.buffer,0,bytes};}w.pBufferInfo=buffers;
             }
             else if(type==VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER||type==VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER){
