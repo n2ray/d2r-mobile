@@ -140,6 +140,8 @@ def main():
                         help="不出内置驱动（只出通用包，启动界面里那一项会自己隐藏）")
     parser.add_argument("--touch-art", type=Path,
                         help="root-provided generated TouchArt directory (dm_native_skill_0..8.png); validated against the frozen manifest")
+    parser.add_argument("--mapgoal-art", type=Path,
+                        help="root-generated NativeHUD/mapgoal directory (sym_*.png, cross.png, label_*.png); packaged under assets/mapgoal")
     args = parser.parse_args()
     if args.game_source and not args.game_run: parser.error("--game-source only makes sense with --game-run")
     if args.game_run and not args.game_source:
@@ -225,6 +227,26 @@ def main():
         print("Touch art: packaged %d validated atlases from %s" % (len(touch_files), args.touch_art), flush=True)
     else:
         print("Touch art: not supplied; glyph overlay remains explicitly unknown", flush=True)
+    if args.mapgoal_art:
+        source = args.mapgoal_art
+    else:
+        gen_root = Path(os.environ.get("DM_GEN_ASSETS", str(REPO / "dm/ios/Gen/assets")))
+        candidate = gen_root / "NativeHUD" / "mapgoal"
+        source = candidate if candidate.is_dir() else None
+    if source:
+        if not source.is_dir():
+            raise SystemExit("mapgoal art: not a directory: " + str(source))
+        dest = assets / "mapgoal"; dest.mkdir(exist_ok=True)
+        count = 0
+        for path in sorted(source.iterdir()):
+            if not path.is_file() or path.is_symlink():
+                continue
+            if path.suffix.lower() not in (".png", ".json"):
+                continue
+            shutil.copyfile(path, dest / path.name); count += 1
+        print("Map goal art: packaged %d generated files from %s" % (count, source), flush=True)
+    else:
+        print("Map goal art: not supplied; objective markers remain absent", flush=True)
     for license_file in (build / "gpu-driver/licenses").glob("*.txt"):
         shutil.copyfile(license_file, licenses / license_file.name)
     # 启动画面背景图随源码发布（dm/android/artwork/），新电脑 clone 后能重建出同样的 APK。

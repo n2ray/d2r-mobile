@@ -78,6 +78,10 @@ typedef struct {
     uint64_t live_visual_signature;
     dm_rift_hud_t live_rift;
     int live_rift_on;
+    dm_map_goal_view live_goals;
+    float live_goal_cell_pt, live_goal_minimap[4];
+    int live_goal_mode, live_goal_valid;
+    int live_goal_lang_zh, live_goal_lang_index, live_goal_old;
     int live_bind_state;
     unsigned map_world_seq, tap_move_seen, world_tap_seen;
     uint32_t selected_point;
@@ -602,6 +606,32 @@ static void live_touch_publish_visual(game_app *s) {
         (uint64_t)(uint32_t)rift.nwave, (uint64_t)progress_bits};
       for (unsigned i = 0; i < sizeof rift_parts / sizeof *rift_parts; i++)
           signature = (signature ^ rift_parts[i]) * 1099511628211ull; }
+    // Minimap goals: owner-thread host geometry/IDs, cached for the draw-only
+    // overlay. No goal is invented; absence simply invalidates the cache.
+    { float cell=0,mm[4]={0}; int mode=dm_ui_map_geom(&cell);
+      dm_map_goal_view goals; memset(&goals,0,sizeof goals);
+      int n=dm_map_goals(&goals), have_mini=dm_ui_minimap_rect(mm);
+      int rw=0,rh=0; dm_screen_real(&rw,&rh);
+      int valid=mode&&n>0&&!v.navigation_mode&&!v.frontend&&rw>0&&cell>0&&(mode==2||have_mini);
+      float cell_pt=valid?cell*s->live_geometry.width/(float)rw:0;
+      int lang_zh=dm_lang_zh(), lang_i=dm_lang_index(), old=dm_custom_get("item_notes")!=0;
+      pthread_mutex_lock(&s->lock);
+      s->live_goals=goals;s->live_goal_mode=mode;s->live_goal_valid=valid;
+      s->live_goal_cell_pt=cell_pt;memcpy(s->live_goal_minimap,mm,sizeof mm);
+      s->live_goal_lang_zh=lang_zh;s->live_goal_lang_index=lang_i;s->live_goal_old=old;
+      pthread_mutex_unlock(&s->lock);
+      uint32_t cell_bits=0; memcpy(&cell_bits,&cell_pt,sizeof cell_bits);
+      const uint64_t goal_parts[]={(uint64_t)valid,(uint64_t)mode,(uint64_t)cell_bits,
+        (uint64_t)(uint32_t)goals.n,(uint64_t)(uint32_t)goals.px,(uint64_t)(uint32_t)goals.py,
+        (uint64_t)(uint32_t)lang_zh,(uint64_t)(uint32_t)lang_i,(uint64_t)(uint32_t)old};
+      for(unsigned i=0;i<sizeof goal_parts/sizeof *goal_parts;i++)
+          signature=(signature^goal_parts[i])*1099511628211ull;
+      for(int i=0;i<goals.n&&i<12;i++){
+          signature=(signature^((uint64_t)(uint32_t)goals.x[i]))*1099511628211ull;
+          signature=(signature^((uint64_t)(uint32_t)goals.y[i]))*1099511628211ull;
+          signature=(signature^((uint64_t)goals.art[i]))*1099511628211ull;
+      }
+    }
     if (signature == s->live_visual_signature) return;
     s->live_visual_signature = signature;
     live_touch_notify_visual(s);
@@ -1174,6 +1204,32 @@ __attribute__((visibility("default"))) jint Java_org_d2r_android_port_D2RActivit
 // cannot fire a stale vibration when it resumes.
 __attribute__((visibility("default"))) void Java_org_d2r_android_port_D2RActivity_discardDropHapticsNative(JNIEnv *env,jclass klass) {
     (void)env;(void)klass;int dm_drop_haptic_take(void);(void)dm_drop_haptic_take();
+}
+// Read-only minimap-goal snapshot. The owner tick has already cached host
+// geometry/IDs; the UI thread only copies it and loads the generated assets.
+__attribute__((visibility("default"))) jint Java_org_d2r_android_port_D2RActivity_getLiveTouchMapGoalSnapshot(JNIEnv *env,jclass klass,jfloatArray values,jintArray arts) {
+    (void)klass;
+    if(!values||!arts||(*env)->GetArrayLength(env,values)<40||(*env)->GetArrayLength(env,arts)<12)return 0;
+    float out[40]={0}; int art[12]={0}; game_app *s=application; int valid=0;
+    if(s&&s->live_provider_available&&s->live_touch){
+        dm_map_goal_view g; float mm[4]; int mode,lang_zh,lang_i,old; float cell;
+        pthread_mutex_lock(&s->lock);
+        g=s->live_goals;memcpy(mm,s->live_goal_minimap,sizeof mm);
+        mode=s->live_goal_mode;valid=s->live_goal_valid;cell=s->live_goal_cell_pt;
+        lang_zh=s->live_goal_lang_zh;lang_i=s->live_goal_lang_index;old=s->live_goal_old;
+        pthread_mutex_unlock(&s->lock);
+        out[0]=(float)valid;out[1]=(float)mode;out[2]=cell;
+        out[3]=g.sx;out[4]=g.sy;out[5]=(float)g.n;
+        out[6]=(float)lang_zh;out[7]=(float)lang_i;out[8]=(float)old;
+        for(int i=0;i<4;i++)out[9+i]=mm[i];
+        out[13]=(float)g.px;out[14]=(float)g.py;
+        for(int i=0;i<12;i++){
+            out[15+i*2]=(float)g.x[i];out[16+i*2]=(float)g.y[i];art[i]=g.art[i];
+        }
+    }
+    (*env)->SetFloatArrayRegion(env,values,0,40,out);
+    (*env)->SetIntArrayRegion(env,arts,0,12,art);
+    return valid?1:0;
 }
 static int32_t stick_value(float value) {if(value>1)value=1;if(value<-1)value=-1;return value>-.15f&&value<.15f?0:(int32_t)(value*DM_STICK_MAX);}
 static uint64_t pad_key(int key) {

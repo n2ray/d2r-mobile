@@ -493,6 +493,11 @@ public final class D2RActivity extends NativeActivity {
         catch (UnsatisfiedLinkError error) { return 0; }
     }
 
+    int readLiveTouchMapGoalSnapshot(float[] values, int[] arts) {
+        try { return getLiveTouchMapGoalSnapshot(values, arts); }
+        catch (UnsatisfiedLinkError error) { return 0; }
+    }
+
     int readLiveTouchOverlay(float[] values, long[] state) {
         try { return getLiveTouchOverlaySnapshot(values, state); }
         catch (UnsatisfiedLinkError error) { return 0; }
@@ -509,6 +514,7 @@ public final class D2RActivity extends NativeActivity {
     private native int getLiveTouchGlyphSnapshot(int[] glyphs);
     private native int getLiveTouchAtlasInfo(int[] info);
     private native int getLiveTouchRiftSnapshot(float[] values, String[] lines);
+    private native int getLiveTouchMapGoalSnapshot(float[] values, int[] arts);
     private native void discardDropHapticsNative();
 
     // NativeActivity 的真实 AInputQueue 已接上原 D2R 手势核心时，旧的 Switch 按钮层让位；未接上则保留明确 fallback。

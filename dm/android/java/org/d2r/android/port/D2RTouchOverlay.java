@@ -18,6 +18,8 @@ import android.widget.PopupWindow;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Draw-only visual layer for the actual D2R live touch core.
@@ -43,6 +45,9 @@ final class D2RTouchOverlay extends View {
     private final int[] atlasInfo = new int[45];
     private final float[] riftValues = new float[16];
     private final String[] riftLines = new String[4];
+    private final float[] mapGoalValues = new float[40];
+    private final int[] mapGoalArt = new int[12];
+    private final Map<String, Bitmap> mapGoalCache = new HashMap<>();
     private final Bitmap[] atlases = new Bitmap[TouchGlyph.ATLAS_COUNT];
     private final Bitmap[] glyphCache = new Bitmap[TouchGlyph.ATLAS_COUNT * 128];
     private final int[] glyphRect = new int[4];
@@ -53,6 +58,7 @@ final class D2RTouchOverlay extends View {
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint hudText = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint mapPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final View.OnLayoutChangeListener layoutListener;
     private boolean visible, destroyed;
 
@@ -211,6 +217,85 @@ final class D2RTouchOverlay extends View {
                 activity.readLiveTouchRiftSnapshot(riftValues, riftLines))) {
             drawRift(canvas, v, riftValues, riftLines);
         }
+        if (activity.readLiveTouchMapGoalSnapshot(mapGoalValues, mapGoalArt) != 0 &&
+            TouchMapGoal.visible((int)mapGoalValues[1], (int)mapGoalValues[5],
+                (int)v[23], (int)v[89], mapGoalValues[11] > mapGoalValues[9])) {
+            drawMapGoals(canvas, v);
+        }
+    }
+
+    private void drawMapGoals(Canvas canvas, float[] v) {
+        float[] m = mapGoalValues;
+        int mode = (int)m[1], n = Math.min(12, (int)m[5]);
+        float H = v[3], cell = m[2];
+        if (!(H > 0 && cell > 0 && n > 0)) return;
+        float left, top, right, bottom, ox, oy;
+        if (mode == 2) {
+            left = v[0] + v[2] * .04f; top = v[1] + H * .06f;
+            right = left + v[2] * .92f; bottom = top + H * .72f;
+            ox = v[0] + m[3] * v[2]; oy = v[1] + m[4] * H;
+        } else {
+            float vw = getWidth(), vh = getHeight();
+            if (!(vw > 0 && vh > 0)) return;
+            left = m[9] * vw; top = m[10] * vh; right = m[11] * vw; bottom = m[12] * vh;
+            ox = (left + right) * .5f; oy = (top + bottom) * .5f;
+            float iw = (right - left) * .06f, ih = (bottom - top) * .08f;
+            left += iw; right -= iw; top += ih; bottom -= ih;
+        }
+        float fullRight = v[0] + v[2] * .72f, fullBottom = v[1] + H * .45f;
+        float lh = H * .0236f, sh = H * .085f * (mode == 1 ? .6f : 1f);
+        float cw = lh * 1.4f, ch = cw * 18f / 34f;
+        boolean zh = m[6] != 0, old = m[8] != 0;
+        int lang = (int)m[7];
+        for (int i = 0; i < n; i++) {
+            float px = TouchMapGoal.projectedX(ox, m[13], m[14],
+                (int)m[15 + i * 2], (int)m[16 + i * 2], cell);
+            float py = TouchMapGoal.projectedY(oy, m[13], m[14],
+                (int)m[15 + i * 2], (int)m[16 + i * 2], cell);
+            boolean inside = TouchMapGoal.inside(px, py, left, top, right, bottom,
+                mode, fullRight, fullBottom);
+            if (!inside) {
+                float[] edge = TouchMapGoal.clampToEdge(px, py, ox, oy, left, top, right, bottom);
+                px = edge[0]; py = edge[1];
+                if (mode == 2 && px > fullRight && py > fullBottom) py = fullBottom;
+            }
+            int art = mapGoalArt[i];
+            boolean sym = art >= 64;
+            Bitmap mark = null, lab = null;
+            if (inside && sym) {
+                mark = loadMapGoal(TouchMapGoal.markAsset(art, true));
+            } else {
+                String want = TouchMapGoal.labelAsset(art, zh, lang, old);
+                lab = loadMapGoal(want);
+                if (lab == null) lab = loadMapGoal("label_" + (sym ? 0 : art) + ".png");
+                if (inside) mark = loadMapGoal("cross.png");
+            }
+            if (lab != null && lab.getHeight() > 0) {
+                float lw = lh * lab.getWidth() / lab.getHeight();
+                float ly = mark != null ? py - ch * .5f - 2f - lh : py - lh * .5f;
+                dst.set(Math.round(px - lw * .5f), Math.round(ly),
+                        Math.round(px + lw * .5f), Math.round(ly + lh));
+                canvas.drawBitmap(lab, null, dst, mapPaint);
+            }
+            if (mark != null && mark.getHeight() > 0) {
+                float mw = sym ? sh * mark.getWidth() / mark.getHeight() : cw;
+                float mh = sym ? sh : ch;
+                dst.set(Math.round(px - mw * .5f), Math.round(py - mh * .5f),
+                        Math.round(px + mw * .5f), Math.round(py + mh * .5f));
+                canvas.drawBitmap(mark, null, dst, mapPaint);
+            }
+        }
+    }
+
+    private Bitmap loadMapGoal(String name) {
+        if (name == null) return null;
+        if (mapGoalCache.containsKey(name)) return mapGoalCache.get(name);
+        Bitmap bitmap = null;
+        try (InputStream in = activity.getAssets().open("mapgoal/" + name)) {
+            bitmap = BitmapFactory.decodeStream(in);
+        } catch (IOException | RuntimeException ignored) { }
+        mapGoalCache.put(name, bitmap);
+        return bitmap;
     }
 
     private void drawRift(Canvas canvas, float[] v, float[] r, String[] lines) {
