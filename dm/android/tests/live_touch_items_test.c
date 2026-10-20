@@ -109,23 +109,21 @@ static const dm_live_touch_items_actions actions = {
 
 typedef struct { dm_live_touch *touch; dm_live_touch_items *items; fake_host fake; } rig;
 
-static rig make_rig(void) {
-    rig r;
-    memset(&r, 0, sizeof r);
-    r.touch = dm_live_touch_create(667, 375);
+static void make_rig(rig *r) {
+    memset(r, 0, sizeof *r);
+    r->touch = dm_live_touch_create(667, 375);
     dm_live_touch_items_host host = host_vtable;
-    host.context = &r.fake;
-    r.items = dm_live_touch_items_create(r.touch, &host);
-    dm_live_touch_set_mode(r.touch, 1, dm_tc_nav_mask(1) | (1u << DM_TC_MENU));
-    r.fake.item_answer = 1;
-    r.fake.drop_answer = 5;
-    r.fake.drop_point_ok = 1;
-    r.fake.origin_ok = 1;
-    r.fake.drop_point_x = 0.42f; r.fake.drop_point_y = 0.58f;
-    r.fake.origin_x = 0.31f; r.fake.origin_y = 0.44f;
-    r.fake.touch = r.touch;
-    (void)dm_live_touch_items_set_context(r.items, 1, 1, 1, 1);
-    return r;
+    host.context = &r->fake;
+    r->items = dm_live_touch_items_create(r->touch, &host);
+    dm_live_touch_set_mode(r->touch, 1, dm_tc_nav_mask(1) | (1u << DM_TC_MENU));
+    r->fake.item_answer = 1;
+    r->fake.drop_answer = 5;
+    r->fake.drop_point_ok = 1;
+    r->fake.origin_ok = 1;
+    r->fake.drop_point_x = 0.42f; r->fake.drop_point_y = 0.58f;
+    r->fake.origin_x = 0.31f; r->fake.origin_y = 0.44f;
+    r->fake.touch = r->touch;
+    (void)dm_live_touch_items_set_context(r->items, 1, 1, 1, 1);
 }
 static void drop_rig(rig *r) {
     dm_live_touch_items_destroy(r->items);
@@ -190,7 +188,7 @@ static void shop_drag_case(int kind,int drop,int expected){
 int main(void) {
     shop_drag_case(7,5,1);shop_drag_case(8,5,1);shop_drag_case(8,11,1);shop_drag_case(1,7,1);
     shop_drag_case(7,3,0);shop_drag_case(7,11,0);shop_drag_case(8,0,0);
-    rig r = make_rig();
+    rig r; make_rig(&r);
     CHECK(r.touch && r.items);
 
     // Tap: hit answer is applied only after the async answer, then one host tap.
