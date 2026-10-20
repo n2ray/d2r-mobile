@@ -245,7 +245,7 @@ final class D2RTouchOverlay extends View {
 
     private void drawPlus(Canvas canvas, float x, float y, float r, boolean held) {
         stroke.setColor(TouchSocketColor.emptyCrossColor(held));
-        stroke.setStrokeWidth(Math.max(1f, r * .036f));
+        stroke.setStrokeWidth(r * .036f);
         stroke.setStrokeCap(Paint.Cap.ROUND);
         float a = r * .11f;
         canvas.drawLine(x - a, y, x + a, y, stroke);
