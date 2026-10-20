@@ -5,9 +5,11 @@ The function is compiled from frontend_activity.c, not copied, so coordinate
 units and the live-contact token are tested on the production text.
 """
 import pathlib
-import re
+import os
+import shlex
 import subprocess
 import sys
+import tempfile
 
 android = pathlib.Path(__file__).resolve().parents[1]
 src = (android / "native/frontend_activity.c").read_text()
@@ -24,6 +26,9 @@ for i in range(start, len(src)):
             break
 assert end, "shop_ghost_sync body not found"
 body = src[start:end]
+contact_start = src.index("static void shop_ghost_contact_event(")
+contact_end = src.index("\n}\n", contact_start) + 3
+body = src[contact_start:contact_end] + "\n" + body
 
 prelude = r'''
 #include <stdatomic.h>
@@ -32,10 +37,15 @@ prelude = r'''
 #include <string.h>
 #include <math.h>
 #define DM_TC_POINTER_LIFT_PT 24.0f
-typedef struct { struct { int width, height; } layout; int navigation_mode; } dm_tc_state;
+enum {DM_LIVE_ACTION_DOWN=0,DM_LIVE_ACTION_UP=1,DM_LIVE_ACTION_POINTER_DOWN=5,
+      DM_LIVE_ACTION_POINTER_UP=6,DM_LIVE_ACTION_CANCEL=3};
+typedef struct { struct { int width, height; } layout; int navigation_mode, pointer_slot; } dm_tc_state;
 typedef struct { int active, shop_drag; float aim_origin_x, aim_origin_y, x, y; } dm_tc_finger;
-typedef struct { int ui_drag_active; } game_app;
-static _Atomic uint64_t ghost_contact;
+typedef struct { int ui_drag_active; void *live_touch; } game_app;
+static _Atomic uint64_t ghost_contact,ghost_contact_seq;
+static _Atomic int32_t ghost_pointer_id=-1;
+static int dm_live_touch_pointer_slot_for_id(void *touch,int32_t id) { (void)touch; return id==7?0:id==8?1:-1; }
+static int dm_live_touch_pointer_slot(void *touch) { (void)touch; return 0; }
 static int off_calls, on_calls, last_dim;
 static float last_px, last_py, last_cx, last_cy;
 static const _Atomic uint64_t *last_live;
@@ -58,29 +68,41 @@ static void dm_vk_ui_ghost_request(int on, float px, float py, const float g[4],
 
 main = r'''
 int main(void) {
-    game_app s = {.ui_drag_active = 1};
+    game_app s = {.ui_drag_active = 1, .live_touch = &s};
     dm_tc_state c = {.layout = {640, 360}, .navigation_mode = 0};
     dm_tc_finger f = {.active = 1, .shop_drag = 1, .aim_origin_x = 100, .aim_origin_y = 100, .x = 320, .y = 180};
-    atomic_store(&ghost_contact, 7);
+    shop_ghost_contact_event(&s,DM_LIVE_ACTION_DOWN,7);
+    uint64_t first=atomic_load(&ghost_contact);
+    if (!first || ghost_pointer_id!=7) return 11;
+    shop_ghost_contact_event(&s,DM_LIVE_ACTION_POINTER_DOWN,8);
+    shop_ghost_contact_event(&s,DM_LIVE_ACTION_POINTER_UP,8);
+    if (atomic_load(&ghost_contact)!=first || ghost_pointer_id!=7) return 12;
     shop_ghost_sync(&s, &c, &f);
     if (on_calls != 1) return 1;
     if (fabsf(last_px - 100.f/640.f) > 1e-5f || fabsf(last_py - 100.f/360.f) > 1e-5f) return 2;
     if (fabsf(last_cx - .5f) > 1e-5f || fabsf(last_cy - (.5f - 24.f/360.f)) > 1e-5f) return 3;
-    if (last_live != &ghost_contact || last_token != 7) return 4;
+    if (last_live != &ghost_contact || last_token != first) return 4;
     // Physical release invalidates the live contact; the request token is now stale.
-    atomic_store(&ghost_contact, 0);
+    shop_ghost_contact_event(&s,DM_LIVE_ACTION_UP,7);
     if (atomic_load(last_live) != 0) return 5;
     int before = off_calls;
     shop_ghost_sync(&s, &c, &f);
     if (off_calls != before + 1) return 6;
 
     // Second viewport/layout with the same lift in CSS/physical pixels.
-    atomic_store(&ghost_contact, 9);
+    shop_ghost_contact_event(&s,DM_LIVE_ACTION_DOWN,7);
+    uint64_t second=atomic_load(&ghost_contact);
+    if (!second || second==first) return 13;
     c.layout.width = 1280; c.layout.height = 720; f.x = 640; f.y = 360;
     shop_ghost_sync(&s, &c, &f);
     if (on_calls != 2) return 7;
     if (fabsf(last_cx - .5f) > 1e-5f || fabsf(last_cy - (.5f - 24.f/720.f)) > 1e-5f) return 8;
-    if (last_token != 9) return 9;
+    if (last_token != second) return 9;
+    shop_ghost_contact_event(&s,DM_LIVE_ACTION_CANCEL,-1);
+    if (atomic_load(&ghost_contact) || ghost_pointer_id!=-1) return 14;
+    before=off_calls;
+    shop_ghost_sync(&s,&c,&f);
+    if (off_calls!=before+1) return 15;
 
     // Unknown state fails closed.
     s.ui_drag_active = 0; before = off_calls;
@@ -91,10 +113,13 @@ int main(void) {
 }
 '''
 
-out = pathlib.Path("/Volumes/T2/Projects/d2r-work/build/shop-ghost-sync-test.c")
-out.write_text(prelude + "\n" + body + "\n" + main)
-exe = out.with_suffix("")
-subprocess.run(["clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
-                "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
-                str(out), "-o", str(exe), "-lm"], check=True)
-sys.exit(subprocess.run([str(exe)]).returncode)
+with tempfile.TemporaryDirectory(prefix="dm-shop-ghost-") as work:
+    out = pathlib.Path(work) / "shop-ghost-sync-test.c"
+    out.write_text(prelude + "\n" + body + "\n" + main)
+    exe = out.with_suffix("")
+    subprocess.run([*shlex.split(os.environ.get("CC", "cc")), "-std=c11",
+                    "-Wall", "-Wextra", "-Werror", "-g",
+                    "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+                    str(out), "-o", str(exe), "-lm"], check=True)
+    result = subprocess.run([str(exe)], check=False)
+sys.exit(result.returncode)
