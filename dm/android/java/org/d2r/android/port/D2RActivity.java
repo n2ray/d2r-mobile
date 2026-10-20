@@ -469,6 +469,8 @@ public final class D2RActivity extends NativeActivity {
     public void onDropHaptic(int tier) {
         if (tier < 1 || tier > 3 || isFinishing() || isDestroyed()) return;
         final int generation = hapticGeneration.get();
+        if (!TouchHaptic.allowed(generation, hapticGeneration.get(),
+                activityResumed, hasWindowFocus(), isFinishing(), isDestroyed())) return;
         runOnUiThread(() -> {
             if (!TouchHaptic.allowed(generation, hapticGeneration.get(),
                     activityResumed, hasWindowFocus(), isFinishing(), isDestroyed())) return;
