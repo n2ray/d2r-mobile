@@ -117,6 +117,11 @@ void dm_android_performance_frame_end(const void *window,int index) {
     uint64_t elapsed=ended>=cycle_start?ended-cycle_start:0;
     int valid=cycle_pending&&!cycle_invalid&&cycle_window==window&&cycle_index==index&&cycle_tid==tid&&elapsed>cycle_wsi;
     uint64_t work_ns=valid?elapsed-cycle_wsi:0,wsi_ns=cycle_wsi,period_ns=cycle_period;
+    // Uncapped work has no declared deadline; retire a previous capped session.
+    if(cycle_pending&&!period_ns){
+        if(session){api.close(session);session=NULL;}
+        bound_tid=0;attempted=reported=0;target_ns=0;
+    }
     // 周期墙钟保留真实依赖等待；仅扣 WSI 两个完整调用，含少量驱动CPU，不称为纯等待。
     // Cycle wall time retains dependency waits; subtract only both full WSI calls, including some driver CPU, not pure idle.
     cycle_clear();cycles++;

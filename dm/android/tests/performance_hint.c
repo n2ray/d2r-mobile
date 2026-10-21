@@ -69,7 +69,7 @@ int main(int argc,char **argv) {
     begin(w,0,16666667);end(w,1);assert(reports==before);
     begin(w,0,16666667);test_tid++;end(w,0);test_tid--;assert(reports==before);
     begin(w,0,16666667);dm_android_performance_wsi_calls(UINT64_MAX);end(w,0);assert(reports==before);
-    begin(w,0,0);end(w,0);assert(reports==before);
+    begin(w,0,0);end(w,0);assert(reports==before&&!session&&closes==1);
     begin(w,0,UINT64_MAX);end(w,0);assert(reports==before);
     begin(w,0,16666667);dm_android_performance_close();end(w,0);assert(reports==before&&closes==1);
     dm_android_performance_resume();begin(w,0,16666667);end(w,0);assert(creates==2&&reports==before+1);
