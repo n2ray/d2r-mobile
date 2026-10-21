@@ -24,6 +24,8 @@ Updated **2026-10-21**, based on device observations through October 20. Follow 
 
 Performance varies by scene and over time. Reaching about 60 fps in some camp samples is not evidence of stable 60 fps in combat or a long session. Energy savings have not been established. Upstream iOS performance results describe the Apple build, not this Android port.
 
+Attachment-clear and narrower image-usage experiments are tracked in [#329](https://github.com/n2ray/d2r-mobile/issues/329) and remain disabled by default pending performance acceptance. Tests use bundled Turnip; charging measurements do not establish energy savings. The area-transition skill-icon candidate ([#330](https://github.com/n2ray/d2r-mobile/pull/330)) has passed host/CI checks but still needs visual confirmation across an actual area boundary.
+
 ## Trying a development build
 
 Use an engineering APK built from the integration branch. This is a device-tested development port, not a general compatibility or stable-release claim.
