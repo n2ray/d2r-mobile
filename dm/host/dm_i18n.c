@@ -87,8 +87,10 @@ const char *dm_ui_group(const char *key, int group) {
         switch (group) { case DM_LG_ZH: return k_dm_i18n[i].zh; case DM_LG_ES: return k_dm_i18n[i].es; case DM_LG_MX: return k_dm_i18n[i].mx; case DM_LG_RU: return k_dm_i18n[i].ru; default: return k_dm_i18n[i].en; } }
 #ifdef __ANDROID__
     // Android-added keys live in the generated Android bilingual table; the
-    // upstream multilingual table remains the first source.
-    const char *android = dm_android_ui_text(key, dm_lang_zh());
+    // upstream multilingual table remains the first source. Respect the
+    // caller's explicit group: only DM_LG_ZH selects Chinese, every other
+    // group gets the English fallback (the Android table has no es/mx/ru).
+    const char *android = dm_android_ui_text(key, group == DM_LG_ZH);
     if (android) return android;
 #endif
     return key;
