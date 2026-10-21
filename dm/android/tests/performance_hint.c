@@ -7,7 +7,10 @@
 #include <unistd.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <android/performance_hint.h>
+
+_Atomic int dm_debug_collection_enabled=1;
 
 static uint64_t test_now=1000000000;
 static int32_t test_tid=123;
