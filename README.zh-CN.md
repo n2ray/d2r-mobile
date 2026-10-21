@@ -10,7 +10,7 @@ English: [README.md](README.md)
 
 ## 当前状态
 
-更新于 **2026-10-21**，实机观察截至 10 月 20 日。当前任务与验收边界以[总任务板 #1](https://github.com/n2ray/d2r-mobile/issues/1) 为准。
+更新于 **2026-10-21**，包含截至 10 月 21 日的实机测试与用户反馈。当前任务与验收边界以[总任务板 #1](https://github.com/n2ray/d2r-mobile/issues/1) 为准。
 
 | 方向 | 已验证的进展 | 剩余工作 |
 |---|---|---|
@@ -23,6 +23,12 @@ English: [README.md](README.md)
 **显示以 Turnip 为基线。** 系统高通驱动保留为兜底，但此前发黑及光照缺陷未被实验性 UBO workaround 修复，目前不优先推进该驱动专项。
 
 帧数会随场景和运行时间变化。部分营地采样接近 60 帧，不代表战斗或长时间游玩能稳定 60 帧；节能效果尚未得到证明。上游 iOS 的性能成果属于 Apple 构建，不能直接作为 Android 结论。
+
+**手机上安装的本地候选可能领先于公开集成分支。** 重做的启动页、30／60 帧限制选择及虚拟手柄开关，已在本地候选完成限定范围的实机测试，相关修改尚未合并。用户也反馈该候选在进出营地时不再中断持续移动。这不代表其余触控和手柄验收已经完成。
+
+近期营地静止对照在限制 60 帧时平均约 51–56 帧。延迟重置查询和省略完整覆盖时的呈现清屏，均未显示可重复的帧率收益；两个实验保持默认关闭且未合并。[调研任务 #326](https://github.com/n2ray/d2r-mobile/issues/326) 及[上游进度讨论](https://github.com/jhaizhou-ops/d2r-mobile/issues/59#issuecomment-6310989719) 用于支持 [#23](https://github.com/n2ray/d2r-mobile/issues/23) 后续优化。
+
+诊断读数有范围限制：CPU 时间覆盖 NVN 命令翻译，GPU 时间覆盖已测量的命令批次，快照 MiB／帧统计客体内存快照读取。它们分别不是完整帧的 CPU 时间、完整 GPU 时间或 GPU 总带宽。功率估算来自电池电流和电压，充电时不能据此认定游戏或整机耗电。对照应保持场景、温度和充电条件一致并重复采样。
 
 ## 体验开发版
 
@@ -40,7 +46,7 @@ English: [README.md](README.md)
 
 ## 已知限制与优先级
 
-- 持续移动穿过营地／区域边界时，可能中断并需抬手重按（[#303](https://github.com/n2ray/d2r-mobile/issues/303)）。
+- 用户已在本地候选验证营地切换时移动不中断，合并及更广泛的区域切换检查仍待完成（[#303](https://github.com/n2ray/d2r-mobile/issues/303)）。切换时技能按钮仍可能短暂闪问号（[#302](https://github.com/n2ray/d2r-mobile/issues/302)）。
 - 完整 iOS 触屏呈现仍在适配。地图目标／秘境 HUD 资源、触觉反馈接线、商店图标显示及完整交互／设备矩阵仍有未验收项；攻击和拖动可用不代表整套触控已完成。
 - 当前优先优化持续性能：分析 CPU 翻译路径，按实测热点改进，并保留 GPU 同步、资源所有权和验证。ADPF API 实验虽然能工作，但未证明可重复的帧率收益，未采用。
 - 后台恢复、键盘、手柄、音频、存档恢复及完整通关仍需更广泛验收。清理时归档的历史诊断／契约任务，不因真实游戏首跑就被视为已证明。
@@ -65,6 +71,8 @@ python3 dm/android/tools/build.py --help
 可玩 APK 的入口是 [`dm/android/tools/build.py`](https://github.com/n2ray/d2r-mobile/blob/integration/android-reference/dm/android/tools/build.py) 的 `--game-run` 模式，需要对应参考工具链、SDK／build tools、JDK、着色器工具和本地准备的资源；按实际构建提供 `--turnip`、`--touch-art` 输入。通用 APK 可在手机导入游戏模块。不要发布嵌入游戏代码或游戏派生美术的构建。`dm/android/app/build.sh` 构建的是较早的合成诊断 APK；`setup.sh` 是上游 Apple 准备流程。
 
 参与开发请从 [#1](https://github.com/n2ray/d2r-mobile/issues/1) 确定边界明确的任务，以 topic PR 提交到 `integration/android-reference`，报告准确源码提交、测试与实际设备条件。明确拒绝不支持的路径，保留扫描、W^X、所有权和失败检查，并区分实现与实机验收。游戏内容、凭据、存档及原始设备日志不进入 GitHub。另见 [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)。
+
+每项任务收尾时，由协调者核对精确 PR head 和必要证据，仅关闭验收范围已满足的 issue，仅合并通过验收的修改。确认工作已保留、且没有活跃工作区或 worker 需要分支后，再删除任务分支；待测候选和未完成 PR 继续保留。行为、限制或已验证进度变化时同步更新中英文 README，并区分已合并源码与本地实机候选。
 
 ## 来源与许可证
 

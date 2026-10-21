@@ -10,7 +10,7 @@ An experimental Android port of [jhaizhou-ops/d2r-mobile](https://github.com/jha
 
 ## Current status
 
-Updated **2026-10-21**, based on device observations through October 20. Follow [the project board #1](https://github.com/n2ray/d2r-mobile/issues/1) for current work and acceptance boundaries.
+Updated **2026-10-21**, including device tests and user feedback through October 21. Follow [the project board #1](https://github.com/n2ray/d2r-mobile/issues/1) for current work and acceptance boundaries.
 
 | Area | Verified progress | Remaining work |
 |---|---|---|
@@ -23,6 +23,12 @@ Updated **2026-10-21**, based on device observations through October 20. Follow 
 **Turnip is the rendering baseline.** The system Qualcomm driver remains available as a fallback, but its earlier black patches and lighting defects were not resolved by the experimental UBO workaround. This project does not currently prioritize that driver-specific repair.
 
 Performance varies by scene and over time. Reaching about 60 fps in some camp samples is not evidence of stable 60 fps in combat or a long session. Energy savings have not been established. Upstream iOS performance results describe the Apple build, not this Android port.
+
+**Installed local candidates can be ahead of the published integration branch.** The redesigned launcher, 30/60 fps limit selection and virtual-controller on/off switch have passed bounded phone tests in a local candidate; these changes have not yet been merged. The user also reports uninterrupted movement across camp boundaries with that candidate. This does not close the remaining touch or controller acceptance work.
+
+Recent stationary-camp comparisons with the 60 fps limit averaged about 51–56 fps. Lazy query reset and skipping a full-cover presentation clear did not show a repeatable FPS improvement; both experiments remain off by default and unmerged. Research delivery [#326](https://github.com/n2ray/d2r-mobile/issues/326) and the [upstream progress discussion](https://github.com/jhaizhou-ops/d2r-mobile/issues/59#issuecomment-6310989719) inform further work under [#23](https://github.com/n2ray/d2r-mobile/issues/23).
+
+Read diagnostic values within their scope: CPU time covers NVN command translation, GPU time covers measured command batches, and snapshot MiB/frame counts guest-memory snapshot reads. They are not whole-frame CPU time, complete GPU time or total GPU bandwidth. The watts estimate uses battery current and voltage; while charging, it cannot establish game or whole-device power consumption. Compare repeated runs under matching scene, temperature and charging conditions.
 
 ## Trying a development build
 
@@ -40,7 +46,7 @@ Only a prepared Android package is accepted by this import flow; an arbitrary Sw
 
 ## Known limitations and priorities
 
-- Holding movement across a camp/area transition can stop movement until the finger is lifted and pressed again ([#303](https://github.com/n2ray/d2r-mobile/issues/303)).
+- The user has verified the camp-transition movement fix in a local candidate; integration and broader area-transition checks remain open ([#303](https://github.com/n2ray/d2r-mobile/issues/303)). Skill buttons can still briefly flash question marks during transitions ([#302](https://github.com/n2ray/d2r-mobile/issues/302)).
 - The complete iOS touch presentation is still being adapted. Remaining map-goal/rift HUD art and haptic integration, shop icon appearance and full interaction/device coverage stay open; working combat and dragging do not close all touch tasks.
 - Sustained performance is the current priority: profile the CPU translation path and improve measured hotspots while preserving GPU synchronization, resource ownership and validation. A working ADPF API experiment did not demonstrate a repeatable FPS improvement and was not adopted.
 - Background/resume, keyboard, controllers, audio, save recovery and a complete playthrough require broader acceptance. Historical diagnostic or contract tasks archived during cleanup are not claimed as proven by the real-game first run.
@@ -65,6 +71,8 @@ The game-free tools use CMake 3.22+, a C compiler and Capstone 5; native ARM64 c
 The playable-APK entry is [`dm/android/tools/build.py`](https://github.com/n2ray/d2r-mobile/blob/integration/android-reference/dm/android/tools/build.py) with `--game-run`. It needs the reference toolchain, SDK/build tools, JDK, shader tooling and locally prepared resources; its `--turnip` and `--touch-art` inputs must be supplied as appropriate. A generic APK can import game modules on the phone. Do not publish builds embedding game code or derived game artwork. `dm/android/app/build.sh` builds the older synthetic diagnostic APK; `setup.sh` is the upstream Apple preparation flow.
 
 Start contributions from [#1](https://github.com/n2ray/d2r-mobile/issues/1), agree on a bounded issue and submit a topic PR to `integration/android-reference`. Report the exact source commit, tests and actual device conditions. Keep unsupported paths explicit, preserve scanning/W^X/ownership/failure checks, and separate implementation from device acceptance. Keep game content, credentials, saves and raw device logs out of GitHub. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+At each task closeout, the coordinator reviews the exact PR head and required evidence, closes only issues whose acceptance scope is satisfied, and merges only accepted changes. Remove topic branches only after confirming their work is preserved and no active worktree or worker needs them; keep pending candidates and unfinished PRs. Update both English and Chinese READMEs when behavior, limitations or verified progress changes, distinguishing merged source from local device candidates.
 
 ## Credits and license
 
