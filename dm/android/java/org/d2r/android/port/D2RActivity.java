@@ -56,13 +56,15 @@ public final class D2RActivity extends NativeActivity {
     private boolean physicalController;
     private boolean touchVisible;
     private final Handler dropHapticHandler = new Handler(Looper.getMainLooper());
+    private final DropHapticPoller dropHapticPoller = new DropHapticPoller(() -> {
+        try { return takeDropHaptic(); }
+        catch (UnsatisfiedLinkError error) { return 0; }
+    });
     private boolean dropHapticPolling;
     private final Runnable dropHapticPoll = new Runnable() {
         @Override public void run() {
             if (!dropHapticPolling) return;
-            int tier = 0;
-            try { tier = takeDropHaptic(); }
-            catch (UnsatisfiedLinkError error) { return; }
+            int tier = dropHapticPoller.poll();
             int feedback = DropHaptic.feedbackForTier(tier);
             if (feedback >= 0 && !isFinishing() && !isDestroyed())
                 getWindow().getDecorView().performHapticFeedback(feedback);
@@ -568,6 +570,7 @@ public final class D2RActivity extends NativeActivity {
 
     private void startDropHapticPolling() {
         if (dropHapticPolling) return;
+        dropHapticPoller.resume();
         dropHapticPolling = true;
         dropHapticHandler.post(dropHapticPoll);
     }
@@ -575,9 +578,7 @@ public final class D2RActivity extends NativeActivity {
     private void stopDropHapticPolling() {
         dropHapticPolling = false;
         dropHapticHandler.removeCallbacks(dropHapticPoll);
-        // A pending drop while paused must not buzz on the next resume.
-        try { while (takeDropHaptic() != 0) { } }
-        catch (UnsatisfiedLinkError ignored) { }
+        dropHapticPoller.pause();
     }
 
     @Override protected void onResume() {
