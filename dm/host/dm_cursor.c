@@ -1937,6 +1937,33 @@ static void ui_bind_pump(uint64_t root, uint64_t fr) {
 static _Atomic int g_map_req = -1, g_map_full_now;
 void dm_ui_map_full(int on) { atomic_store(&g_map_req, on != 0); }
 int dm_ui_map_is_full(void) { return atomic_load(&g_map_full_now); }
+static _Atomic int g_map_hidden_req = -1, g_map_hidden_now;
+void dm_ui_map_hidden(int hidden) { atomic_store(&g_map_hidden_req, !!hidden); }
+int dm_ui_map_is_hidden(void) { return atomic_load(&g_map_hidden_now); }
+static void ui_map_visibility_pump(module_t *m, uint64_t root) {
+    static uint64_t owner;
+    static float original[4];
+    int dm_padmode_current(void), dm_padmode_busy(void);
+    int request = atomic_exchange(&g_map_hidden_req, -1);
+    int hidden = request < 0 ? atomic_load(&g_map_hidden_now) : request;
+    if (!dm_uiscreen_ingame() || dm_padmode_current() || dm_padmode_busy()) hidden = 0;
+    if (!hidden && !owner) { atomic_store(&g_map_hidden_now, 0); return; }
+    uint64_t am = ui_panel(root, "AutoMap");
+    if (am && *(uint64_t *)am != (uint64_t)m->base + 0x20c58a0) am = 0;
+    if (!am) { atomic_store(&g_map_hidden_now, hidden); return; }
+    if (am && hidden) {
+        float *opacity = (float *)(am + 0x15b4);
+        float zero[4] = {0};
+        // AutoMapPanel's max/high/low/minOpacity fields; leave the panel and title visible.
+        if (owner != am || memcmp(opacity, zero, sizeof zero)) memcpy(original, opacity, sizeof original);
+        memcpy(opacity, zero, sizeof zero);
+        owner = am;
+    } else {
+        if (am && owner == am) memcpy((void *)(am + 0x15b4), original, sizeof original);
+        owner = 0;
+    }
+    atomic_store(&g_map_hidden_now, hidden);
+}
 // 真全屏局内，全屏地图的线条要盖在世界上：游戏把地图中心放在「屏幕高的一半」（它读到的是我们写的 16:9 界面高），画出来在 界面矩形 y + 界面高 ÷ 2；
 // 世界的中心在真实画面高的一半，两者差 界面矩形 y −（真实高 − 界面高）÷ 2（贴底时 = 留边高度的一半，地图标记比人低约 128 点）。
 // 地图有一对卷动量 [main+0x2d5e910 / 914]（单位 = 地图格；中心 = 玩家所在格 + 卷动量，main+0x413354 / 0x4133d8；游戏只在切档等处清零，触摸 / 手柄下没有别的写入方），
@@ -2339,8 +2366,9 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
 // Open or not is read from the AutoMap widget's visible flag (+0x50); fullscreen / mini from [main+0x2d5c748] (0 = fullscreen, same as ui_map_pump); the mini map's player point is at the center of the minimap frame and its zoom uses the other level (+0x15ac). Written once per frame by the main thread
 static _Atomic uint64_t g_mapgeom;   // 高 32 位 = 模式（0 没开 / 1 微缩 / 2 全屏），低 32 位 = 每格像素（float 的位） | High 32 bits = mode (0 not open / 1 mini / 2 fullscreen), low 32 bits = pixels per cell (bits of a float)
 static void ui_map_geom_pump(module_t *m, uint64_t root) {
+    ui_map_visibility_pump(m, root);
     uint64_t am = ui_panel(root, "AutoMap"); int mode = 0; float cell = 0;
-    if (am && *(uint64_t *)am == (uint64_t)m->base + 0x20c58a0 && *(uint8_t *)(am + 0x50)) {
+    if (am && !dm_ui_map_is_hidden() && *(uint64_t *)am == (uint64_t)m->base + 0x20c58a0 && *(uint8_t *)(am + 0x50)) {
         mode = *(volatile int32_t *)(m->base + 0x2d5c748) == 0 ? 2 : 1;
         float q = ceilf(((float (*)(uint64_t))(m->base + 0x390b38))(am) * *(float *)(am + (mode == 2 ? 0x15a8 : 0x15ac)) * 8) / 8; if (q < 0.125f) q = 0.125f;   // 全屏 / 微缩各一档缩放（0xc0df58 / 0xc0de54；实测 1.0 / 0.5） | One zoom level each for fullscreen / mini (0xc0df58 / 0xc0de54; measured 1.0 / 0.5)
         cell = q * *(float *)(m->base + 0x2d5e918); }
