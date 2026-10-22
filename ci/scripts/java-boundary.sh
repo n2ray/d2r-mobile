@@ -91,6 +91,17 @@ else
     fail "driver archive regression"
 fi
 
+world_java=$work/java/world-hud
+mkdir -p "$world_java"
+if "$javac" --release 8 -d "$world_java" \
+        "$root/dm/android/java/org/d2r/android/port/WorldHudState.java" \
+        "$root/dm/android/tests/WorldHudStateTest.java" >> "$log" 2>&1 \
+    && "$(dirname "$javac")/java" -cp "$world_java" org.d2r.android.port.WorldHudStateTest >> "$log" 2>&1; then
+    log_line "PASS world HUD state and map projection"
+else
+    fail "world HUD regression"
+fi
+
 save_java=$work/java/save
 mkdir -p "$save_java"
 if "$javac" --release 11 -d "$save_java" \
