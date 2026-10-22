@@ -11,6 +11,8 @@ import android.content.IntentFilter;
 import android.hardware.input.InputManager;
 import android.os.BatteryManager;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.TextWatcher;
@@ -53,6 +55,20 @@ public final class D2RActivity extends NativeActivity {
     private volatile int batteryStatus = -1;
     private boolean physicalController;
     private boolean touchVisible;
+    private final Handler dropHapticHandler = new Handler(Looper.getMainLooper());
+    private boolean dropHapticPolling;
+    private final Runnable dropHapticPoll = new Runnable() {
+        @Override public void run() {
+            if (!dropHapticPolling) return;
+            int tier = 0;
+            try { tier = takeDropHaptic(); }
+            catch (UnsatisfiedLinkError error) { return; }
+            int feedback = DropHaptic.feedbackForTier(tier);
+            if (feedback >= 0 && !isFinishing() && !isDestroyed())
+                getWindow().getDecorView().performHapticFeedback(feedback);
+            if (dropHapticPolling) dropHapticHandler.postDelayed(this, 50);
+        }
+    };
     // 同一进程里「游戏活动是否还活着」的标记，启动界面据此决定让位（见 LauncherActivity.stepAsideForRunningGame）。
     // 一个进程只跑一个游戏，所以它也等于「这一局还在」。
     // Same-process flag: is the game activity still alive. The launcher uses it to decide whether to step aside (see
@@ -66,6 +82,7 @@ public final class D2RActivity extends NativeActivity {
     private static native void setMenuOpen(boolean open);
     private static native void setVirtualControllerEnabled(boolean enabled);
     private static native void setSkipSaveOnExit(boolean skip);
+    private static native int takeDropHaptic();
 
     // 存档导入/导出的文件选择器请求码（与文本输入等其它结果回调区分开）。
     // Request codes for the save pickers, kept apart from the other result callbacks.
@@ -549,13 +566,29 @@ public final class D2RActivity extends NativeActivity {
         updateTouchVisibility();
     }
 
+    private void startDropHapticPolling() {
+        if (dropHapticPolling) return;
+        dropHapticPolling = true;
+        dropHapticHandler.post(dropHapticPoll);
+    }
+
+    private void stopDropHapticPolling() {
+        dropHapticPolling = false;
+        dropHapticHandler.removeCallbacks(dropHapticPoll);
+        // A pending drop while paused must not buzz on the next resume.
+        try { while (takeDropHaptic() != 0) { } }
+        catch (UnsatisfiedLinkError ignored) { }
+    }
+
     @Override protected void onResume() {
         super.onResume();
         activityResumed = true;
         updateTouchVisibility();
+        startDropHapticPolling();
     }
 
     @Override protected void onPause() {
+        stopDropHapticPolling();
         activityResumed = false;
         updateTouchVisibility();
         super.onPause();
@@ -659,6 +692,7 @@ public final class D2RActivity extends NativeActivity {
 
     @Override protected void onDestroy() {
         hostRunning = false;
+        stopDropHapticPolling();
         if (batteryReceiver != null) { unregisterReceiver(batteryReceiver); batteryReceiver = null; }
         InputManager inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
         if (inputManager != null) inputManager.unregisterInputDeviceListener(inputDeviceListener);
