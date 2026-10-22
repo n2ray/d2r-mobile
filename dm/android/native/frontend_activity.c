@@ -1133,8 +1133,10 @@ __attribute__((visibility("default"))) jobjectArray Java_org_d2r_android_port_D2
         "dmRiftHudGuard","dmRiftHudNext","dmRiftHudTop","dmRiftHudOver","dmRiftHudKillWave",
         "dmRiftHudKillN","dmRiftHudOverKill","dmRiftHudOverKillN","dmRiftHudSame","dmRiftHudKill","dmRiftHudGoal"};
     jclass string=(*env)->FindClass(env,"java/lang/String");if(!string)return NULL;
-    jobjectArray out=(*env)->NewObjectArray(env,15,string,NULL);(*env)->DeleteLocalRef(env,string);if(!out)return NULL;
+    jobjectArray out=(*env)->NewObjectArray(env,16,string,NULL);(*env)->DeleteLocalRef(env,string);if(!out)return NULL;
     for(int i=0;i<15;i++){jstring text=java_text(env,dm_ui(keys[i]));if(!text)return NULL;(*env)->SetObjectArrayElement(env,out,i,text);(*env)->DeleteLocalRef(env,text);if((*env)->ExceptionCheck(env))return NULL;}
+    char title[128];dm_ui_map_title(title);jstring text=java_text(env,title);if(!text)return NULL;
+    (*env)->SetObjectArrayElement(env,out,15,text);(*env)->DeleteLocalRef(env,text);if((*env)->ExceptionCheck(env))return NULL;
     return out;
 }
 // Read-only skill glyph indices for the draw-only overlay. The array layout is
