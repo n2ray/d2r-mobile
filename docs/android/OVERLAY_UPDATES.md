@@ -57,7 +57,12 @@ interrupted recovery, and accidental use of the full-package importer. Its Pytho
 the actual production builder against the Java importer. Required `java-boundary` CI runs these tests and
 compiles the playable launcher against Android API 35. Native ASan/UBSan tests retain unknown-entry rejection.
 
-The implementation and generated update ZIP require device acceptance before claiming the launcher workflow
-or new menu layout works on a phone. Test file-picker success/failure, version after relaunch, menu scrolling,
-four-language controls, absence of iCloud, save preservation and normal exit. Physical controllers and all gameplay
-automation conditions remain separate coverage.
+The Xiaomi 15 Ultra passed actual file-picker import, invalid-ZIP rejection with the existing version/start button
+preserved, subsequent successful updates, version persistence and game/camp entry. The Custom page scrolls to both
+skill-switch-position choices, hides iCloud and displays all four language choices; compact labels avoid Spanish/Russian
+wrapping. Existing saves load and normal app-menu exit writes the save. Full language restarts, physical controllers,
+power-loss recovery and gameplay automation conditions remain separate coverage. Local tests cover interrupted updates.
+
+测试手机已验证文件选择更新、错误 ZIP 拒绝并保留原版本及启动能力、后续成功更新、版本保留与营地进入。
+新菜单滚动、四语言显示、换组位置行及 iCloud 隐藏已检查；原存档可加载，使用应用菜单正常保存退出。
+各语言完整重启、真实手柄及实际断电恢复仍需单独验证。
