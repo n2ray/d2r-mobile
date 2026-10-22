@@ -112,6 +112,11 @@ int main(void){
     CHECK(on_fault((void *)(first+page),1,NULL)==1&&nvn_dirty_since((void *)(first+page),page,old_stamp));
     CHECK(!nvn_dirty_since((void *)(first+2*page),page,old_stamp));
     CHECK(on_fault((void *)(first+2*page),1,NULL)==1&&nvn_dirty_since((void *)(first+3*page),page,old_stamp));
+    protect_all();child=fork();CHECK(child>=0);
+    if(!child){fail_rw=1;CHECK(on_fault(owned,1,NULL)==0);CHECK(atomic_load(&range->state[0])==PG_BUSY);_exit(0);}
+    CHECK(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
+    nvn_dirty_remove_range(owned);nvn_dirty_add_range(owned,owned_bytes);protect_all();old_stamp=nvn_dirty_now();
+    CHECK(on_fault((void *)first,1,NULL)==1&&nvn_dirty_since((void *)(first+page),page,old_stamp));
     nvn_dirty_remove_range(owned);CHECK(!munmap(mapping,owned_bytes+2*page));
     puts("PASS dirty write runs: bounded/partial/holes/generations/failure/BUSY fault ordering");return 0;
 }
