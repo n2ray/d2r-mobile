@@ -1232,7 +1232,7 @@ _CUSTOM_LANG_HINT = ''.join('        { "type": "TextBoxWidget", "name": "TouchCu
 _LANG_ZH_X, _LANG_EN_X, _LANG_ES_X, _LANG_RU_X = (220, 430), (515, 725), (810, 1020), (1105, 1315)   # （文字 x，勾选框 x）；文字 200 宽：English / Español / Русский 在 180 宽里会被折成「Englis h」（真机截图）；四项一组，最后一格留在各行勾选框那一列（x 1315） | (text x, checkbox x); text 200 wide: at 180 wide English / Español / Русский wrap to "Englis h" (device screenshot); four options in a group, the last one stays in the checkbox column of the other rows (x 1315)
 def _custom_lang_row():
     y, h = _CUSTOM_Y[0], 112; cy = y + (h - 70) // 2   # 标签、两个选项排在这一行的上 112，下面 68 留给提示那一句 | The label and the two options go in the top 112 of this row; the bottom 68 is left for the hint sentence
-    def text(name, x, w, key): return ('        { "type": "TextBoxWidget", "name": "%s", "fields": { "rect": { "x": %d, "y": %d, "width": %d, "height": %d }, "text": "@%s", "style": "$StyleSettingsText", "style/fontFace": "BlizzardGlobal" } },\n' % (name, x, y, w, h, key))
+    def text(name, x, w, key): return ('        { "type": "TextBoxWidget", "name": "%s", "fields": { "rect": { "x": %d, "y": %d, "width": %d, "height": %d }, "text": "@%s", "style": "$StyleSettingsText", "style/fontFace": "BlizzardGlobal", "style/pointSize": 32 } },\n' % (name, x, y, w, h, key))
     def box(name, x): return ('        { "type": "ToggleButtonWidget", "name": "%s", "fields": {\n'
             '            "rect": { "x": %d, "y": %d, "width": 70, "height": 70 }, "sound": "cursor_menu_select_hd",\n'
             '            "focusIndicatorPadding": "$OptionsToggleFocusIndicatorPadding", "focusIndicatorFilename": "$OptionsToggleFocusIndicatorFilename", "focusIndicatorOffset": { "x": 0, "y": -4 },\n'
