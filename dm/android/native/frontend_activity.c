@@ -643,7 +643,7 @@ static void live_touch_sync(game_app *s) {
     // iOS defaults to touch-only panels; diagnostic controller circles cover
     // inventory slots. Only an NPC dialogue keeps the bottom menu target.
     uint32_t mask=navigation?(blocked<0?(1u<<DM_TC_MENU):0):
-        ((1u<<DM_TC_COUNT)-1);
+        (((1u<<DM_TC_COUNT)-1)&~(1u<<DM_TC_MAP));
     dm_live_touch_set_context_moving(s->live_touch,navigation,mask,
                               snapshot.scene_epoch,snapshot.world_epoch,
                               snapshot.ui_identity,0,snapshot.movement_continuity);
