@@ -295,6 +295,7 @@ static int copy_module_asset(void *context,const char *directory,const char *nam
     copy_asset((ANativeActivity *)context,directory,name);return 0;
 }
 static void *boot(void *argument) {
+    if(!getenv("DM_TOUCH_DEFAULTS"))setenv("DM_TOUCH_DEFAULTS","1",1);
     game_app *s=argument;pthread_mutex_lock(&s->lock);while(!s->window&&!s->stop)pthread_cond_wait(&s->ready,&s->lock);int stop=s->stop;pthread_mutex_unlock(&s->lock);if(stop)return NULL;
     char path[1024],metadata[1024],log[1024];snprintf(metadata,sizeof metadata,"%s/game",s->activity->internalDataPath);mkdir(metadata,0700);
     snprintf(log,sizeof log,"%s/game.log",s->activity->internalDataPath);int fd=open(log,O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC,0600);if(fd>=0){dup2(fd,STDERR_FILENO);dup2(fd,STDOUT_FILENO);close(fd);}
