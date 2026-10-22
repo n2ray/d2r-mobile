@@ -11,6 +11,8 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Arrays;
+import java.util.zip.CRC32;
+import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -78,6 +80,27 @@ public final class SaveArchiveTest {
         check(fails(() -> SaveArchive.unzip(new ByteArrayInputStream(truncated), tempDir("truncated"))),
                 "截断的存档包被拒绝");
 
+        // 中央目录和 CRC 保持原值，但 STORED 条目的数据字节被改：ZipFile 的流不替我们校验 CRC，必须自己算。
+        // The central directory and CRC stay original while one STORED payload byte is flipped: ZipFile's stream
+        // does not validate CRC for us, so the extractor must compute it.
+        File corruptLive = new File(tempDir("corrupt-live"), "save");
+        write(new File(corruptLive, "character.dat"), "old-live");
+        check(fails(() -> SaveArchive.unzip(new ByteArrayInputStream(storedCorruptArchive()), tempDir("corrupt"))),
+                "损坏的 STORED payload（中央目录 CRC 不变）被拒绝");
+        check(read(new File(corruptLive, "character.dat")).equals("old-live"), "损坏包被拒后旧 live 仍完整");
+
+        // DEFLATED 条目被截掉一个压缩字节，中央目录仍可打开：必须按声明的未压缩大小/CRC 拒绝。
+        // A DEFLATED entry loses one compressed byte while the central directory still opens: reject it by the
+        // declared uncompressed size/CRC.
+        byte[] validDeflated = deflatedArchive(false), truncatedDeflated = deflatedArchive(true);
+        File deflatedTarget = tempDir("deflated-valid");
+        check(SaveArchive.unzip(new ByteArrayInputStream(validDeflated), deflatedTarget) == 1,
+                "完整 DEFLATED 包可以解出");
+        check(read(new File(deflatedTarget, "hero.d2s")).equals("deflated-save-payload"),
+                "完整 DEFLATED 内容一致");
+        check(fails(() -> SaveArchive.unzip(new ByteArrayInputStream(truncatedDeflated), tempDir("deflated-truncated"))),
+                "截断的 DEFLATED payload 被拒绝");
+
         // 替换成功：旧存档先移到备份，导入目录就位后旧备份删除。
         File swapParent = tempDir("swap");
         File live = new File(swapParent, "save");
@@ -116,6 +139,118 @@ public final class SaveArchiveTest {
         check(read(new File(emptyLive, "character.dat")).equals("keep-empty"), "空 live 下旧存档也恢复");
         check(!emptyBackup.exists(), "空 live 恢复后不残留备份");
 
+        // 导出也会先恢复中断备份；否则玩家只能导出一个空 live，随后导入会把它当成新存档。
+        // Export also restores an interrupted backup first; otherwise the player exports an empty live and a later
+        // import treats it as the new save.
+        File exportParent = tempDir("export-crash");
+        File exportLive = new File(exportParent, "save");
+        check(exportLive.mkdirs(), "建空的导出 live 目录");
+        File exportBackup = new File(exportParent, "save.replaced");
+        write(new File(exportBackup, "character.dat"), "export-keep");
+        ByteArrayOutputStream exportBytes = new ByteArrayOutputStream();
+        check(SaveArchive.zip(exportLive, exportBytes, 1700000000000L) == 1, "导出前恢复备份并导出一个文件");
+        check(read(new File(exportLive, "character.dat")).equals("export-keep"), "导出恢复后 live 是旧存档");
+
         System.out.println("== " + checks + " 项全部通过 ==");
+    }
+
+    private static byte[] storedCorruptArchive() throws IOException {
+        byte[] marker = "{}".getBytes(StandardCharsets.UTF_8);
+        byte[] data = "character-data-original".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeLocal(out, SaveArchive.MARKER, ZipEntry.STORED, crc(marker), marker.length, marker.length);
+        out.write(marker);
+        int heroOffset = out.size();
+        writeLocal(out, "hero.d2s", ZipEntry.STORED, crc(data), data.length, data.length);
+        out.write(data);
+        int central = out.size();
+        writeCentral(out, SaveArchive.MARKER, ZipEntry.STORED, crc(marker), marker.length, marker.length, 0);
+        writeCentral(out, "hero.d2s", ZipEntry.STORED, crc(data), data.length, data.length, heroOffset);
+        writeEnd(out, 2, out.size() - central, central);
+        byte[] archive = out.toByteArray();
+        for (int i = 0; i <= archive.length - data.length; i++) {
+            boolean match = true;
+            for (int j = 0; j < data.length; j++) if (archive[i + j] != data[j]) { match = false; break; }
+            if (match) { archive[i] ^= 1; break; }
+        }
+        return archive;
+    }
+
+    private static byte[] deflatedArchive(boolean truncate) throws IOException {
+        byte[] marker = "{}".getBytes(StandardCharsets.UTF_8);
+        byte[] data = "deflated-save-payload".getBytes(StandardCharsets.UTF_8);
+        byte[] compressed = deflate(data);
+        if (truncate && compressed.length > 1) {
+            int cut = compressed.length / 2;
+            byte[] shortened = new byte[compressed.length - 1];
+            System.arraycopy(compressed, 0, shortened, 0, cut);
+            System.arraycopy(compressed, cut + 1, shortened, cut, compressed.length - cut - 1);
+            compressed = shortened;
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeLocal(out, SaveArchive.MARKER, ZipEntry.STORED, crc(marker), marker.length, marker.length);
+        out.write(marker);
+        int heroOffset = out.size();
+        writeLocal(out, "hero.d2s", ZipEntry.DEFLATED, crc(data), compressed.length, data.length);
+        out.write(compressed);
+        int central = out.size();
+        writeCentral(out, SaveArchive.MARKER, ZipEntry.STORED, crc(marker), marker.length, marker.length, 0);
+        writeCentral(out, "hero.d2s", ZipEntry.DEFLATED, crc(data), compressed.length, data.length, heroOffset);
+        writeEnd(out, 2, out.size() - central, central);
+        return out.toByteArray();
+    }
+
+    private static long crc(byte[] data) {
+        CRC32 crc = new CRC32();
+        crc.update(data);
+        return crc.getValue();
+    }
+
+    private static byte[] deflate(byte[] data) throws IOException {
+        Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
+        try {
+            deflater.setInput(data);
+            deflater.finish();
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            while (!deflater.finished()) {
+                int n = deflater.deflate(buffer);
+                if (n > 0) out.write(buffer, 0, n);
+            }
+            return out.toByteArray();
+        } finally {
+            deflater.end();
+        }
+    }
+
+    private static void writeLocal(ByteArrayOutputStream out, String name, int method, long crc,
+                                   int compressed, int uncompressed) throws IOException {
+        byte[] n = name.getBytes(StandardCharsets.UTF_8);
+        le32(out, 0x04034b50L); le16(out, 20); le16(out, 0); le16(out, method);
+        le16(out, 0); le16(out, 0); le32(out, crc); le32(out, compressed); le32(out, uncompressed);
+        le16(out, n.length); le16(out, 0); out.write(n);
+    }
+
+    private static void writeCentral(ByteArrayOutputStream out, String name, int method, long crc,
+                                     int compressed, int uncompressed, int localOffset) throws IOException {
+        byte[] n = name.getBytes(StandardCharsets.UTF_8);
+        le32(out, 0x02014b50L); le16(out, 20); le16(out, 20); le16(out, 0); le16(out, method);
+        le16(out, 0); le16(out, 0); le32(out, crc); le32(out, compressed); le32(out, uncompressed);
+        le16(out, n.length); le16(out, 0); le16(out, 0); le16(out, 0); le16(out, 0);
+        le32(out, 0); le32(out, localOffset); out.write(n);
+    }
+
+    private static void writeEnd(ByteArrayOutputStream out, int entries, int centralSize, int centralOffset) {
+        le32(out, 0x06054b50L); le16(out, 0); le16(out, 0); le16(out, entries); le16(out, entries);
+        le32(out, centralSize); le32(out, centralOffset); le16(out, 0);
+    }
+
+    private static void le16(ByteArrayOutputStream out, int value) {
+        out.write(value & 0xff); out.write((value >>> 8) & 0xff);
+    }
+
+    private static void le32(ByteArrayOutputStream out, long value) {
+        out.write((int) (value & 0xff)); out.write((int) ((value >>> 8) & 0xff));
+        out.write((int) ((value >>> 16) & 0xff)); out.write((int) ((value >>> 24) & 0xff));
     }
 }

@@ -16,6 +16,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.Enumeration;
+import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
@@ -103,7 +104,13 @@ final class SaveArchive {
                     File outParent = out.getParentFile();
                     if (outParent != null && !outParent.isDirectory() && !outParent.mkdirs())
                         throw new IOException("无法创建目录：" + outParent);
+                    long expectedSize = entry.getSize();
+                    long expectedCrc = entry.getCrc();
+                    if (expectedSize < 0 || expectedSize > MAX_ENTRY_BYTES ||
+                            expectedCrc < 0 || expectedSize > MAX_TOTAL_BYTES - total)
+                        throw new IOException("存档条目缺少完整校验信息：" + name);
                     long written = 0;
+                    CRC32 crc = new CRC32();
                     try (InputStream in = zip.getInputStream(entry);
                          OutputStream file = new BufferedOutputStream(new FileOutputStream(out))) {
                         byte[] buffer = new byte[8192];
@@ -112,11 +119,16 @@ final class SaveArchive {
                             if (n == 0) continue;
                             written += n;
                             total += n;
-                            if (written > MAX_ENTRY_BYTES || total > MAX_TOTAL_BYTES)
+                            if (written > expectedSize || total > MAX_TOTAL_BYTES)
                                 throw new IOException("存档包过大");
+                            crc.update(buffer, 0, n);
                             file.write(buffer, 0, n);
                         }
                     }
+                    if (written != expectedSize)
+                        throw new IOException("存档条目不完整：" + name);
+                    if (crc.getValue() != expectedCrc)
+                        throw new IOException("存档条目 CRC 不符：" + name);
                     count++;
                 }
             }
