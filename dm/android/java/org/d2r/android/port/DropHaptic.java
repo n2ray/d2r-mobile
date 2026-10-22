@@ -1,12 +1,13 @@
 package org.d2r.android.port;
 
+import android.view.HapticFeedbackConstants;
+
 // Android implementation of the same three drop tiers consumed by the iOS
-// front end. Values are android.view.HapticFeedbackConstants; keeping the
-// mapping here makes it testable without an Android runtime.
+// front end. The system constants keep this aligned with the platform API.
 final class DropHaptic {
-    static final int HEAVY = 0;    // HapticFeedbackConstants.LONG_PRESS
-    static final int MEDIUM = 6;   // HapticFeedbackConstants.CONTEXT_CLICK
-    static final int LIGHT = 3;    // HapticFeedbackConstants.KEYBOARD_TAP
+    static final int HEAVY = HapticFeedbackConstants.LONG_PRESS;
+    static final int MEDIUM = HapticFeedbackConstants.CONTEXT_CLICK;
+    static final int LIGHT = HapticFeedbackConstants.KEYBOARD_TAP;
     static final int INVALID = -1;
 
     private DropHaptic() {}
