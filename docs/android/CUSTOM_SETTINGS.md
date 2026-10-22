@@ -35,6 +35,9 @@ so this older two-language row also cannot be considered fully wired. Updating a
 game overlay files. This is an additional resource-version mismatch, not proof that the upstream language code is absent.
 实机旧覆盖层只有中／英两项，末尾到自动增益，缺少换组位置行；当前宿主要求四语言控件齐全，旧语言行不能算完整接通。
 APK 更新不会自动替换已导入的游戏覆盖层，需要单独处理资源版本兼容。
+The new [independent interface updater](OVERLAY_UPDATES.md) addresses delivery of versioned overlays; its device
+acceptance is pending. It does not itself fix the three host-wiring gaps below.
+新增独立界面更新入口用于交付带版本覆盖层，仍待实机验收，不代表以下三项功能已接通。
 
 The iCloud row was absent on the actual Custom page, the item-notes/potion-pick rows were adjacent without a gap,
 and scrolling/reopening the page retained the compact layout. Local ASan/UBSan tests cover hidden visibility flags,
