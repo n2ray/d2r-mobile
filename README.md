@@ -10,7 +10,7 @@ An experimental Android port of [jhaizhou-ops/d2r-mobile](https://github.com/jha
 
 ## Current status
 
-Updated **2026-10-21**, based on device observations through October 20. Follow [the project board #1](https://github.com/n2ray/d2r-mobile/issues/1) for current work and acceptance boundaries.
+Updated **2026-10-22**. Follow [the project board #1](https://github.com/n2ray/d2r-mobile/issues/1) for current work and acceptance boundaries.
 
 | Area | Verified progress | Remaining work |
 |---|---|---|
@@ -35,6 +35,8 @@ The CPU candidate combines single-pass descriptor encoding/hash, reuse of identi
 Fullscreen Medium and Low keep the UI/output at720 high and render internal3D at640 and480 high respectively. On a1600×720 output, Medium's nominal3D pixel count is about99% of1280×720; similar pixel counts do not guarantee equal frame times.
 
 ADPF now receives paired translation-thread frame work and the actual capped frame budget; unavailable APIs fall back normally, and uncapped work retires any previous capped session. Vulkan keeps the conservative three-slot/256-draw defaults and the 32 MiB temporary-memory limit. A short six-slot camp trial reduced ring waits but did not establish higher FPS; eight-slot and larger-draw-limit comparisons remain pending. This is not a stable-60-FPS or power-saving claim.
+
+Merged CPU work includes the thread-context cache collision fix, small guest reads under the existing heap permission lease with safe-read fallback, and coalesced host-write unprotection. The latter preserves exact page coverage and generations; an earlier six-minute camp run reduced protection calls from about 300 to 28–36 per frame and cumulative protection time from 1.25–1.35 to 0.42–0.50 ms/frame. These are work-reduction measurements, not proof of higher FPS or lower power. The user also confirmed that camp-boundary movement interruption and the transient question-mark skill icons no longer reproduce. Lock spinning, attachment-clear folding and narrower image usage are not enabled in the accepted build.
 
 ## Trying a development build
 
