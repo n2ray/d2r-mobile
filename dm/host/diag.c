@@ -337,17 +337,18 @@ void uimsg_subscribe(void (*fn)(const char *cat, const char *act, const char *ar
 #define UIH_MONSTERHEALTH 0xd3a07a5ecad1a9a3ull
 #define UIH_SETINFO       0x40ffba2d98a3ff97ull
 static void monres_on_setinfo(const uint64_t *regs, uint64_t payload) {
-    int dm_custom_get(const char *key); if (!dm_custom_get("item_notes") || dm_lang_index() != 8) return;   // 物品注释一系只有简中版（英文版：别的语言不显示；注释只写进 zhCN 一列） | the item-notes family exists only in Simplified Chinese (English version: not shown in other languages; notes are written only into the zhCN column)
+    int dm_custom_get(const char *key), lang = dm_lang_index(); if (!dm_custom_get("item_notes") || (lang != 8 && lang != 2 && lang != 10)) return;   // 物品注释一系做了简中与西语（zhCN、esES、esMX 三列，annot_strings.py LANGS）；别的语言不显示 | The item-annotation family (物品注释) is done in Simplified Chinese and Spanish (three columns zhCN, esES, esMX; annot_strings.py LANGS); other languages do not show it
     module_t *mm = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) mm = &g_mod[i];
     uint64_t unit = regs[19], name = 0; uint32_t type = 0; vm_size_t got = 0;
     if (!mm || !unit || vm_read_overwrite(mach_task_self(), unit, 4, (vm_address_t)&type, &got) || type != 1) return;   // 只认怪物（单位类型 1） | Monsters only (unit type 1)
     if (vm_read_overwrite(mach_task_self(), payload, 8, (vm_address_t)&name, &got) || !name) return;
     int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(mm->base + 0x5b9290);
     static const int id[6] = {36, 37, 39, 41, 43, 45};
-    static const char *lb[6] = {"物", "魔", "火", "电", "冰", "毒"}, *cc[6] = {"\xee\x81\xbe" "4", "\xee\x81\xbe" "8", "\xee\x81\xbe" "1", "\xee\x81\xbe" "9", "\xee\x81\xbe" "3", "\xee\x81\xbe" "2"};   // 颜色：字符串表加载时把「ÿc<码>」换成私用区 U+E07E + <码>（UTF-8 EE 81 BE，读缓冲区实测），这里直接写换后的形式（暗金 / 橙 / 红 / 黄 / 蓝 / 绿） | Colors: when the string table loads, "ÿc<code>" is replaced by private-use U+E07E + <code> (UTF-8 EE 81 BE, measured by reading the buffer); here we write the replaced form directly (unique gold / orange / red / yellow / blue / green)
+    static const char *lb[6] = {"物", "魔", "火", "电", "冰", "毒"}, *lbes[6] = {"Fís", "Mág", "Fue", "Ray", "Frí", "Ven"}, *cc[6] = {"\xee\x81\xbe" "4", "\xee\x81\xbe" "8", "\xee\x81\xbe" "1", "\xee\x81\xbe" "9", "\xee\x81\xbe" "3", "\xee\x81\xbe" "2"};   // 颜色：字符串表加载时把「ÿc<码>」换成私用区 U+E07E + <码>（UTF-8 EE 81 BE，读缓冲区实测），这里直接写换后的形式（暗金 / 橙 / 红 / 黄 / 蓝 / 绿） | Colors: when the string table loads, "ÿc<code>" is replaced by private-use U+E07E + <code> (UTF-8 EE 81 BE, measured by reading the buffer); here we write the replaced form directly (unique gold / orange / red / yellow / blue / green)
     char add[160] = ""; size_t n = 0;
     for (int i = 0; i < 6; i++) { int v = get(unit, id[i], 0); if (!v) continue;
-        int w = v >= 100 ? snprintf(add + n, sizeof add - n, " %s%s免", cc[i], lb[i]) : snprintf(add + n, sizeof add - n, " %s%s%d", cc[i], lb[i], v);
+        int w = lang != 8 ? (v >= 100 ? snprintf(add + n, sizeof add - n, " %s%s inm", cc[i], lbes[i]) : snprintf(add + n, sizeof add - n, " %s%s %d", cc[i], lbes[i], v))   // 西语：简称与数字之间空一格，免疫写 inm（inmune） | Spanish: one space between the abbreviation and the number; immunity is written inm (inmune)
+                          : v >= 100 ? snprintf(add + n, sizeof add - n, " %s%s免", cc[i], lb[i]) : snprintf(add + n, sizeof add - n, " %s%s%d", cc[i], lb[i], v);
         if (w < 0 || (size_t)w >= sizeof add - n) return; n += (size_t)w; }
     { static int lg = -1; static uint64_t last; if (lg < 0) lg = getenv("DM_TEST_MONRES_LOG") != NULL;   // 回归判据：单位换了才记一行（拼出的串 + 六项属性原值） | Regression criterion: log a line only when the unit changes (the assembled string + the raw values of the six stats)
       if (lg && unit != last) { last = unit; int v[6]; for (int i = 0; i < 6; i++) v[i] = get(unit, id[i], 0);
@@ -445,7 +446,11 @@ void probe_install(void) {
     const char *ui = getenv("DM_UIMSG");
     if (ui && strcmp(ui, "1") && !(g_uifp = fopen(ui, "w"))) die("DM_UIMSG 打不开 %s", ui);
     g_ui_print = ui != NULL;
-    if (ui || g_flag.bootprof) {                     // UI 总线：改写器离线插的观测门（r6 起的产物都带；零运行时改代码） | UI bus: observation gate inserted offline by the rewriter (present in all build outputs since r6; zero runtime code modification)
+    int observe_ui = ui != NULL || g_flag.bootprof;
+#ifdef __ANDROID__
+    observe_ui = 1;
+#endif
+    if (observe_ui) {                               // UI 总线也驱动触控与 HUD，关闭诊断仍须订阅。 | The UI bus also drives touch and HUD; subscribe with diagnostics off.
         if (!gate_obs_present(OBS_UIMSG)) LOG("【红】产物没有 UI 观测门 OBS_UIMSG（需 r6 起的产物）：DM_UIMSG / 启动分段 ④–⑥ 无输出");
         else gate_obs_set(OBS_UIMSG, uimsg_print);
     }
@@ -840,6 +845,7 @@ static void hud_tick(uint64_t G) {        // 每拍：受控玩家等级 / 本�
                 u = next;
             }
         h.valid = 1;
+        h.player_identity = player; h.game_identity = G;
     }
     module_t *main = main_mod(); uint32_t pl = 0;
     if (main) { void *obj = players_obj(main); if (obj && tk_rd((uint64_t)obj + 0xc, &pl, 4)) h.players = (int)pl; }
@@ -1520,6 +1526,7 @@ char g_lf_panel[48];
 static int g_loadscreen_seen;
 int dm_loadscreen_up(void);
 void dm_longframe_note(const char *what) {
+    if (!dm_diagnostics_enabled()) return;
     static const char *path; static int init; static unsigned n;
     if (!init) { init = 1; const char *e = getenv("DM_PERF_FILE"); path = e ? (strcmp(e, "0") ? e : NULL) : (TARGET_OS_IPHONE ? "perf.txt" : NULL); }
     dm_hud_info h; dm_hud_get(&h); char ctx[160];
@@ -1531,9 +1538,10 @@ void dm_longframe_note(const char *what) {
     fprintf(fp, "长帧\t%s\t%s；%s\n", ts, what, ctx); fclose(fp);
 }
 void dm_perf_present(double iv) {   // 出图线程每帧调一次（滞后 8 帧的实际上屏间隔 ms；−1 = 被系统丢弃，0 = 无读数） | Called once per frame by the present thread (the actual present interval in ms, lagging by 8 frames; −1 = dropped by the system, 0 = no reading)
+    dm_3d_scale_feed(iv);
+    if (!dm_diagnostics_enabled()) return;
     static const char *path; static int init; static unsigned c16, c25, c33, disc; static double sum; static uint64_t t0, f0, cpu0, tstart;
     if (!init) { init = 1; const char *e = getenv("DM_PERF_FILE"); path = e ? (strcmp(e, "0") ? e : NULL) : (TARGET_OS_IPHONE ? "perf.txt" : NULL); t0 = tstart = now_ns(); f0 = dm_nvn_frame_count(); cpu0 = dm_nvn_sub_cpu_ns(); }
-    dm_3d_scale_feed(iv);   // 动态 3D 比例的控制器吃同一份上屏间隔（hle_oe.c） | The dynamic 3D scale controller consumes the same present intervals (hle_oe.c)
     if (!path) return;
     if (iv < 0) disc++; else if (iv > 0) { sum += iv; if (iv <= 20.8) c16++; else if (iv <= 29.2) c25++; else c33++; }
     uint64_t now = now_ns(); if (now - t0 < 10000000000ull) return;
