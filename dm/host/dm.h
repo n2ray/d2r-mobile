@@ -8,8 +8,16 @@
 #include <string.h>
 
 #define MAX_MOD 8
-#define LOG(...) do { fprintf(stderr, "[dm] " __VA_ARGS__); fputc('\n', stderr); } while (0)
-#define die(...) do { LOG("FATAL " __VA_ARGS__); abort(); } while (0)
+#ifdef __ANDROID__
+#include <stdatomic.h>
+extern _Atomic int dm_debug_collection_enabled;
+static inline int dm_diagnostics_enabled(void) { return atomic_load_explicit(&dm_debug_collection_enabled, memory_order_relaxed); }
+#else
+static inline int dm_diagnostics_enabled(void) { return 1; }
+#endif
+#define LOG_ALWAYS(...) do { fprintf(stderr, "[dm] " __VA_ARGS__); fputc('\n', stderr); } while (0)
+#define LOG(...) do { if (dm_diagnostics_enabled()) LOG_ALWAYS(__VA_ARGS__); } while (0)
+#define die(...) do { LOG_ALWAYS("FATAL " __VA_ARGS__); abort(); } while (0)
 
 typedef struct { uint32_t st_name; uint8_t st_info, st_other; uint16_t st_shndx; uint64_t st_value, st_size; } Elf64_Sym;
 typedef struct { int64_t d_tag; union { uint64_t d_val, d_ptr; } d_un; } Elf64_Dyn;
@@ -37,8 +45,23 @@ typedef struct {
     uint64_t init, init_array, init_arraysz;   // init = DT_INIT（模块 _init：登记 DSO 并跑本模块 init_array） | init = DT_INIT (the module's _init: registers the DSO and runs this module's init_array)
 } module_t;
 
+// Immutable loader-published code identity. This is copied out of module_t by
+// the loader only after a successful load_modules; callers never read g_mod.
+typedef struct {
+    char name[16];
+    uint64_t generation;   // loader publication generation, not a guest/player epoch
+    uint64_t base;
+    uint64_t size;
+} dm_module_identity;
+
 extern module_t g_mod[MAX_MOD];
 extern int g_nmod;
+// Invalidate before touching g_mod for a new load; publish only after the
+// complete successful load. Query copies a bounded snapshot under a mutex and
+// returns 0 while unavailable / for an unknown name.
+void dm_module_identity_invalidate(void);
+int dm_module_identity_publish(const module_t *modules, int count);
+int dm_module_identity_get(const char *name, dm_module_identity *out);
 // 四个线程本地槽：K18 = Switch 的 x18、KTLS = tpidr_el0、KTLR = tpidrro_el0（ThreadLocalRegion）、KGATE = 宿主门入口；实际键号由装载器写入键页
 // Four thread-local slots: K18 = the Switch's x18, KTLS = tpidr_el0, KTLR = tpidrro_el0 (ThreadLocalRegion), KGATE = host gate entry; the actual key numbers are written into the key page by the loader
 extern pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
@@ -99,6 +122,12 @@ void dm_guest_write_prep_register(void (*fn)(void *addr, size_t len));
 void dm_res_report_register(void (*fn)(uint32_t tick, const char *why));   // 资源计数回调（图形层注册）：每 250 拍、读取画面已撤、记满退出时调 | Resource count callback (registered by the graphics layer): called every 250 ticks, when the loading screen has been dismissed, and on exit when the record is full
 void (*dm_res_report_cb(void))(uint32_t tick, const char *why);   // 取已注册的资源计数回调（未注册为空） | Get the registered resource count callback (null if not registered)
 void dm_guest_write_prepare(void *addr, size_t len);
+// Ordinary host writers hold a shared lease across prepare and stores; snapshots
+// try exclusive access only. Fault handlers do not take this lock.
+void dm_guest_host_write_begin(void *addr, size_t len);
+void dm_guest_host_write_end(void);
+int dm_guest_snapshot_try_begin(void);
+void dm_guest_snapshot_end(void);
 // 图形生命周期（hle_nvn.c）：on=1 挂起（之后提交 / 出图阻塞，返回前 GPU 在途工作清空），on=0 恢复；iOS 前端在进出后台时调用
 // Graphics lifecycle (hle_nvn.c): on=1 suspends (afterwards submit / present block, and in-flight GPU work is drained before returning), on=0 resumes; called by the iOS front end when entering and leaving the background
 void dm_gfx_suspend(int on);

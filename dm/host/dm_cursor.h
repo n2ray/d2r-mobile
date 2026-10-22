@@ -29,6 +29,7 @@ void dm_cursor_set(int x, int y);
 // it reaches the game in the same sample as the keys. If the front-end main thread writes the cursor global directly at an arbitrary time, the game writes it back from its own controller cursor state before processing A, and A lands at the old cursor
 void dm_cursor_set_screen(float x, float y, float screen_w, float screen_h);
 void dm_cursor_clear(void);
+int dm_ui_mouse_hover_now(float nx, float ny);   // 游戏线程：Mac 无按键悬停，只更新自由光标；不点击、不吸附邻格 | Game thread: Mac button-free hover, updates the free cursor without clicking or snapping to nearby cells
 // 摇杆闭环（过渡做法，原版鼠标模式开关找到前用）：真机上原版逐帧鼠标移动那条路不跑，直写的光标会被手柄光标逻辑盖回。
 // 改为：每次读手柄时读原版光标 (main+0x2d128f8/fc)，离目标 > DM_CURSOR_NEAR（9）像素就推左摇杆朝目标走（60 像素内按距离减力）；
 // 没到位时按下的 A 连同当时的目标位置排队扣住，光标走到该位置才放出（拖放的起点 / 终点各一下）；排队 1.5 秒没到位报红并丢掉。
@@ -69,6 +70,8 @@ int dm_ui_targeting(void);                       // 此刻是否处在那个状�
 int dm_ui_panel_resident(const char *name);   // 局内常驻层（HUD 各层、佣兵头像栏、存盘指示、提示条…）：开着不算「有面板开着」 | In-run always-on layers (the HUD layers, mercenary portrait bar, save indicator, button legend...): being open does not count as 'a panel is open'
 enum { DM_PS_BANK = 1, DM_PS_VENDOR = 2, DM_PS_DEAD = 4, DM_PS_TEXT = 8, DM_PS_IMBUE = 16, DM_PS_CUBE = 32, DM_PS_VAULT = 64 };   // VAULT = 储藏箱开在第六页「编年史」（dm_vault_ui.c）   // CUBE = 赫拉迪克方块页开着（HoradricCubeLayout）   // IMBUE = 单件任务槽面板开着（灌魔 / 打孔 / 个性化 / 古墓底座共用的 ImbueItemsPanel） | VAULT = the stash is open on the sixth page 「编年史」(Chronicle) (dm_vault_ui.c)   // CUBE = the Horadric Cube page is open (HoradricCubeLayout)   // IMBUE = the single-item task slot panel is open (ImbueItemsPanel, shared by imbue / socketing / personalize / tomb pedestal)
 int dm_ui_panel_state(void);
+int dm_ui_panel_stack_count(void);   /* 原版面板开合栈读数（任意线程读）：>0 非常驻面板开着；-1 只开着 NPC 对话菜单；0 常态 | Original panel stack reading (any thread): >0 non-resident panel open; -1 only NPC dialog; 0 normal */
+int dm_hud_stack_msg(const char *act, const char *arg);
 void dm_ui_lifecycle(int background);   /* 前端进 / 出后台时调：位置守卫自检（dm_cursor.c mv_audit） | Called when the front end enters / leaves the background: position guard self-check (dm_cursor.c mv_audit) */   // 面板状态位（每帧读游戏面板树发布；变化时发合成界面消息 DM:PanelState） | Panel state bits (published by reading the game's panel tree every frame; on change the synthetic UI message DM:PanelState is sent)
 int dm_ui_panel_shown(const char *name);   // 这个面板此刻在游戏面板树里可见（游戏主线程调） | This panel is visible in the game's panel tree right now (called from the game main thread)
 int dm_ui_tap_box(void);   // 最近一次单击的物品是不是魔盒 | Whether the most recently single-tapped item is the Horadric Cube

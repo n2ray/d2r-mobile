@@ -8,6 +8,8 @@
 #include "dm_actions.h"
 #include "dm_cursor_item.h"
 #include "dm_i18n.h"
+#include "ui_trace.h"
+#include "fe_selection.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -173,6 +175,22 @@ static _Atomic uint64_t g_exact_xy = UINT64_MAX;   // 最近一次命中落在�
 static _Atomic int g_sn_new;   // 新一次按下（dm_ui_item_query 置）：上一次的吸附 / 停靠作废。只按「请求点没变」续用会跨触摸残留——同一落点再按，光标还在停靠点，长按判成空格去整理背包 | A new press (set by dm_ui_item_query): the previous snap / parking is invalidated. Reusing it only on 'the request point has not changed' would leave residue across touches -- pressing the same landing point again, the cursor is still at the parking point, and the long-press is classified as an empty cell and sorts the inventory
 static int sn_on; static _Atomic uint64_t g_snap;   // 就近吸附中；g_snap = 吸附记录（请求点 x | y<<16 | 落点 x<<32 | y<<48），长按据此分「贴着物品边」与「落在空格中间」 | Nearest snap in effect; g_snap = snap record (request point x | y<<16 | landing point x<<32 | y<<48); long-press uses it to tell 'next to an item's edge' from 'in the middle of an empty cell'
 static _Atomic int g_free_pub;
+// 真鼠标悬停复用原版焦点重算；不能套触屏的「胖手指」吸附，否则空格旁也会冒出邻格说明。
+// Real mouse hover reuses the game's focus refresh, bypassing touch's fat-finger snap so empty cells do not show a neighbor's tooltip.
+int dm_ui_mouse_hover_now(float nx, float ny) {
+    module_t *m = main_module();
+    uint64_t waiting = atomic_load(&g_a_wait);
+    if (!m || dm_hud_held() || dm_cursor_pending() || (waiting && now_ns() - waiting < 300000000ull) || !free_cursor_page(m)) return 0;
+    int w = *(int32_t *)(m->base + 0x211da38), h = *(int32_t *)(m->base + 0x211da3c);
+    if (w <= 0 || h <= 0) return 0;
+    int x, y;
+    if (!(nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1)) { x = w * 2 / 100; y = h / 2; }
+    else { x = (int)(nx * w); y = (int)(ny * h); if (x >= w) x = w - 1; if (y >= h) y = h - 1; }
+    { int dm_vault_ui_blocks(int, int); if ((dm_ui_panel_state() & DM_PS_VAULT) && dm_vault_ui_blocks(x, y)) return 0; }
+    int ok = dm_ui_hover_now(x, y);
+    if (getenv("DM_TEST_HOVER_LOG")) { dm_cursor_item_info ci = {0}; int found = dm_cursor_item(&ci); LOG("鼠标悬停刷新：(%d,%d) → %d 物品 %s id %u", x, y, ok, found ? ci.code : "-", ci.id); }
+    return ok;
+}
 int dm_ui_free_cursor(void) { return atomic_load(&g_free_pub); }   // 当前页有没有自由光标（物品栏 / 技能树 / 属性页这类） | Whether the current page has a free cursor (pages such as inventory / skill tree / attributes)
 void dm_cursor_apply(uint64_t *buttons, int32_t *lx, int32_t *ly) {
     cursor_apply(buttons, lx, ly);
@@ -465,6 +483,21 @@ uint64_t dm_guest_frame(void);
 // so a hover (including the kind on the class selection page that picks a 3D character by cursor) is lost on the next frame (Unhover comes just 30 ms after Hover Paladin).
 // After release: Move + Down on the next frame, then Move + Up on the frame after (at least one frame of hover has already held before the press).
 static _Atomic int g_ut_phase;                      // 0 无 1 按着 2 待发按下 3 待发抬起 | 0 none, 1 held down, 2 press pending, 3 release pending
+static dm_fe_selection g_fe_selection;              // Android explicit character selection; reset on lifecycle/new list
+static dm_ui_trace_state g_ui_trace;
+static _Atomic int g_trace_last_pump_phase = -1;
+void dm_ui_trace_set(int on) {
+    if (!dm_diagnostics_enabled()) on = 0;
+    (void)dm_ui_trace_arm(&g_ui_trace, on ? 1u : 0u);
+    atomic_store(&g_trace_last_pump_phase, -1);
+}
+int dm_ui_trace_arm_generation(unsigned generation) {
+    if (!dm_diagnostics_enabled()) generation = 0;
+    int changed = dm_ui_trace_arm(&g_ui_trace, generation);
+    if (changed) atomic_store(&g_trace_last_pump_phase, -1);
+    return changed;
+}
+unsigned dm_ui_trace_generation_value(void) { return dm_ui_trace_generation(&g_ui_trace); }
 static _Atomic uint64_t g_ut_xy;                    // 归一化坐标各 16 位 | Normalized coordinates, 16 bits each
 // 职业选择页（实玩后重做）。读码（人物控件 HDCharacterSelectorWidget，虚表 main+0x20c6fb8，消息处理 main+0xc2d840）：
 //   · 控件状态字 +0x13f4：0 待机 / 1 出列中 / 2 已出列 / 3 归队中；设置状态并起动画的函数 main+0xc2cf24(控件, 状态)。
@@ -500,8 +533,12 @@ int dm_fe_bliss(void) { return atomic_load(&g_fe_bliss); }
 // Delete-character popup: the original game requires 'long-press 「是」(Yes)', and the long-press is measured by how long controller A is held (holding the mouse for 4 seconds only produces one Confirm on release and does not delete). Hold A while the finger is pressed on 「是」(Yes), and release it when the finger lifts
 static _Atomic int g_fe_del_open, g_del_q, g_del_hold;   // 模式页 / 确认框开着；模式页上点了牌子以外 → 返回 | Mode page / confirmation box open; on the mode page a tap landed outside the plaques -> back
 int dm_restart_busy(void);   // 一键重开进行中（定义在下面）：界面触点一律丢掉 | One-key restart in progress (defined below): all UI touch points are dropped
-void dm_ui_touch(int phase, float nx, float ny) { if (phase != 3 && dm_restart_busy()) return;   // phase：0 按下 1 移动 2 抬起 3 作废（按下后改成了滚动：这次不点）；nx / ny = 出图画面归一化坐标 [0,1] | phase: 0 down, 1 move, 2 up, 3 cancelled (turned into a scroll after the press: no click this time); nx / ny = coordinates normalized to the rendered picture [0,1]
-    if (phase == 3) { atomic_store(&g_ut_phase, 0); atomic_store(&g_del_q, 0); atomic_store(&g_del_hold, 0); return; }
+void dm_ui_touch(int phase, float nx, float ny) {
+    int trace = dm_ui_trace_touch_take(&g_ui_trace, phase);
+    if (phase != 3 && dm_restart_busy()) { if (trace) LOG("[ui-trace] touch gen=%u phase=%d dropped restart_busy reason=1", dm_ui_trace_generation(&g_ui_trace), phase); return; }   // phase：0 按下 1 移动 2 抬起 3 作废（按下后改成了滚动：这次不点）；nx / ny = 出图画面归一化坐标 [0,1] | phase: 0 down, 1 move, 2 up, 3 cancelled (turned into a scroll after the press: no click this time); nx / ny = coordinates normalized to the rendered picture [0,1]
+    int before = atomic_load(&g_ut_phase);
+    if (trace) LOG("[ui-trace] touch gen=%u phase=%d xy=%.4f,%.4f before=%d", dm_ui_trace_generation(&g_ui_trace), phase, nx, ny, before);
+    if (phase == 3) { atomic_store(&g_ut_phase, 0); atomic_store(&g_del_q, 0); atomic_store(&g_del_hold, 0); if (trace) LOG("[ui-trace] touch gen=%u cancel after=0 reason=2", dm_ui_trace_generation(&g_ui_trace)); return; }
     if (phase != 1) DM_LAT("ui_touch %d", phase);
     nx = nx < 0 ? 0 : nx > 1 ? 1 : nx; ny = ny < 0 ? 0 : ny > 1 ? 1 : ny;
     atomic_store(&g_ut_xy, ((uint64_t)(uint32_t)(nx * 65535 + .5f) << 16) | (uint32_t)(ny * 65535 + .5f));
@@ -513,6 +550,7 @@ void dm_ui_touch(int phase, float nx, float ny) { if (phase != 3 && dm_restart_b
     if (phase == 0 && atomic_load(&g_fe_del_open)) atomic_store(&g_del_q, 1);
     if (phase == 2) { if (atomic_load(&g_ut_phase) == 1) atomic_store(&g_ut_phase, 2); }
     else atomic_store(&g_ut_phase, 1);
+    if (trace) LOG("[ui-trace] touch gen=%u phase=%d after=%d", dm_ui_trace_generation(&g_ui_trace), phase, atomic_load(&g_ut_phase));
 }
 int dm_ui_touch_active(void) { return atomic_load(&g_ut_phase) != 0; }
 // 前端纵向拖能不能当滚动：删除角色确认框（长按「是」，手指一漂就作废长按）、模式页（牌子以外 = 返回）、起名页、确认框开着时不当，照旧是点按
@@ -1804,6 +1842,7 @@ static void mv_offset(int own, uint64_t w, int f, int32_t delta, int relayout) {
         mv_prune();   // 游戏重建界面（如切语言）后旧控件对象没了、新对象另起一条：先把不在界面树上的条目忘掉（不写，内存可能已释放），否则条目越积越多、96 条满了新控件写不进（英文版 ×8 红） | After the game rebuilds the UI (e.g. a language switch) the old widget objects are gone and the new objects start new entries: first forget entries not on the UI tree (no write, the memory may already be freed), otherwise entries keep piling up and once the 96 entries are full new widgets cannot be written (English version: ×8 red)
         if (g_nmv >= 96) { static int lg; if (lg++ < 8) LOG("【红】位置守卫：%s 条目满了（96 条都还挂在界面树上），「%s」不写", mv_name[own], (const char *)*(uint64_t *)(w + 8)); return; }
         if (!mv_count(own)) { static int lg[MV_N]; if (lg[own]++ < 40) LOG("位置守卫：%s 开始挪（%s）", mv_name[own], (const char *)*(uint64_t *)(w + 8)); }   // 每次「开挪」留一条证据（绑定框只挪 0.2 秒，自检碰不上） | Leave one line of evidence at every "start moving" (the binding box is only moved for 0.2 s, which the self-check never catches)
+        i = g_nmv;   // prune 后新条目的下标可能已变；后续必须更新实际插入的条目 | Pruning can move the insertion slot; update the entry actually inserted | Pruning can move the insertion slot; update the entry actually inserted
         g_mv[g_nmv] = (mvent){ { 0, 0 }, own, f, relayout, *v, *v }; dm_wref_set(&g_mv[g_nmv++].r, w); }
     mvent *e = &g_mv[i]; if (g_mv_base_on) e->orig = g_mv_base; else if (*v != e->val) e->orig = *v;   // 游戏重建 / 重排过：现值当原值（调用方给了原位就用给的） | The game has rebuilt / re-laid out the UI: take the current value as the original value (if the caller supplied an original position, use that)
     if (!delta) { if (*v == e->val && *v != e->orig) { *v = e->orig; if (e->relayout) ((void (*)(uint64_t))*(uint64_t *)(*(uint64_t *)w + 0x10))(w); } g_mv[i] = g_mv[--g_nmv]; return; }
@@ -1819,7 +1858,7 @@ static uint64_t g_mv_audit_at; static const char *g_mv_audit_path = "";
 static void mv_audit_arm(const char *path) {   // 前一条还没到点就合并路名：切后台时客体时钟冻结，自检要到回前台后才跑，原先被「回前台」覆盖、整局没有「切后台」那行 | If the previous one has not come due yet, merge the path names: on going to background the guest clock freezes and the self-check only runs after returning to foreground; it used to be overwritten by 「回前台」(back to foreground), so the whole run had no 「切后台」(to background) line
     static char both[96]; if (g_mv_audit_at && strcmp(g_mv_audit_path, path)) { snprintf(both, sizeof both, "%s → %s", g_mv_audit_path, path); g_mv_audit_path = both; } else g_mv_audit_path = path;
     g_mv_audit_at = dm_guest_frame() + 12; }
-void dm_ui_lifecycle(int background) { mv_audit_arm(background ? "切后台" : "回前台"); }   // iOS 前端进 / 出后台时调（front_ios.m） | Called by the iOS front end on entering / leaving the background (front_ios.m)
+void dm_ui_lifecycle(int background) { mv_audit_arm(background ? "切后台" : "回前台"); if (background) dm_fe_selection_reset(&g_fe_selection); }   // iOS 前端进 / 出后台时调（front_ios.m） | Called by the iOS front end on entering / leaving the background (front_ios.m)
 static void mv_audit_pump(uint64_t root, uint64_t fr) {
     if (!g_mv_audit_at || fr < g_mv_audit_at) return; g_mv_audit_at = 0; int bad = 0; char line[256]; int k = 0;
     for (int o = 0; o < MV_N; o++) { int live = 0; for (int i = 0; i < g_nmv; i++) live += g_mv[i].own == o && ui_has(root, g_mv[i].r.w, 0);
@@ -2070,6 +2109,10 @@ static void ui_note_dock_pump(uint64_t root) {
     if (panel != g_nd_on) { g_nd_on = panel; static int lg; if (lg++ < 40) LOG("提示框停靠：%s，目标 y %d（布局原值 %d，矩形高 %d）", panel ? "面板态" : "无面板", *t, g_nd_orig, h); }
 }
 static void ui_lift_pump(uint64_t root, uint64_t fr) {
+    // 普通轮询等控件树稳定，避免下一轮布局继承已上提的坐标；加载消息（fr=0）仍当场更新。两条路都避开模式切换事务
+    // Polling waits for the widget tree to settle so the next layout cannot inherit lifted coordinates; loading messages (fr=0) still update immediately. Both paths avoid mode-switch transactions
+    // Polling waits for the widget tree to settle so the next layout cannot inherit lifted coordinates; loading messages (fr=0) still update immediately. Both paths avoid mode-switch transactions
+    int dm_padmode_busy(void); if (dm_ui_unstable() && (fr || dm_padmode_busy())) return;
     if (fr < g_lift_next) return; g_lift_next = fr + 6;
     int x, y, w, h; dm_ui_rect(&x, &y, &w, &h); int lift = h > 0 && dm_uiscreen_ingame() ? (int)((long)y * 2160 / h) : 0;
     g_mv_want[MV_LIFT] = lift != 0; if (!lift) { mv_restore(root, MV_LIFT); return; }   // 不上提（不在局内 / 不是真全屏）：全部写回原值 | No lift (not in-game / not true fullscreen): write everything back to the original values
@@ -2433,6 +2476,8 @@ int dm_ui_panel_resident(const char *name) {
 // Returns the stack reading: number of open non-resident panels; -1 when only the NPC dialog menu / speech box is open. The log text "[hud] 面板栈 ..." is kept as is (regression scripts match on it)
 enum { HUD_STACK_MAX = 64 };
 static struct { char name[64]; int open; } g_hud_stack[HUD_STACK_MAX];
+static _Atomic int g_hud_stack_blocked;
+int dm_ui_panel_stack_count(void) { return atomic_load(&g_hud_stack_blocked); }
 static void hud_stack_update(const char *act, const char *arg) {
     // 读取画面撤下：清掉此刻在游戏面板树里已经看不见的记录（防只开不关的漏配），屏上还在的照记——
     // 通关页是读取画面撤下前 0.5 秒开的（OpenExclusivePanel EndScreenPanelExpansion → UnloadPanel LoadScreenPanel），原先整栈清零把它也清了：
@@ -2442,7 +2487,7 @@ static void hud_stack_update(const char *act, const char *arg) {
     // the bottom bar and skill buttons covered the game-completion page, and tapping 「好」(OK) became a world tap
     if(!strcmp(act,"UnloadPanel") && !strcmp(arg,"LoadScreenPanel")) {
         for(int i=0;i<HUD_STACK_MAX;i++) {
-            if(g_hud_stack[i].open>0 && strcmp(g_hud_stack[i].name,"LoadScreenPanel") && dm_ui_panel_shown(g_hud_stack[i].name)) fprintf(stderr,"[hud] 面板栈 读取画面撤下：%s 屏上还在，照记\n",g_hud_stack[i].name);
+            if(g_hud_stack[i].open>0 && strcmp(g_hud_stack[i].name,"LoadScreenPanel") && dm_ui_panel_shown(g_hud_stack[i].name)) { if(dm_diagnostics_enabled())fprintf(stderr,"[hud] 面板栈 读取画面撤下：%s 屏上还在，照记\n",g_hud_stack[i].name); }
             else memset(&g_hud_stack[i],0,sizeof g_hud_stack[i]);
         }
     }
@@ -2475,9 +2520,9 @@ static void hud_stack_update(const char *act, const char *arg) {
         // OpenPanel HireMenuPanel is sent again (with no close in between), while at the end of the whole dialog only a fixed number of closes is sent. Adding by count, when the confirmation box comes up two extra times and the hire then succeeds, leaves the count at 1:
         // no panel left on screen, yet the front end stays in panel mode (no stick, no skill buttons, every tap is "outside the panel"). Across 809 logs only 4 panels ever reached a count of 2 or more
         // (main menu links, character select page, naming candidate bar, hire list), and none of them was a real two-layer stack needing two closes. The dm_tc_navigation path was already an idempotent bitmap, so the two paths now agree
-        if(open && g_hud_stack[slot].open>0) { fprintf(stderr,"[hud] 面板栈 %s %s：已经开着，不重复计\n",act,arg); return; }
+        if(open && g_hud_stack[slot].open>0) { if(dm_diagnostics_enabled())fprintf(stderr,"[hud] 面板栈 %s %s：已经开着，不重复计\n",act,arg); return; }
         g_hud_stack[slot].open=open?1:0;
-        fprintf(stderr,"[hud] 面板栈 %s %s → %d\n",act,arg,g_hud_stack[slot].open);
+        if(dm_diagnostics_enabled())fprintf(stderr,"[hud] 面板栈 %s %s → %d\n",act,arg,g_hud_stack[slot].open);
     }
 }
 int dm_hud_stack_msg(const char *act, const char *arg) {
@@ -2488,6 +2533,7 @@ int dm_hud_stack_msg(const char *act, const char *arg) {
     // Encoded into the same number: dialog menu open with no other panel → -1 (the bottom bar does not yield, and navigation-mode hiding is waived)
     int n=0, dlg=0; for(int i=0;i<HUD_STACK_MAX;i++) { if(!strcmp(g_hud_stack[i].name,"NpcDialogPanel")||!strcmp(g_hud_stack[i].name,"ScrollSpeechPanel")) dlg|=g_hud_stack[i].open>0; else n+=g_hud_stack[i].open; }   // ScrollSpeechPanel = NPC 说话的滚动文字框（屏幕上方一小块），同样不挡底栏 | ScrollSpeechPanel = the scrolling text box of NPC speech (a small block at the top of the screen); it likewise does not block the bottom bar
     if(!n && dlg) n=-1;
+    atomic_store(&g_hud_stack_blocked,n);
     return n;
 }
 void dm_hud_stack_dump(void) { for (int i = 0; i < HUD_STACK_MAX; i++) if (g_hud_stack[i].open) fprintf(stderr, "%s×%d ", g_hud_stack[i].name, g_hud_stack[i].open); }   // 开着的记录（巡检日志用） | Records currently open (for the patrol log)
@@ -2777,11 +2823,13 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
             else atomic_store(&g_del_q, 0); }
         else atomic_store(&g_del_q, 0); }
     int ph = atomic_load(&g_ut_phase); if (!ph) return;
+    int trace = dm_ui_trace_pump_take(&g_ui_trace, &g_trace_last_pump_phase, ph);
+    if (trace) LOG("[ui-trace] pump gen=%u frame=%llu phase=%d", dm_ui_trace_generation(&g_ui_trace), (unsigned long long)fr, ph);
     last_frame = fr;
-    module_t *m = main_module(); if (!m) return;
+    module_t *m = main_module(); if (!m) { if (trace) LOG("[ui-trace] pump gen=%u blocked reason=1 no-root", dm_ui_trace_generation(&g_ui_trace)); return; }
     int32_t width = *(int32_t *)(m->base + 0x211da38), height = *(int32_t *)(m->base + 0x211da3c);
     uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8);
-    if (width <= 0 || height <= 0 || !root) return;
+    if (width <= 0 || height <= 0 || !root) { if (trace) LOG("[ui-trace] pump gen=%u blocked reason=2 viewport=%dx%d root=%d", dm_ui_trace_generation(&g_ui_trace), width, height, root != 0); return; }
     uint64_t r = atomic_load(&g_ut_xy);
     int x = (int)(((r >> 16) & 0xffff) / 65535.0 * width), y = (int)((r & 0xffff) / 65535.0 * height); if (x >= width) x = width - 1; if (y >= height) y = height - 1;
     if (atomic_load(&g_fe_opt_open)) { uint64_t bw = ui_find(root, "TouchBliss", 0);
@@ -2797,14 +2845,15 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
     // (iOS app on the Mac: tapping 「选项」(Options) in the pause menu → the whole panel got closed. It was not exposed before because the controller cursor had gone there first)
     static uint64_t snapped;   // 这次点按已吸附过的位置（吸附后 g_ut_xy 改成可点控件上的点，再悬停、按下） | the position this tap has already been snapped at (after snapping, g_ut_xy is changed to a point on the clickable widget, then hover, then press)
     if (ph == 2 && r != snapped && (dm_ui_panel_state() & DM_PS_VAULT) && ({ int dm_vault_ui_blocks(int, int); dm_vault_ui_blocks(x, y); })) snapped = r;   // 编年史页自己收的点（格子、部位页签、空处）不吸附：原先点部位页签被吸到旁边的搜索框上 | taps the chronicle page handles itself (cells, slot tabs, empty space) are not snapped: previously a tap on a slot tab got snapped onto the search box next to it
-    if (ph == 2 && r != snapped) { int sx = x, sy = y, sn = ui_snap(m, root, &sx, &sy);
+    if (ph == 2 && r != snapped) { int sx = x, sy = y; int trace_snap = dm_ui_trace_take_stage(&g_ui_trace, DM_UI_TRACE_PUMP); int sn = ui_snap(m, root, &sx, &sy);
+        if (trace_snap) { const char *snap_name = dm_ui_trace_snap_name(sn, g_click_name); LOG("[ui-trace] snap gen=%u viewport=%dx%d result=%d before=%d,%d after=%d,%d name=%.32s", dm_ui_trace_generation(&g_ui_trace), width, height, sn, x, y, sx, sy, snap_name); }
         if (sn == 6) { atomic_store(&g_ut_phase, 0); static int l6; if (l6++ < 40) LOG("界面鼠标：(%d,%d) 压着被上层面板盖住的按钮，不点", x, y); return; }
         if (sn == 2) { static int lg; if (lg++ < 40) LOG("界面鼠标：(%d,%d) 就近吸附到 (%d,%d)", x, y, sx, sy);
             r = ((uint64_t)(uint32_t)((sx + 0.5) / width * 65535) << 16) | (uint32_t)((sy + 0.5) / height * 65535); atomic_store(&g_ut_xy, r); x = sx; y = sy; }
         snapped = r; }
     static int hov; static uint64_t hov_xy; if (r != hov_xy) { hov_xy = r; hov = 0; }
     if (ph == 1) hov++;
-    if (ph == 2 && hov < 2) { hov++; return; }
+    if (ph == 2 && hov < 2) {    if (trace) LOG("[ui-trace] pump gen=%u wait-hover hov=%d", dm_ui_trace_generation(&g_ui_trace), hov); hov++; return; }
     if (ph == 2 && atomic_load(&g_cc_open) && !atomic_load(&g_fe_opt_open) && !atomic_load(&g_fe_name_open) && !atomic_load(&g_fe_confirm_open)) {   // 职业选择页（上面没盖着模式页 / 起名页 / 弹窗）：这次点的若是别的职业，先让正在出列的那位归队（见上） | class selection page (not covered by the mode page / naming page / a popup): if this tap is on a different class, first have the one currently stepping forward return to the lineup (see above)
         uint64_t pn = ui_find(root, "CharacterCreatePanel", 0), xy = (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32), ws[8]; int hit = -1;
         for (int i = 0; pn && i < 8; i++) { ws[i] = ui_find(pn, k_cc_class[i], 0); if (ws[i] && hit < 0 && (((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)ws[i] + 0x48))(ws[i], xy) & 1)) hit = i; }
@@ -2832,8 +2881,8 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
         else if (st0) LOG("合成钮：手上已空，按下");
         else if (!(hh.valid && hh.holding) && ui_snap(m, root, &px, &py) && !strcmp(g_click_name, "convert")) LOG("合成钮：按下（HUD 读数 %s，手上 %d）——之后应有一行「合成读数：服务端收到合成请求」，没有就是请求没进游戏服务端", hh.valid ? "有效" : "无效", hh.holding);   // #22：空手这条路原来不记 | #22: the empty-hand path was not logged before
         st0 = 0; }
-    if (ph == 2) { ui_send_mouse(m, root, h_dn, x, y); int e = 2; atomic_compare_exchange_strong(&g_ut_phase, &e, 3); }
-    else if (ph == 3) { ui_send_mouse(m, root, h_up, x, y); int e = 3; atomic_compare_exchange_strong(&g_ut_phase, &e, 0);
+    if (ph == 2) { int trace_down = dm_ui_trace_take_stage(&g_ui_trace, DM_UI_TRACE_PUMP); if (trace_down) LOG("[ui-trace] pump gen=%u dispatch-down x=%d y=%d accepted=unknown", dm_ui_trace_generation(&g_ui_trace), x, y); ui_send_mouse(m, root, h_dn, x, y); int e = 2; atomic_compare_exchange_strong(&g_ut_phase, &e, 3); }
+    else if (ph == 3) { int trace_up = dm_ui_trace_take_stage(&g_ui_trace, DM_UI_TRACE_PUMP); if (trace_up) LOG("[ui-trace] pump gen=%u dispatch-up x=%d y=%d accepted=unknown", dm_ui_trace_generation(&g_ui_trace), x, y); ui_send_mouse(m, root, h_up, x, y); int e = 3; atomic_compare_exchange_strong(&g_ut_phase, &e, 0);
         DM_LAT("click %d,%d", x, y);
         if (logged < 400) { logged++; LOG("界面鼠标：点击 (%d,%d)", x, y); }
         // 设置页的「应用 / 放弃」：这页是手柄版逻辑，退出只认返回键（原版底部提示「B 关闭菜单」），这两个键鼠版按钮点了游戏会处理但不关页。
@@ -2899,7 +2948,7 @@ static const char *sel_cur(uint8_t *b, const char *want, int64_t *at) {   // 当
 }
 static void sel_keep(const char *cat, const char *act) {
     module_t *m = main_module(); if (!m) return; uint8_t *b = (uint8_t *)m->base; uint64_t fr = dm_guest_frame();
-    if (!strcmp(cat, "CharacterSelect") && !strcmp(act, "SelectCharacter")) { const char *nm = sel_cur(b, NULL, NULL); g_sel_name[0] = 0; if (nm) { strlcpy(g_sel_name, nm, sizeof g_sel_name); g_sel_fr = fr; } return; }
+    if (!strcmp(cat, "CharacterSelect") && !strcmp(act, "SelectCharacter")) { const char *nm = sel_cur(b, NULL, NULL); g_sel_name[0] = 0; if (nm) { strlcpy(g_sel_name, nm, sizeof g_sel_name); g_sel_fr = fr; dm_fe_selection_note(&g_fe_selection, nm); } else dm_fe_selection_reset(&g_fe_selection); return; }
     if (!g_sel_name[0] || strcmp(act, "UpdateCharacterInfo")) return;
     if (fr - g_sel_fr > 120) { g_sel_name[0] = 0; return; }   // 只管确认后紧跟的那次重排；之后玩家再移高亮是另一回事 | Only handles the one re-sort right after the confirm; the player moving the highlight afterwards is a different matter
     int64_t at; const char *nm = sel_cur(b, g_sel_name, &at); char want[17]; strlcpy(want, g_sel_name, sizeof want); g_sel_name[0] = 0;
@@ -2924,6 +2973,11 @@ void dm_ui_on_uimsg(const char *cat, const char *act, const char *arg) {
           note_dock_restore(root, ex ? (act[0] == 'E' ? "保存并退出" : "回到前端") : "读取画面（切场景）"); } }
     if (!strcmp(cat, "QuestLogPanelMessage") && !strcmp(act, "DialogueFinished")) atomic_store(&g_speech_end, dm_guest_frame());
     if (!strcmp(cat, "PanelManager")) ui_panel_note(act, arg ? arg : "");
+#ifdef __ANDROID__
+    // Android has no front-end hud_stack_message; feed the same host panel
+    // stack here so the live owner observes the original panel state.
+    if (!strcmp(cat, "PanelManager")) (void)dm_hud_stack_msg(act, arg ? arg : "");
+#endif
     if (!strcmp(cat, "ChroniclePanelMessage") && !strcmp(act, "ToggleChildPanel") && arg && arg[0]) { int c = 0; while (c < 8 && g_chr_child[c][0] && strcmp(g_chr_child[c], arg)) c++; if (c < 8 && !g_chr_child[c][0]) strlcpy(g_chr_child[c], arg, sizeof g_chr_child[c]); }
     if (!strcmp(cat, "PanelManager") && arg && !strcmp(arg, "ChroniclePanel") && (!strcmp(act, "ClosePanel") || !strcmp(act, "UnloadPanel"))) atomic_store(&g_chr_closed, 1);
     dm_custom_on_uimsg(cat, act, arg ? arg : "");
@@ -2944,7 +2998,8 @@ void dm_ui_on_uimsg(const char *cat, const char *act, const char *arg) {
     // 主菜单按钮条在不在、选角列表开没开：有存档时首页必须是选角页，列表被收起（点了已选中的那一行 = 原版的「选定并返回主菜单」）就重新打开
     // Whether the main menu button bar is present and whether the character select list is open: when there are saves the home page must be the character select page, and if the list is collapsed (the already selected row was tapped = the original game's "select and return to the main menu") it is reopened
     if (!strcmp(cat, "PanelManager") && !strcmp(arg, "MainMenuButtonRibbon") && !strcmp(act, "OpenPanel")) atomic_store(&g_fe_ribbon, 1);
-    if ((!strcmp(cat, "PanelManager") && (!strcmp(act, "UnloadAll") || (!strcmp(arg, "MainMenuPanel") && !strcmp(act, "UnloadPanel")))) || (!strcmp(cat, "FrontEndNavigation") && (!strcmp(act, "ToGame") || !strcmp(act, "ToCharacterCreate")))) atomic_store(&g_fe_ribbon, 0);
+    if (!strcmp(cat, "PanelManager") && arg && !strcmp(arg, "CharacterSelectPanel") && !strcmp(act, "OpenPanel")) dm_fe_selection_reset(&g_fe_selection);
+    if ((!strcmp(cat, "PanelManager") && (!strcmp(act, "UnloadAll") || (!strcmp(arg, "MainMenuPanel") && !strcmp(act, "UnloadPanel")))) || (!strcmp(cat, "FrontEndNavigation") && (!strcmp(act, "ToGame") || !strcmp(act, "ToCharacterCreate")))) { atomic_store(&g_fe_ribbon, 0); dm_fe_selection_reset(&g_fe_selection); }
     if (!strcmp(cat, "PanelManager") && !strcmp(arg, "CharacterSelectPanel") && !strcmp(act, "OpenPanel") && atomic_exchange(&g_fe_bliss, 0)) { LOG("前端路径：回到选角页，极乐世界勾选清掉"); dm_elysium_arm(0); }   // 取消建角：这次的勾不带到下一次 | character creation cancelled: this time's checkmark is not carried over to the next time
     if (!strcmp(cat, "PanelManager") && !strcmp(arg, "CharacterSelectPanel")) { if (!strcmp(act, "OpenPanel")) atomic_store(&g_fe_list, 1); else if (!strcmp(act, "ClosePanel") || !strcmp(act, "UnloadPanel")) atomic_store(&g_fe_list, 0); }
     if (strcmp(cat, "PanelManager") || strcmp(act, "OpenPanel")) return;
@@ -3216,8 +3271,13 @@ void dm_ui_frontend_pump(void) {   // 取手柄处调；各动作之间隔开几
     // After the list is collapsed (no new main menu message): sitting on the main menu for a full 20 frames with no other popup → reopen the character select page
     // Collapsing the list does not necessarily produce a ClosePanel message (tapping a list row = select and collapse, only SelectCharacter is emitted): read the visible bit of the character select panel widget directly
     int ribbon = atomic_load(&g_fe_ribbon), list_vis = 0; if (ribbon) { module_t *m = main_module(); uint64_t root = 0; if (m) memcpy(&root, m->base + 0x2f05458, 8); uint64_t w = root ? ui_find(root, "CharacterSelectPanel", 0) : 0; list_vis = w && *(uint8_t *)(w + 0x50); }   // 只有停在主菜单时才用得到这一位；局内不找（局内没有这个面板，每帧都是整树比完） | this bit is only needed while sitting on the main menu; not searched in a run (this panel does not exist in a run, so every frame would compare the whole tree)
-    static uint64_t bare; if (ribbon && !list_vis && !atomic_load(&g_fe_confirm_open)) { if (!bare) bare = fr; else if (fr - bare >= 20) { bare = 0; const char *sv = getenv("DM_SAVE"); if (!sv || has_character(sv, 0)) { fe_key(DM_BTN_X); next = fr + 30; LOG("前端路径：选角列表被收起 → 重新打开（X）"); }
-            else { atomic_store(&g_fe_ribbon, 0); fe_send("FrontEndNavigation", "ToCharacterCreate", "1"); next = fr + 30; LOG("前端路径：已没有角色（删掉了最后一个）→ 直达职业选择"); } } } else bare = 0;
+    static uint64_t bare; if (ribbon && !list_vis && !atomic_load(&g_fe_confirm_open)) { if (!bare) bare = fr; else if (fr - bare >= 20) { bare = 0;
+#if defined(__ANDROID__) || defined(DM_ANDROID_FE_SELECTION)
+        if (dm_fe_selection_keeps_main(&g_fe_selection)) { static int lg; if (lg++ < 6) LOG("前端路径：已确认角色「%s」→ 保持主菜单，不自动重开选角列表（X）", g_fe_selection.name); }
+        else
+#endif
+        { const char *sv = getenv("DM_SAVE"); if (!sv || has_character(sv, 0)) { fe_key(DM_BTN_X); next = fr + 30; LOG("前端路径：选角列表被收起 → 重新打开（X）"); }
+            else { atomic_store(&g_fe_ribbon, 0); fe_send("FrontEndNavigation", "ToCharacterCreate", "1"); next = fr + 30; LOG("前端路径：已没有角色（删掉了最后一个）→ 直达职业选择"); } } } } else bare = 0;
 }
 // ---------- 模式切换事务的登记项（dm_mode_items.h；游戏主线程，改布局之前调） ----------
 // 前端路径理顺与各处替按键：在途的请求全部作废。这些请求都是触摸点击排下的（点页签替按 L / R、点设置页按钮替按返回、点对话菜单行替按上下再确认…），
@@ -3226,6 +3286,7 @@ void dm_ui_frontend_pump(void) {   // 取手柄处调；各动作之间隔开几
 // Front-end path straightening and the various key presses made on the player's behalf: all in-flight requests are voided. These requests are all queued by touch taps (tapping a tab presses L / R, tapping a settings page button presses Back, tapping a dialog menu row presses up / down and then confirm...),
 // and the whole UI is about to be rebuilt, so leaving them would make them land on the new UI
 void dm_ui_auto_mode_leave(void) {
+    dm_fe_selection_reset(&g_fe_selection);
     atomic_store(&g_fe_skip_tut, 0); atomic_store(&g_fe_back, 0); atomic_store(&g_fe_options, 0); atomic_store(&g_fe_name, 0); atomic_store(&g_fe_name_done, 0); atomic_store(&g_fe_name_key, 0); atomic_store(&g_fe_name_tap, 0);
     atomic_store(&g_fe_key_until, 0); atomic_store(&g_fe_key_mask, 0); atomic_store(&g_pulse_until, 0);   // 「独占的一下」（g_alone_*：进局常态替按一次显示物品键）不在此列：它不是触摸点击排下的，两种模式都要发，由它自己等切换完成（dm_ui_alone_take） | "The exclusive press" (g_alone_*: the one show-items key press made routinely on entering a run) is not among these: it is not queued by a touch tap and must be sent in both modes; it waits for the switch to finish by itself (dm_ui_alone_take)
     atomic_store(&g_set_back_at, 0); atomic_store(&g_speech_back_at, 0); atomic_store(&g_tab_left, 0); atomic_store(&g_tab_direct, 0); atomic_store(&g_tab_then, 0); atomic_store(&g_del_q, 0); atomic_store(&g_del_hold, 0);

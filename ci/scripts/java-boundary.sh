@@ -24,6 +24,10 @@ fail() {
     exit 1
 }
 
+bash "$root/dm/android/tests/live_touch_jni_registration.sh" >> "$log" 2>&1 || fail "live touch JNI registration"
+bash "$root/dm/android/tests/live_touch_timer_host.sh" >> "$log" 2>&1 || fail "live touch timer deadline"
+bash "$root/dm/android/tests/live_touch_frontend_host.sh" >> "$log" 2>&1 || fail "original frontend gestures"
+
 resolve_javac() {
     local candidate=${DM_JAVAC:-}
     if [[ -z "$candidate" && -n "${JAVA_HOME:-}" ]]; then
@@ -76,6 +80,17 @@ javac=$(resolve_javac) || fail "required Java compile needs a JDK (javac)"
 jar=$(resolve_jar) || fail "required Java compile needs the real android.jar"
 log_line "javac=$javac"
 log_line "android.jar=$jar"
+
+if "$javac" --release 8 -d "$work/java/driver" \
+    "$root/dm/android/java/org/d2r/android/port/SaveArchive.java" \
+    "$root/dm/android/java/org/d2r/android/port/DriverArchive.java" \
+    "$root/dm/android/tests/DriverArchiveTest.java" >> "$log" 2>&1 \
+    && "$(dirname "$javac")/java" -cp "$work/java/driver" org.d2r.android.port.DriverArchiveTest >> "$log" 2>&1; then
+    log_line "PASS driver ZIP validation and failed-import preservation"
+else
+    fail "driver archive regression"
+fi
+
 
 app_java=$root/dm/android/app/java
 stubs=$root/dm/android/tests/java-stubs

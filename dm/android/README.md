@@ -2,11 +2,11 @@
 
 中文：[README.zh-CN.md](README.zh-CN.md)
 
-## Current playable branch (2026-10-21)
+## Current playable branch (2026-10-22)
 
 The development build now starts the real game, enters camp and saves/exits on the target phone. Turnip is the rendering baseline. Combat, skills, pickup and inventory/stash dragging have user verification; complete touch parity, broad lifecycle/device coverage, sustained 60 fps and energy savings are not established. Current priorities and known limitations are in the [fork README](../../README.md#current-status) and [project board #1](https://github.com/n2ray/d2r-mobile/issues/1).
 
-Use [`integration/android-reference`](https://github.com/n2ray/d2r-mobile/tree/integration/android-reference) for the playable implementation; default `main` still contains the earlier implementation while [PR #225](https://github.com/n2ray/d2r-mobile/pull/225) awaits overall review. The current APK builder is [`tools/build.py --game-run`](https://github.com/n2ray/d2r-mobile/blob/integration/android-reference/dm/android/tools/build.py), with reference toolchain and local resources. Android game-data ZIP import and driver choices are described in the [current user instructions](../../README.md#trying-a-development-build).
+Use [`main`](https://github.com/n2ray/d2r-mobile/tree/main) as the accepted Android baseline. The former integration branch is consolidated through [PR #225](https://github.com/n2ray/d2r-mobile/pull/225); new topic PRs target `main`. The current APK builder is [`tools/build.py --game-run`](https://github.com/n2ray/d2r-mobile/blob/main/dm/android/tools/build.py), with reference toolchain and local resources. Android game-data ZIP import and driver choices are described in the [current user instructions](../../README.md#trying-a-development-build).
 
 **Historical tooling below:** the remaining sections document the earlier standalone runtime, fixtures and synthetic diagnostic milestones. Their counts, blockers and old device results apply to those checkpoints, not to the current game frontend. In particular, `app/build.sh` builds the synthetic diagnostic, not the playable APK; `paths.sh` workspace conventions below describe those tools. Archived contract tasks are not claimed as proven by the reference runtime first run. Preserve strict validation and failure boundaries.
 

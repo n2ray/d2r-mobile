@@ -8,9 +8,18 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __ANDROID__
+#include <dlfcn.h>
+#include "../android/native/host_sections.h"
+#include "../android/native/runtime.h"
+#include "../android/native/host_tls.h"
+#include "../android/native/target_guard.h"
+#else
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
+#endif
 #include "hle.h"
+#include "layout_keys.h"
 
 module_t g_mod[MAX_MOD];
 int g_nmod;
@@ -37,16 +46,26 @@ static void create_keys(void) {
         pthread_key_create(&g_keyaspect, NULL) || pthread_key_create(&g_keyaspectui, NULL)) die("创建参数位键失败");
     LOG("键号 K18=%lu KTLS=%lu KTLR=%lu KGATE=%lu KRES0=%lu KRES1=%lu KASPECT=%lu KASPECTUI=%lu",
         g_key18, g_keytls, g_keytlr, g_keygate, g_keyres[0], g_keyres[1], g_keyaspect, g_keyaspectui);
+#ifdef __ANDROID__
+    pthread_key_t keys[] = {g_key18, g_keytls, g_keytlr, g_keygate, g_keyres[0], g_keyres[1], g_keyaspect, g_keyaspectui};
+    dm_android_bind_keys(keys);
+#endif
 }
 
 // K 槽校验：pthread TSD 布局固定，槽 = tpidrro_el0 + 8*key
 // K slot check: the pthread TSD layout is fixed, slot = tpidrro_el0 + 8*key
 static void tsd_check(void) {
+#ifdef __ANDROID__
+    dm_android_host_setspecific(g_key18, (void *)0x1234);
+    if (dm_android_context_get()->slots[DM_K18] != 0x1234) die("Android context layout mismatch");
+    dm_android_host_setspecific(g_key18, NULL);
+#else
     pthread_setspecific(g_key18, (void *)0x1234);
     uint64_t base; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(base));
     uint64_t off = *(uint64_t *)(g_mod[0].base + g_mod[0].key_page_off + g_mod[0].key_idx[KEY_K18] * 8);
     if (((uint64_t *)(base & ~7ull))[off / 8] != 0x1234) die("TSD 布局不符");
     pthread_setspecific(g_key18, 0);
+#endif
 }
 
 static void build_symhash(module_t *m);
@@ -124,7 +143,12 @@ static uint64_t resolve_sym(module_t *m, const char *name, int weak) {
 // Forced take-over table (hle.h HLE_FORCE, the __DATA,swforce section): a hit overrides the definition inside the module
 static const hle_force_ent *g_force; static unsigned g_nforce; static unsigned *g_force_hits;
 static void force_init(void) {
-    unsigned long sz; g_force = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &sz);
+    unsigned long sz;
+#ifdef __ANDROID__
+    g_force = dm_android_host_section(1, &sz);
+#else
+    g_force = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &sz);
+#endif
     g_nforce = g_force ? (unsigned)(sz / sizeof *g_force) : 0;
     g_force_hits = calloc(g_nforce + 1, sizeof *g_force_hits);
     for (unsigned i = 0; i < g_nforce; i++)
@@ -151,11 +175,23 @@ static void force_check(void) {
 // Read the rewriter table header (segment boundaries, slot numbers); any row beyond the header means an old-format build output (code modified at load time), which is rejected
 static void read_layout(module_t *m, const char *dir) {
     char path[1024]; snprintf(path, sizeof path, "%s/%s.fixups.tsv", dir, m->name);
+#ifdef __ANDROID__
+    { char target_error[160]; if (dm_android_target_validate(path, target_error, sizeof target_error)) die("%s: %s", m->name, target_error); }
+#endif
     FILE *f = fopen(path, "r");
     if (!f) die("open %s", path);
     static const char *kn[8] = {"K18", "KTLS", "KTLR", "KGATE", "KRES0", "KRES1", "KASPECT", "KASPECTUI"};
     char line[256], key[32]; unsigned long v; unsigned seen = 0;
     while (fgets(line, sizeof line, f)) {
+        unsigned slot, index;
+        int key_line = dm_layout_parse_key_line(line, &slot, &index);
+        if (key_line == DM_LAYOUT_KEY_MALFORMED) die("%s: malformed KEY index line (tab/number required)", path);
+        if (key_line == DM_LAYOUT_KEY_OK) {
+            if (seen & (1u << slot)) die("%s: duplicate KEY_%s_IDX", path, kn[slot]);
+            m->key_idx[slot] = index;
+            seen |= 1u << slot;
+            continue;
+        }
         if (sscanf(line, "# %31s %lx", key, &v) != 2) die("%s: 产物是旧改写器出的，换成当前代号（dm/PRODUCT）的产物", path);
         if (!strcmp(key, "PATCH_OFF")) m->patch_off = v;
         else if (!strcmp(key, "KEY_PAGE_OFF")) m->key_page_off = v;
@@ -163,26 +199,47 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "TEXT_END")) m->text_end = v;
         else if (!strcmp(key, "RO_OFF")) m->ro_off = v;
         else if (!strcmp(key, "DATA_OFF")) m->data_off = v;
-        else for (int k = 0; k < 8; k++) {
-            size_t n = strlen(kn[k]);
-            if (!strncmp(key, "KEY_", 4) && !strncmp(key + 4, kn[k], n) && !strcmp(key + 4 + n, "_IDX")) {
-                m->key_idx[k] = (unsigned)strtoul(strrchr(line, '\t') + 1, 0, 10); seen |= 1u << k;
-            }
-        }
     }
     fclose(f);
     if (!m->patch_off || m->key_page_off % 0x4000 || m->key_page_size != 0x4000 || seen != 0xff)
         die("%s: 产物是旧改写器出的，换成当前代号（dm/PRODUCT）的产物", path);
+    {   // 所有槽在写入键页之前统一校验；Android 的 page[8] 归 context entry。
+        char error[128];
+#ifdef __ANDROID__
+        const int reserved = 8;
+#else
+        const int reserved = -1;
+#endif
+        if (dm_layout_slots_valid(m->key_idx, 8, (unsigned)(m->key_page_size / sizeof(uint64_t)), reserved,
+                                  error, sizeof error))
+            die("%s: %s", path, error);
+    }
 }
 
 static void install_key_page(module_t *m) {
-    if (m->key_page_off + m->key_page_size > m->size) die("%s: 键页越界", m->name);
+    if (m->key_page_off > m->size || m->key_page_size > m->size - m->key_page_off) die("%s: 键页越界", m->name);
+    if (m->key_page_size % sizeof(uint64_t)) die("%s: 键页大小不是 8 字节对齐", m->name);
+    char error[128];
+#ifdef __ANDROID__
+    const int reserved = 8;
+#else
+    const int reserved = -1;
+#endif
+    if (dm_layout_slots_valid(m->key_idx, 8, (unsigned)(m->key_page_size / sizeof(uint64_t)), reserved,
+                              error, sizeof error))
+        die("%s: %s", m->name, error);
     uint64_t *page = (uint64_t *)(m->base + m->key_page_off);
     memset(page, 0, m->key_page_size);
+#ifdef __ANDROID__
+    for (unsigned i = 0; i < 8; ++i) page[m->key_idx[i]] = dm_android_slot_offset(i);
+    extern void dm_android_context_entry(void);
+    page[8] = (uintptr_t)dm_android_context_entry;
+#else
     for (unsigned i = 0; i < 4; i++) page[m->key_idx[i]] = (uint64_t)key_value(i) * 8;
     page[m->key_idx[KEY_KRES0]] = (uint64_t)g_keyres[0] * 8; page[m->key_idx[KEY_KRES1]] = (uint64_t)g_keyres[1] * 8;
     page[m->key_idx[KEY_KASPECT]] = (uint64_t)g_keyaspect * 8; page[m->key_idx[KEY_KASPECTUI]] = (uint64_t)g_keyaspectui * 8;
     for (int k = 0; k < 8; k++) if (!page[m->key_idx[k]]) die("%s: 键页第 %d 项为 0（宿主键没建）——游戏会读到 TSD 0 号槽", m->name, k);
+#endif
     if (mprotect(m->base + m->key_page_off, m->key_page_size, PROT_READ)) die("%s 键页 mprotect", m->name);
 }
 
@@ -272,7 +329,22 @@ void loader_hash_log(void) {
     }
 }
 
-#if TARGET_OS_IPHONE
+#if defined(__ANDROID__)
+// Imported modules are executable ELF libraries, not the desktop raw-image format.
+// Keep DM_ANDROID_LIBDIR for the graphics driver; guest imports use DM_GUEST_LIBDIR.
+static void map_image(module_t *m, const char *dir) {
+    char library[1024], layout[1024], error[512];
+    const char *library_dir = getenv("DM_GUEST_LIBDIR");
+    if (!library_dir || !*library_dir) library_dir = getenv("DM_ANDROID_LIBDIR");
+    if (!library_dir || !*library_dir) library_dir = dir;
+    snprintf(library, sizeof library, "%s/libdmguest_%s.so", library_dir, m->name);
+    snprintf(layout, sizeof layout, "%s/%s.fixups.tsv", dir, m->name);
+    dm_android_module image;
+    if (dm_android_load(&image, library, layout, error, sizeof error)) die("%s", error);
+    m->base = image.image; m->size = image.size;
+    // Retain the dlopen reference for the lifetime of the guest, as in the reference host.
+}
+#elif TARGET_OS_IPHONE
 // iOS 不许运行时装入的代码执行，且苹果只许可执行文件有一个带执行权限的段（ITMS-90999）：映像由 dm/ios/tools/gen_embed.py 编进本可执行文件——
 // 代码两块（原 text、补丁区）是 __TEXT 里的节，W（ro 余部 + data + bss）是单独的 RW 段。三块在文件里不相邻；这里保留一块连续地址，
 // 按原相对位置 vm_remap 回去：代码页 copy=FALSE（与 __TEXT 共享同一批已签名页，r-x），W copy=TRUE（写时复制，用到才分页）。
@@ -353,6 +425,10 @@ static void map_image(module_t *m, const char *dir) {
 #endif
 
 void load_modules(const char *dir, const char **names, int n) {
+    // A new load invalidates the previous immutable snapshot before g_mod is
+    // touched. The caller thread may query during this window and must see
+    // unavailable, never a half-updated module table.
+    dm_module_identity_invalidate();
     // 先全部映射并解析符号表，再统一重定位（跨模块符号要先都在位）
     // DM_BOOTPROF：① 宿主装载细分（毫秒），定 ③ 预重定位 / mmap 的上限
     // Map everything and parse the symbol tables first, then relocate all at once (cross-module symbols must all be in place first)
@@ -377,6 +453,11 @@ void load_modules(const char *dir, const char **names, int n) {
     t = now_ns(); for (int i = 0; i < g_nmod; i++) relocate(&g_mod[i]); tr = now_ns() - t;
     force_check();
     { void hlecount_seal(void); hlecount_seal(); }   // DM_HLECOUNT：重定位完成，计数桩页封成只读可执行 | DM_HLECOUNT: relocation done, seal the counting stub pages as read-only executable
+    // Successful-load boundary: code/ro/data are parsed and relocated; base and
+    // size are immutable from here. Publish a copied snapshot only now. DT_INIT
+    // runs later and does not change this code identity.
+    if (!dm_module_identity_publish(g_mod, n))
+        LOG("module identity unavailable: loader metadata publication failed");
     if (getenv("DM_SYMCHECK")) LOG("DM_SYMCHECK：装载期共核 %lu 次符号查询，哈希与线性不一致 %lu", g_symchk_n, g_symchk_bad);
     if (g_flag.bootprof) LOG("① 细分：映射（读 + 拷 + 封页）%.1f ms、解析动态段 %.1f ms、门注册 %.1f ms、重定位 + 强制接管 %.1f ms，合计 %.1f ms",
                              tm / 1e6, tp / 1e6, tg / 1e6, tr / 1e6, (now_ns() - t0) / 1e6);

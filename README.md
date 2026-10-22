@@ -6,11 +6,11 @@ An experimental Android port of [jhaizhou-ops/d2r-mobile](https://github.com/jha
 
 **The development build now runs the game on the target phone.** Startup, character selection, entering camp and normal save/exit have been tested. The user has also verified combat, skills, pickup, inventory dragging and stash dragging. Full device compatibility, complete iOS touch parity and sustained 60 fps remain work in progress.
 
-> **Use [`integration/android-reference`](https://github.com/n2ray/d2r-mobile/tree/integration/android-reference) for the current playable source.** The default `main` branch still contains the earlier implementation; the overall integration is under review in [PR #225](https://github.com/n2ray/d2r-mobile/pull/225). Updating this README does not merge that implementation into `main`.
+> **`main` is this fork's accepted Android development baseline.** The former Android integration is consolidated through [PR #225](https://github.com/n2ray/d2r-mobile/pull/225). Use short-lived topic branches for changes; fetch the original project as `upstream/main` and review applicable updates before merging them into our `main`.
 
 ## Current status
 
-Updated **2026-10-21**, including device tests and user feedback through October 21. Follow [the project board #1](https://github.com/n2ray/d2r-mobile/issues/1) for current work and acceptance boundaries.
+Updated **2026-10-22**. Follow [the project board #1](https://github.com/n2ray/d2r-mobile/issues/1) for current work and acceptance boundaries.
 
 | Area | Verified progress | Remaining work |
 |---|---|---|
@@ -22,11 +22,21 @@ Updated **2026-10-21**, including device tests and user feedback through October
 
 **Turnip is the rendering baseline.** The system Qualcomm driver remains available as a fallback, but its earlier black patches and lighting defects were not resolved by the experimental UBO workaround. This project does not currently prioritize that driver-specific repair.
 
+Android skill buttons use transparent silver silhouettes following the upstream iOS mask. Normal and pressed frames are converted once and cached. The bound arrow and fist icons, pressed state and empty slots have been visually checked on the test phone; other class skills still need individual verification.
+
 Performance varies by scene and over time. Reaching about 60 fps in some camp samples is not evidence of stable 60 fps in combat or a long session. Energy savings have not been established. Upstream iOS performance results describe the Apple build, not this Android port.
 
-**Installed local candidates can be ahead of the published integration branch.** The redesigned launcher, 30/60 fps limit selection and virtual-controller on/off switch have passed bounded phone tests in a local candidate; these changes have not yet been merged. The user also reports uninterrupted movement across camp boundaries with that candidate. This does not close the remaining touch or controller acceptance work.
+The performance overlay reports a rolling two-second presented FPS and P95/worst presentation interval when the driver exposes display timing. Without that data it explicitly reports submitted FPS instead. For uniform 60/30 fps, intervals should stay near 16.7/33.3 ms; an average FPS alone cannot establish smoothness. The limiter offers Uncapped, 60 and 30; a cap cannot speed up a frame that already exceeds its time budget. Both caps request refresh-aligned present times (`debug.d2r.display_pacing=0` disables this), reducing 8.3 ms catch-up intervals after late frames on a 120 Hz panel.
 
-Recent stationary-camp comparisons with the 60 fps limit averaged about 51–56 fps. Lazy query reset and skipping a full-cover presentation clear did not show a repeatable FPS improvement; both experiments remain off by default and unmerged. Research delivery [#326](https://github.com/n2ray/d2r-mobile/issues/326) and the [upstream progress discussion](https://github.com/jhaizhou-ops/d2r-mobile/issues/59#issuecomment-6310989719) inform further work under [#23](https://github.com/n2ray/d2r-mobile/issues/23).
+The launcher's Debug collection switch is off by default and applies on the next game launch. FPS display is independent: with collection off it only shows FPS and presentation intervals. Detailed timing, battery/memory sampling, slow-frame files, optional captures and input traces require collection; fatal errors and gameplay synchronization remain active. With collection on, abnormal-frame logging uses a cap-aware threshold and normally samples at most once per second; per-draw timing still requires its advanced diagnostic flag. Disabling diagnostics does not establish sustained 60 fps.
+
+The accepted CPU changes combine single-pass descriptor encoding/hash, reuse of identical compute bindings, and a shared sampler/texture lookup lock. Local checks and short stationary camp runs pass. In the measured sequence the combined60fps candidate averaged56.2FPS versus54.2/50.6FPS for baseline runs, but P95 remained25ms and temperature/order differed; stable60 and repeatable power savings remain unproven. The30fps candidate averaged30.0FPS with P95 33.3ms.
+
+Fullscreen Medium and Low keep the UI/output at720 high and render internal3D at640 and480 high respectively. On a1600×720 output, Medium's nominal3D pixel count is about99% of1280×720; similar pixel counts do not guarantee equal frame times.
+
+ADPF now receives paired translation-thread frame work and the actual capped frame budget; unavailable APIs fall back normally, and uncapped work retires any previous capped session. Vulkan keeps the conservative three-slot/256-draw defaults and the 32 MiB temporary-memory limit. A short six-slot camp trial reduced ring waits but did not establish higher FPS; eight-slot and larger-draw-limit comparisons remain pending. This is not a stable-60-FPS or power-saving claim.
+
+Merged CPU work includes the thread-context cache collision fix, small guest reads under the existing heap permission lease with safe-read fallback, and coalesced host-write unprotection. The latter preserves exact page coverage and generations; an earlier six-minute camp run reduced protection calls from about 300 to 28–36 per frame and cumulative protection time from 1.25–1.35 to 0.42–0.50 ms/frame. These are work-reduction measurements, not proof of higher FPS or lower power. The user also confirmed that camp-boundary movement interruption and the transient question-mark skill icons no longer reproduce. Lock spinning, attachment-clear folding and narrower image usage are not enabled in the accepted build.
 
 Read diagnostic values within their scope: CPU time covers NVN command translation, GPU time covers measured command batches, and snapshot MiB/frame counts guest-memory snapshot reads. They are not whole-frame CPU time, complete GPU time or total GPU bandwidth. The watts estimate uses battery current and voltage; while charging, it cannot establish game or whole-device power consumption. Compare repeated runs under matching scene, temperature and charging conditions.
 
@@ -37,7 +47,7 @@ Use an engineering APK built from the integration branch. This is a device-teste
 1. Install the APK and open the launcher. To retain existing app data, use a compatible update with the same package name and signing key.
 2. Choose **Import data package** and select your locally prepared Android game-data ZIP. Wait for the installed/ready state.
 3. On the supported Qualcomm test phone, use **bundled Turnip**. A custom driver ZIP may be imported; incompatible drivers are rejected before game startup. Imported drivers can be deleted from the launcher. There is currently one custom-driver slot; a successful new import replaces it.
-4. Start with **Phone aspect / Auto**. This keeps the game at the phone's aspect ratio without requiring native-display rendering resolution. Compare quality and frame time before increasing resolution.
+4. Start with **Fullscreen · 720 high**. The selector shows actual output pixels (1600×720 on a 20:9 phone), with lower-cost modes that keep the UI/output at 720 high and render 3D at 480 or 640 high, a 900-high fullscreen mode, and 1280×720/1600×900 16:9 alternatives. The 480 mode has been visually confirmed on the test phone; it trades 3D sharpness for fewer rendered pixels, but repeatable power savings remain unproven. Output no longer depends on a separate handheld/docked selector. Save import/export is on the immersive launcher, below Start; settings and game-package management scroll on the right in wide layouts.
 5. Start the game. When finished, use the game's save/exit and the application's normal exit flow.
 
 **What does importing the ZIP do?** The launcher extracts and validates its contents into the app's own data directories: resources use app-specific storage, while game modules and saves use internal app storage. The ZIP is an import source; the game does not read it on every launch. Once a successful import and launch are confirmed, the copy in Downloads can be removed. Keep a separate backup if you may need to reinstall. Clearing app data or uninstalling can remove imported data and saves; export saves first. Game data is not added to the already installed APK.
@@ -48,13 +58,13 @@ Only a prepared Android package is accepted by this import flow; an arbitrary Sw
 
 - The user has verified the camp-transition movement fix in a local candidate; integration and broader area-transition checks remain open ([#303](https://github.com/n2ray/d2r-mobile/issues/303)). Skill buttons can still briefly flash question marks during transitions ([#302](https://github.com/n2ray/d2r-mobile/issues/302)).
 - The complete iOS touch presentation is still being adapted. Remaining map-goal/rift HUD art and haptic integration, shop icon appearance and full interaction/device coverage stay open; working combat and dragging do not close all touch tasks.
-- Sustained performance is the current priority: profile the CPU translation path and improve measured hotspots while preserving GPU synchronization, resource ownership and validation. A working ADPF API experiment did not demonstrate a repeatable FPS improvement and was not adopted.
+- Sustained performance is the current priority: profile the CPU translation path and improve measured hotspots while preserving GPU synchronization, resource ownership and validation. ADPF frame wiring is present, but successful API calls have not established a repeatable FPS or power benefit.
 - Background/resume, keyboard, controllers, audio, save recovery and a complete playthrough require broader acceptance. Historical diagnostic or contract tasks archived during cleanup are not claimed as proven by the real-game first run.
 
 ## Development
 
 ```sh
-git clone --branch integration/android-reference https://github.com/n2ray/d2r-mobile.git
+git clone --branch main https://github.com/n2ray/d2r-mobile.git
 cd d2r-mobile
 
 # Game-free host tests and Android ARM64 cross-compilation.
@@ -68,9 +78,9 @@ python3 dm/android/tools/build.py --help
 
 The game-free tools use CMake 3.22+, a C compiler and Capstone 5; native ARM64 cases need an ARM64 host. Android cross-compilation requires the NDK (r29 is used in current builds). First configuration may download pinned dependencies. See the [Android developer notes](dm/android/README.md) for tool setup and historical fixtures.
 
-The playable-APK entry is [`dm/android/tools/build.py`](https://github.com/n2ray/d2r-mobile/blob/integration/android-reference/dm/android/tools/build.py) with `--game-run`. It needs the reference toolchain, SDK/build tools, JDK, shader tooling and locally prepared resources; its `--turnip` and `--touch-art` inputs must be supplied as appropriate. A generic APK can import game modules on the phone. Do not publish builds embedding game code or derived game artwork. `dm/android/app/build.sh` builds the older synthetic diagnostic APK; `setup.sh` is the upstream Apple preparation flow.
+The playable-APK entry is [`dm/android/tools/build.py`](https://github.com/n2ray/d2r-mobile/blob/main/dm/android/tools/build.py) with `--game-run`. It needs the reference toolchain, SDK/build tools, JDK, shader tooling and locally prepared resources; its `--turnip` and `--touch-art` inputs must be supplied as appropriate. A generic APK can import game modules on the phone. Do not publish builds embedding game code or derived game artwork. `dm/android/app/build.sh` builds the older synthetic diagnostic APK; `setup.sh` is the upstream Apple preparation flow.
 
-Start contributions from [#1](https://github.com/n2ray/d2r-mobile/issues/1), agree on a bounded issue and submit a topic PR to `integration/android-reference`. Report the exact source commit, tests and actual device conditions. Keep unsupported paths explicit, preserve scanning/W^X/ownership/failure checks, and separate implementation from device acceptance. Keep game content, credentials, saves and raw device logs out of GitHub. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Start contributions from [#1](https://github.com/n2ray/d2r-mobile/issues/1), agree on a bounded issue and submit a topic PR to `main`. Report the exact source commit, tests and actual device conditions. Keep unsupported paths explicit, preserve scanning/W^X/ownership/failure checks, and separate implementation from device acceptance. Keep game content, credentials, saves and raw device logs out of GitHub. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 At each task closeout, the coordinator reviews the exact PR head and required evidence, closes only issues whose acceptance scope is satisfied, and merges only accepted changes. Remove topic branches only after confirming their work is preserved and no active worktree or worker needs them; keep pending candidates and unfinished PRs. Update both English and Chinese READMEs when behavior, limitations or verified progress changes, distinguishing merged source from local device candidates.
 
