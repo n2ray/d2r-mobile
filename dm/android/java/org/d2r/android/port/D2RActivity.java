@@ -619,10 +619,12 @@ public final class D2RActivity extends NativeActivity {
             dialog.setOnCancelListener(d -> finishText(request, "", false));
             dialog.setOnDismissListener(d -> finishText(request, "", false));
             dialog.setOnShowListener(d -> {
+                final boolean[] validNow = {true};
                 Runnable validate = () -> {
                     String text = input.getText().toString();
                     boolean composing = BaseInputConnection.getComposingSpanStart(input.getText()) >= 0;
                     boolean valid = TextEntryRules.valid(text, nameRule, numericMax, composing);
+                    validNow[0] = valid;
                     String detail = message == null ? "" : message;
                     if (nameRule && composing) {
                         detail = detail.isEmpty() ? text("dmNamePickIme")
@@ -631,13 +633,16 @@ public final class D2RActivity extends NativeActivity {
                     dialog.setMessage(detail);
                     dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(valid);
                 };
+                TextEntryComposition.observe(input.getText(), validate);
                 input.addTextChangedListener(new TextWatcher() {
                     public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
                     public void onTextChanged(CharSequence s, int start, int before, int count) { validate.run(); }
                     public void afterTextChanged(Editable s) { validate.run(); }
                 });
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v ->
-                    finishText(request, input.getText().toString(), true));
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                    validate.run();   // composition may have changed without a text edit since the last callback
+                    if (validNow[0]) finishText(request, input.getText().toString(), true);
+                });
                 validate.run();
                 input.requestFocus();
                 dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE |
