@@ -21,6 +21,7 @@ PREFIX = r'''
 #include <vulkan/vulkan.h>
 #include <assert.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -38,12 +39,18 @@ typedef struct {int target,samples,format;unsigned width,height,depth,levels,fla
 typedef struct {desc d;struct {unsigned layers;} L;uint64_t serial;} tex_t;
 typedef struct cached_image_view {VkImageViewType type;VkImageSubresourceRange range;VkImageView view;struct cached_image_view *next;} cached_image_view;
 typedef struct image_entry {
- uint64_t serial;tex_t texture;VkImage image;VkImageView view;VkDeviceMemory memory;VkFormat format;VkImageType image_type;VkImageAspectFlags aspect;
+ uint64_t serial,release_ticket,allocation_bytes,initial_upload_epoch;tex_t texture;VkImage image;VkImageView view;VkDeviceMemory memory;VkFormat format;VkImageType image_type;VkImageAspectFlags aspect;
  int populated;VkPipelineStageFlags last_stage;VkAccessFlags last_access;cached_image_view *views;VkImageUsageFlags usage;
  VkImage retired_image;VkImageView retired_view;VkDeviceMemory retired_memory;cached_image_view *retired_views;
  struct image_entry *next,*hash_next;
 } image_entry;
 static image_entry *image_list,*image_index[4096];
+static image_entry *image_retired;
+static uint64_t image_retired_bytes,image_deferred_releases,upload_epoch=7;
+static _Atomic uint64_t submitted,completed;
+static int upload_prologue_enabled;
+static VkCommandBuffer barrier_command;
+static VkCommandBuffer async_upload_command(void){return (VkCommandBuffer)(uintptr_t)2;}
 static VkDevice device;static VkPhysicalDevice physical;static VkCommandBuffer command;
 static VkPhysicalDeviceMemoryProperties memory_properties;
 static int narrow_image_candidate=1,attachment_clear_candidate=1;
@@ -65,7 +72,7 @@ VKAPI_ATTR void VKAPI_CALL vkGetImageMemoryRequirements(VkDevice d,VkImage i,VkM
 VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(VkDevice d,const VkMemoryAllocateInfo *i,const VkAllocationCallbacks *a,VkDeviceMemory *o){(void)d;(void)i;(void)a;*o=(VkDeviceMemory)(uintptr_t)creates;return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkBindImageMemory(VkDevice d,VkImage i,VkDeviceMemory m,VkDeviceSize s){(void)d;(void)i;(void)m;(void)s;return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateImageView(VkDevice d,const VkImageViewCreateInfo *i,const VkAllocationCallbacks *a,VkImageView *o){(void)d;(void)i;(void)a;*o=(VkImageView)(uintptr_t)creates;return VK_SUCCESS;}
-VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(VkCommandBuffer c,VkPipelineStageFlags s,VkPipelineStageFlags t,VkDependencyFlags f,uint32_t n,const VkMemoryBarrier *m,uint32_t b,const VkBufferMemoryBarrier *v,uint32_t k,const VkImageMemoryBarrier *i){(void)c;(void)s;(void)t;(void)f;(void)n;(void)m;(void)b;(void)v;assert(k==1&&i->newLayout==VK_IMAGE_LAYOUT_GENERAL);}
+VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(VkCommandBuffer c,VkPipelineStageFlags s,VkPipelineStageFlags t,VkDependencyFlags f,uint32_t n,const VkMemoryBarrier *m,uint32_t b,const VkBufferMemoryBarrier *v,uint32_t k,const VkImageMemoryBarrier *i){barrier_command=c;(void)s;(void)t;(void)f;(void)n;(void)m;(void)b;(void)v;assert(k==1&&i->newLayout==VK_IMAGE_LAYOUT_GENERAL);}
 VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage(VkCommandBuffer c,VkImage s,VkImageLayout sl,VkImage d,VkImageLayout dl,uint32_t n,const VkImageCopy *r){(void)c;assert(s!=d&&sl==VK_IMAGE_LAYOUT_GENERAL&&dl==sl&&n==1);copies_seen[copies++]=*r;}
 VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice d,VkImageView v,const VkAllocationCallbacks *a){(void)d;(void)v;(void)a;view_destroys++;}
 VKAPI_ATTR void VKAPI_CALL vkDestroyImage(VkDevice d,VkImage i,const VkAllocationCallbacks *a){(void)d;(void)i;(void)a;image_destroys++;}
@@ -82,7 +89,14 @@ VKAPI_ATTR void VKAPI_CALL vkCmdEndRenderPass(VkCommandBuffer c){(void)c;pass_en
 '''
 
 CHECKS = r'''
+static void release_completed(uint64_t serial){image_release_serial(serial);image_retire_completed(atomic_load(&completed));}
 int main(void){
+ configure(NULL,NULL);assert(attachment_clear_candidate&&narrow_image_candidate);
+ configure("","");assert(attachment_clear_candidate&&narrow_image_candidate);
+ configure("0","1");assert(!attachment_clear_candidate&&narrow_image_candidate);
+ configure("1","0");assert(attachment_clear_candidate&&!narrow_image_candidate);
+ configure("invalid","0");assert(!attachment_clear_candidate&&!narrow_image_candidate);
+ configure(NULL,NULL);
  memory_properties.memoryTypeCount=1;memory_properties.memoryTypes[0].propertyFlags=VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
  tex_t t={.serial=1,.d={.target=2,.format=VK_FORMAT_R8G8B8A8_UNORM,.width=16,.height=8,.depth=1,.levels=3},.L={3}};
  image_entry *e=image_get(&t);assert(!(usage_seen&VK_IMAGE_USAGE_STORAGE_BIT));e->populated=1;
@@ -90,18 +104,20 @@ int main(void){
  assert(copies==3&&copies_seen[0].extent.width==16&&copies_seen[2].extent.width==4&&copies_seen[2].extent.height==2);
  for(unsigned i=0;i<3;i++)assert(copies_seen[i].srcSubresource.layerCount==3&&copies_seen[i].dstSubresource.layerCount==3&&copies_seen[i].srcSubresource.mipLevel==i);
  assert(!image_destroys&&!view_destroys&&!memory_frees);image_require_storage(e);assert(copies==3&&creates==2);
- image_release_serial(1);assert(!image_list&&!image_index[1]&&image_destroys==2&&view_destroys==2&&memory_frees==2);
- t.serial=2;t.d.flags=NVN_TEXTURE_FLAGS_IMAGE;e=image_get(&t);assert(e->usage&VK_IMAGE_USAGE_STORAGE_BIT);image_require_storage(e);assert(copies==3);image_release_serial(2);
+ assert(e->allocation_bytes==8192);submitted=2;image_release_serial(1);assert(!image_list&&!image_index[1]&&!image_destroys&&image_retired_bytes==8192);
+ completed=1;image_retire_completed(1);assert(!image_destroys);completed=2;image_retire_completed(2);assert(image_destroys==2&&view_destroys==2&&memory_frees==2&&!image_retired_bytes);
+ t.serial=2;t.d.flags=NVN_TEXTURE_FLAGS_IMAGE;e=image_get(&t);assert(e->usage&VK_IMAGE_USAGE_STORAGE_BIT);image_require_storage(e);assert(copies==3);release_completed(2);
  t.serial=3;t.d.flags=0;t.d.target=NVN_TEXTURE_TARGET_3D;t.d.depth=8;t.L.layers=1;e=image_get(&t);e->populated=1;image_require_storage(e);
- assert(copies==6&&copies_seen[5].extent.depth==2&&copies_seen[5].srcSubresource.layerCount==1);image_release_serial(3);
+ assert(copies==6&&copies_seen[5].extent.depth==2&&copies_seen[5].srcSubresource.layerCount==1);release_completed(3);
  t.serial=4;t.d.target=2;t.d.levels=1;t.d.format=0x35;e=image_get(&t);
  VkClearValue v={.depthStencil={0.25f,17}};VkImageSubresourceRange r={VK_IMAGE_ASPECT_DEPTH_BIT,0,1,0,1};
  assert(graphics_clear_attachment(e,r,&v));assert(attachment_seen.loadOp==VK_ATTACHMENT_LOAD_OP_CLEAR&&attachment_seen.stencilLoadOp==VK_ATTACHMENT_LOAD_OP_LOAD);
  assert(attachment_seen.storeOp==VK_ATTACHMENT_STORE_OP_STORE&&attachment_seen.stencilStoreOp==VK_ATTACHMENT_STORE_OP_STORE);
  assert(view_range.aspectMask==(VK_IMAGE_ASPECT_DEPTH_BIT|VK_IMAGE_ASPECT_STENCIL_BIT)&&clear_seen.depthStencil.depth==0.25f);
  r.aspectMask=VK_IMAGE_ASPECT_STENCIL_BIT;assert(graphics_clear_attachment(e,r,&v));assert(attachment_seen.loadOp==VK_ATTACHMENT_LOAD_OP_LOAD&&attachment_seen.stencilLoadOp==VK_ATTACHMENT_LOAD_OP_CLEAR);
- assert(pass_begins==2&&pass_ends==2);attachment_clear_candidate=0;assert(!graphics_clear_attachment(e,r,&v));assert(pass_begins==2);image_release_serial(4);
- narrow_image_candidate=0;t.serial=5;e=image_get(&t);assert(e->usage&VK_IMAGE_USAGE_STORAGE_BIT);image_release_serial(5);
+ assert(pass_begins==2&&pass_ends==2);attachment_clear_candidate=0;assert(!graphics_clear_attachment(e,r,&v));assert(pass_begins==2);release_completed(4);
+ narrow_image_candidate=0;t.serial=5;e=image_get(&t);assert(e->usage&VK_IMAGE_USAGE_STORAGE_BIT);release_completed(5);
+ upload_prologue_enabled=1;t.serial=6;e=image_get(&t);assert(e->initial_upload_epoch==upload_epoch&&barrier_command==async_upload_command());release_completed(6);
  puts("render policy: mip/layer preservation, one-way promotion, deferred destruction, depth/stencil preservation PASS");
 }
 '''
@@ -111,9 +127,15 @@ def main():
     root = Path(__file__).resolve().parents[1]
     texture = (root / "native/nvn_vulkan_tex.inc").read_text()
     passes = (root / "native/nvn_vulkan_pass.inc").read_text()
+    initialization = function((root / "native/nvn_vulkan.c").read_text(), "initialize")
+    defaults = re.findall(r"^    (?:attachment_clear_candidate|narrow_image_candidate)=[^;]+;", initialization, re.M)
+    if len(defaults) != 2:
+        raise RuntimeError("missing render policy defaults")
     definitions = "\n".join(function(texture, n) for n in (
-        "dimension", "image_allocate", "image_get", "image_require_storage", "image_release_serial"))
-    code = PREFIX + definitions + function(passes, "graphics_clear_attachment") + CHECKS
+        "dimension", "image_allocate", "image_get", "image_require_storage", "image_destroy", "image_retire_completed", "image_release_serial"))
+    code = (PREFIX + definitions + function(passes, "graphics_clear_attachment")
+            + "\nstatic void configure(const char *clear_candidate,const char *usage_candidate){\n"
+            + "\n".join(defaults) + "\n}\n" + CHECKS)
     with tempfile.TemporaryDirectory() as directory:
         source = Path(directory) / "test.c"
         source.write_text(code)
