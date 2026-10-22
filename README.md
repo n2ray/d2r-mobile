@@ -58,7 +58,7 @@ Only a prepared Android package is accepted by this import flow; an arbitrary Sw
 
 - The user has verified the camp-transition movement fix in a local candidate; integration and broader area-transition checks remain open ([#303](https://github.com/n2ray/d2r-mobile/issues/303)). Skill buttons can still briefly flash question marks during transitions ([#302](https://github.com/n2ray/d2r-mobile/issues/302)).
 - The complete iOS touch presentation is still being adapted. Remaining map-goal/rift HUD art and haptic integration, shop icon appearance and full interaction/device coverage stay open; working combat and dragging do not close all touch tasks.
-- Sustained performance is the current priority: profile the CPU translation path and improve measured hotspots while preserving GPU synchronization, resource ownership and validation. A working ADPF API experiment did not demonstrate a repeatable FPS improvement and was not adopted.
+- Sustained performance is the current priority: profile the CPU translation path and improve measured hotspots while preserving GPU synchronization, resource ownership and validation. ADPF frame wiring is present, but successful API calls have not established a repeatable FPS or power benefit.
 - Background/resume, keyboard, controllers, audio, save recovery and a complete playthrough require broader acceptance. Historical diagnostic or contract tasks archived during cleanup are not claimed as proven by the real-game first run.
 
 ## Development
