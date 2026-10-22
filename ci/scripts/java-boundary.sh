@@ -91,6 +91,8 @@ else
     fail "driver archive regression"
 fi
 
+python3 "$root/dm/android/tests/activity_jni_registration_test.py" >> "$log" 2>&1 || fail "Activity JNI registrations"
+log_line "PASS Activity JNI registrations and negative controls"
 world_java=$work/java/world-hud
 mkdir -p "$world_java"
 if "$javac" --release 8 -d "$world_java" \

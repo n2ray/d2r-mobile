@@ -1491,6 +1491,8 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
         {"isLiveTouchReady","()Z",(void*)Java_org_d2r_android_port_D2RActivity_isLiveTouchReady},
         {"takeDropHaptic","()I",(void*)Java_org_d2r_android_port_D2RActivity_takeDropHaptic},
         {"getLiveTouchOverlaySnapshot","([F[J)I",(void*)Java_org_d2r_android_port_D2RActivity_getLiveTouchOverlaySnapshot},
+        {"getWorldHudSnapshot","([F)I",(void*)Java_org_d2r_android_port_D2RActivity_getWorldHudSnapshot},
+        {"getWorldHudLabels","()[Ljava/lang/String;",(void*)Java_org_d2r_android_port_D2RActivity_getWorldHudLabels},
         {"getLiveTouchGlyphSnapshot","([I)I",(void*)Java_org_d2r_android_port_D2RActivity_getLiveTouchGlyphSnapshot},
         {"getLiveTouchAtlasInfo","([I)I",(void*)Java_org_d2r_android_port_D2RActivity_getLiveTouchAtlasInfo},
         {"setOverlayEnabled","(Z)V",(void*)Java_org_d2r_android_port_D2RActivity_setOverlayEnabled},
