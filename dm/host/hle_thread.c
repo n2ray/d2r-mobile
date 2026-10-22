@@ -68,7 +68,6 @@ static void lock_spin_init(void) {
     const char *value = getenv("DM_LOCK_SPIN_US");
 #ifdef __ANDROID__
     char property[PROP_VALUE_MAX];
-    g_lock_spin_us = 20;
     if (__system_property_get("debug.d2r.lock_spin", property) > 0) value = property;
 #endif
     if (value && *value) {

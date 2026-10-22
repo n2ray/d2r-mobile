@@ -110,6 +110,8 @@ int main(void){
     CHECK(on_fault((void *)first,1,NULL)==1);
     CHECK(nvn_dirty_since((void *)first,page,old_stamp)&&!nvn_dirty_since((void *)(first+page),page,old_stamp));
     CHECK(on_fault((void *)(first+page),1,NULL)==1&&nvn_dirty_since((void *)(first+page),page,old_stamp));
+    CHECK(!nvn_dirty_since((void *)(first+2*page),page,old_stamp));
+    CHECK(on_fault((void *)(first+2*page),1,NULL)==1&&nvn_dirty_since((void *)(first+3*page),page,old_stamp));
     nvn_dirty_remove_range(owned);CHECK(!munmap(mapping,owned_bytes+2*page));
     puts("PASS dirty write runs: bounded/partial/holes/generations/failure/BUSY fault ordering");return 0;
 }
