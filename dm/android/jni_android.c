@@ -162,6 +162,8 @@ JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeStart(JNIEnv *env
     mkdirs(g_runtime);
     log_init();
     load_env_file(g_runtime);
+    const char *wide=getenv("DM_PORT_WIDESCREEN");
+    if(wide){setenv("DM_OPMODE","0",1);if(!strcmp(wide,"1"))unsetenv("DM_GAME_RES");else setenv("DM_GAME_RES","1600x900",1);}
     LOG("boot: 内部目录 %s，外部目录 %s，资源 %s，系统语言 %s", g_files, g_ext, g_src, lg);
     char romfs[1100], save[1100], temp[1100];
     snprintf(romfs, sizeof romfs, "%s/romfs", g_files); snprintf(save, sizeof save, "%s/save", g_files); snprintf(temp, sizeof temp, "%s/temp", g_files);
@@ -312,6 +314,9 @@ JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeStart(JNIEnv *env
 }
 
 static ANativeWindow *g_win;
+JNIEXPORT jlong JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeSubmittedFrames(JNIEnv *env,jclass cls) {
+    (void)env;(void)cls;return (jlong)dm_android_vk_submitted_frames();
+}
 JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeRefresh(JNIEnv *env, jclass cls, jfloat hz) {
     (void)env; (void)cls;
     front_android_set_refresh(hz);
