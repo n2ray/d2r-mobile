@@ -1,6 +1,7 @@
 // 每批独立命令/查询/fence；GPU 完成后按 FIFO 公布客体内存，再释放资源。
 // Independent commands/queries/fences per batch; publish guest memory in FIFO order after GPU completion, then release resources.
 #include "nvn_vulkan_batch_policy.h"
+#include "nvn_completion_turn.h"
 
 enum {ASYNC_FREE,ASYNC_RECORDING,ASYNC_PENDING};
 // 每段至少 32 draw 且录制 2 ms，再在自然通道边界提交；每批最多八段。
@@ -57,6 +58,8 @@ static pthread_cond_t async_condition=PTHREAD_COND_INITIALIZER;
 static pthread_t async_thread;
 static unsigned async_next_slot;
 static int async_initialized,async_stopping;
+static _Atomic int async_publication_ready;
+static uint64_t async_publication_turn_ns,async_completion_lock_ns;
 static uint64_t async_ring_stalls;
 static uint64_t async_early_submits,async_logical_submits,async_early_submit_ns;
 static void async_chunk_report(void) {
@@ -68,6 +71,13 @@ static void async_chunk_report(void) {
         (async_logical_submits-logical)/(double)span,(async_early_submit_ns-submit_ns)/(span*1e6),
         ASYNC_CHUNK_CAPACITY,ASYNC_CHUNK_MIN_DRAWS);
     frame=presents;early=async_early_submits;logical=async_logical_submits;submit_ns=async_early_submit_ns;
+    if(dm_diagnostics_enabled()) {
+        static uint64_t turn_ns,lock_ns;
+        LOG("[vulkan-completion-turn] frame=%llu span=%llu turn_wait_ms/frame=%.4f completion_lock_ms/frame=%.4f",
+            (unsigned long long)presents,(unsigned long long)span,
+            (async_publication_turn_ns-turn_ns)/(span*1e6),(async_completion_lock_ns-lock_ns)/(span*1e6));
+        turn_ns=async_publication_turn_ns;lock_ns=async_completion_lock_ns;
+    }
 }
 // 仅绘制前的自然通道边界调用；不回收、不发布，也不重置批次资源或查询。
 // Called only before a draw at a natural pass boundary; never retire, publish, or reset batch resources/queries.
@@ -408,7 +418,10 @@ static void *async_completion_main(void *unused) {
         // The worker alone waits/retires; this fence cannot be reset before the slot becomes FREE.
         pthread_mutex_unlock(&queue_lock);
         VK_CHECK(vkWaitForFences(device,1,&batch->fence,VK_TRUE,UINT64_MAX));
+        uint64_t lock_start=dm_diagnostics_enabled()?dm_android_clock_ns(CLOCK_MONOTONIC):0;
+        atomic_store_explicit(&async_publication_ready,1,memory_order_release);
         pthread_mutex_lock(&queue_lock);
+        if(lock_start)async_completion_lock_ns+=dm_android_clock_ns(CLOCK_MONOTONIC)-lock_start;
         if(async_first!=batch||batch->status!=ASYNC_PENDING||batch->ticket!=ticket)die("Vulkan asynchronous FIFO corruption");
         async_publish_locked(batch);
         image_retire_completed(ticket);
@@ -419,6 +432,7 @@ static void *async_completion_main(void *unused) {
         if(ticket!=atomic_load(&completed)+1)die("Vulkan asynchronous completion order");
         atomic_store(&completed,ticket);pthread_cond_broadcast(&completion_condition);
         pthread_mutex_unlock(&completion_lock);
+        atomic_store_explicit(&async_publication_ready,0,memory_order_release);
         pthread_cond_broadcast(&async_condition);
     }
     pthread_mutex_unlock(&queue_lock);return NULL;
@@ -467,6 +481,13 @@ static unsigned async_begin_locked(void) {
     post0_publish_report();
     async_chunk_report();
     if(async_current||async_stopping)die("Vulkan asynchronous nested/stopping recording");
+    // Let already GPU-complete publication acquire the lock before recording another batch.
+    if(atomic_load_explicit(&async_publication_ready,memory_order_acquire)) {
+        uint64_t start=dm_diagnostics_enabled()?dm_android_clock_ns(CLOCK_MONOTONIC):0;
+        int error=dm_vk_completion_turn_wait_locked(&async_publication_ready,&async_condition,&queue_lock);
+        if(error)die("Vulkan completion publication turn %d",error);
+        if(start)async_publication_turn_ns+=dm_android_clock_ns(CLOCK_MONOTONIC)-start;
+    }
     for(;;){
         for(unsigned i=0;i<batch_policy.slots;i++){
             unsigned slot=(async_next_slot+i)%batch_policy.slots;async_batch *batch=&async_batches[slot];
