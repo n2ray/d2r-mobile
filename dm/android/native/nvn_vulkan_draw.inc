@@ -35,9 +35,9 @@ static void graphics_pipeline_report(void) {
 // No fragment shader: one empty descriptor-set layout for every program, one object shared by runtime and warm-up so layout cache keys agree.
 static shader_entry *graphics_empty_shader(void) {
     static shader_entry empty={.stage=1,.set=1};
-    if(!empty.layout){pthread_mutex_lock(&graphics_object_lock);
-        if(!empty.layout){VkDescriptorSetLayoutCreateInfo empty_info={.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};VK_CHECK(vkCreateDescriptorSetLayout(device,&empty_info,NULL,&empty.layout));}
-        pthread_mutex_unlock(&graphics_object_lock);}
+    pthread_mutex_lock(&graphics_object_lock);
+    if(!empty.layout){VkDescriptorSetLayoutCreateInfo empty_info={.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};VK_CHECK(vkCreateDescriptorSetLayout(device,&empty_info,NULL,&empty.layout));}
+    pthread_mutex_unlock(&graphics_object_lock);
     return &empty;
 }
 // 逐字段从 key 派生图形管线创建状态，运行期与预热共用；动态值（视口/剪裁/混合常量/深度偏置/模板掩码与参考）
@@ -83,6 +83,7 @@ static VkResult graphics_pipeline_create(const pipeline_key *key,shader_entry *v
 // 真实创建才记录（缓存命中不写）；清单在 nvn_vulkan_warm.inc。
 // Record genuine creations only (cache hits write nothing); the manifest lives in nvn_vulkan_warm.inc.
 static void pso_record_graphics(const shader_entry *vs,const shader_entry *fs,const graphics_pass_key *pass,const pipeline_key *key);
+static VkResult pso_pipeline_get(const pipeline_key *key,shader_entry *vs,shader_entry *fs,graphics_pass_entry *pass,VkPipelineLayout layout,VkPipeline *pipeline,int wait);
 static void draw_graphics_inner(const p_draw *draw,const p_draw_idx *indexed);
 static void draw_graphics(const p_draw *draw,const p_draw_idx *indexed) {
     uint64_t phase=dm_cpu_phase_begin();draw_graphics_inner(draw,indexed);ghost_note(draw,indexed);dm_cpu_phase_end(DM_CPU_PHASE_DRAW,phase);
@@ -172,7 +173,7 @@ static void draw_graphics_inner(const p_draw *draw,const p_draw_idx *indexed) {
     if(!cached){resource_create_start creation=resource_create_begin();cached=calloc(1,sizeof *cached);if(!cached)die("Vulkan pipeline cache allocation");cached->key=key;
         // 只有未命中才派生创建管线的状态；每 draw 的动态状态仍在下面独立提交。创建与预热共用 graphics_pipeline_create，驱动缓存键一致。
         // Derive pipeline-creation state only on a miss; per-draw dynamic state is applied separately below. Creation shares graphics_pipeline_create with warm-up so driver cache keys agree.
-        VK_CHECK(graphics_pipeline_create(&key,vs,fs,frame->key.pass,layout,&cached->pipeline,1));
+        VK_CHECK(pso_pipeline_get(&key,vs,fs,frame->key.pass,layout,&cached->pipeline,1));
         cached->next=graphics_pipelines[pipeline_bucket];graphics_pipelines[pipeline_bucket]=cached;pipeline_creations++;resource_create_end(1,creation,vs->key,fs->module?fs->key:NULL);
         pso_record_graphics(vs,fs,&frame->key.pass->key,&key);}else pipeline_reuses++;
     graphics_last_pipeline=cached;

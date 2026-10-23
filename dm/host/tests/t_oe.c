@@ -137,6 +137,19 @@ static void test_scale3d(void) {
     CHECK(s3_n(1000, 45.0) == 0, "30 帧档：45 ms（未超 50）不算掉帧");
     s3 = (scale3d_ctl){.max_level = 2, .period_ms = 1000.0 / 30}; s3_now = 6500 * S3_SEC;   // 新起：不带上一段留在窗里的半个窗 | Fresh start: does not carry the half window left over from the previous segment
     CHECK(s3_n(149, 66.7) == 0 && s3_n(1, 66.7) == 1, "30 帧档：66.7 ms 全掉帧满 5 窗（每窗 30 帧 = 2001 ms，共 150 帧）→ 降到 1 档");
+    s3=(scale3d_ctl){.max_level=3};s3_now=7000*S3_SEC;
+    for(int i=0;i<6;i++){s3_n(20,D60);s3_n(600,F60);}
+    CHECK(s3.level==0,"isolated sub-second stalls do not lower resolution");
+    s3=(scale3d_ctl){.max_level=3};s3_now=7100*S3_SEC;
+    CHECK(s3_n(600,D60)>0,"sustained pressure still lowers resolution");
+    CHECK(s3_max_level(.667f,.60f)==2,"480 internal scale has only two lower levels above floor");
+    CHECK(s3_level_scale(.667f,1)==.65f&&s3_level_scale(.667f,2)==.60f,"low configured scale steps down immediately");
+    CHECK(s3_level_scale(.5f,3)==.5f&&s3_max_level(.5f,.6f)==0,"configured scale below floor is preserved");
+    CHECK(s3_judged_interval(33.4,8,1000./60)<17,"CPU-limited 60fps frame does not reduce 3D quality");
+    CHECK(s3_judged_interval(33.4,22,1000./60)==33.4,"GPU-limited 60fps frame keeps pressure");
+    CHECK(s3_judged_interval(66.7,20,1000./30)<34,"30fps uses its own GPU budget");
+    CHECK(s3_judged_interval(66.7,40,1000./30)==66.7,"GPU-limited 30fps pressure is retained");
+    CHECK(s3_judged_interval(33.4,-1,1000./60)==33.4,"unavailable GPU timing preserves frame-interval fallback");
     int a = s3_replay(0), b = s3_replay(1);
     printf("  （实玩第二段回放：慢帧均匀散开换级 %d 次，挤在一起换级 %d 次）\n", a, b);
     CHECK(a == 0 && b == 0, "动态比例：实玩第二段的慢帧序列（帧率 59+）不论散开还是挤在一起都不换级");

@@ -435,7 +435,7 @@ static void async_initialize_locked(void) {
             VkFenceCreateInfo fence={.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};VK_CHECK(vkCreateFence(device,&fence,NULL,&batch->fence));
             VkQueryPoolCreateInfo query={.sType=VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,.queryType=VK_QUERY_TYPE_OCCLUSION,.queryCount=ASYNC_QUERY_CAPACITY};
             VK_CHECK(vkCreateQueryPool(device,&query,NULL,&batch->queries));
-            if(dm_diagnostics_enabled()&&gpu_timestamp_bits&&gpu_timestamp_period>0){query.queryType=VK_QUERY_TYPE_TIMESTAMP;query.queryCount=2;VK_CHECK(vkCreateQueryPool(device,&query,NULL,&batch->times));}
+            if(batch_times){query.queryType=VK_QUERY_TYPE_TIMESTAMP;query.queryCount=2;VK_CHECK(vkCreateQueryPool(device,&query,NULL,&batch->times));}
         }
         // 每个 slot 的查询结果到真实 fence 完成后才读，长期容量不算临时快照。
         // Read each slot's results only after its real fence; exclude persistent capacity from temporary snapshots.

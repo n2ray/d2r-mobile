@@ -6,7 +6,7 @@
 #include <unistd.h>
 #define PIPELINE_DISK_LIMIT (64u<<20)
 #define PIPELINE_DISK_HEADER 80u
-static pthread_mutex_t pipeline_cache_mutex=PTHREAD_MUTEX_INITIALIZER;
+static pthread_rwlock_t pipeline_cache_mutex=PTHREAD_RWLOCK_INITIALIZER;
 static pthread_mutex_t pipeline_disk_mutex=PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t pipeline_disk_join_mutex=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pipeline_disk_condition=PTHREAD_COND_INITIALIZER;
@@ -69,13 +69,13 @@ static void pipeline_disk_save(void) {
     // Bound retries, allocate outside the cache lock, and never replace the old file with an incomplete snapshot.
     for(unsigned attempt=0;attempt<2;attempt++){
         size_t capacity=0;uint64_t begin=dm_android_clock_ns(CLOCK_MONOTONIC);
-        pthread_mutex_lock(&pipeline_cache_mutex);result=vkGetPipelineCacheData(device,pipeline_cache,&capacity,NULL);pthread_mutex_unlock(&pipeline_cache_mutex);
+        pthread_rwlock_wrlock(&pipeline_cache_mutex);result=vkGetPipelineCacheData(device,pipeline_cache,&capacity,NULL);pthread_rwlock_unlock(&pipeline_cache_mutex);
         snapshot_ns+=dm_android_clock_ns(CLOCK_MONOTONIC)-begin;
         if(result!=VK_SUCCESS||capacity<32||capacity>PIPELINE_DISK_LIMIT)break;
         blob=malloc(capacity);if(!blob)break;bytes=capacity;
-        begin=dm_android_clock_ns(CLOCK_MONOTONIC);pthread_mutex_lock(&pipeline_cache_mutex);
+        begin=dm_android_clock_ns(CLOCK_MONOTONIC);pthread_rwlock_wrlock(&pipeline_cache_mutex);
         result=vkGetPipelineCacheData(device,pipeline_cache,&bytes,blob);generation=atomic_load(&pipeline_cache_generation);
-        pthread_mutex_unlock(&pipeline_cache_mutex);snapshot_ns+=dm_android_clock_ns(CLOCK_MONOTONIC)-begin;
+        pthread_rwlock_unlock(&pipeline_cache_mutex);snapshot_ns+=dm_android_clock_ns(CLOCK_MONOTONIC)-begin;
         if(result==VK_SUCCESS&&bytes<=capacity&&pipeline_disk_blob_valid(blob,bytes))break;
         free(blob);blob=NULL;bytes=0;
     }
@@ -126,10 +126,10 @@ static void pipeline_cache_changed_locked(VkResult result) {
     if(result==VK_SUCCESS){atomic_fetch_add(&pipeline_cache_generation,1);atomic_store(&pipeline_cache_changed,dm_android_clock_ns(CLOCK_MONOTONIC));}
 }
 static VkResult pipeline_create_graphics(const VkGraphicsPipelineCreateInfo *info,VkPipeline *pipeline) {
-    pthread_mutex_lock(&pipeline_cache_mutex);VkResult result=vkCreateGraphicsPipelines(device,pipeline_cache,1,info,NULL,pipeline);pipeline_cache_changed_locked(result);pthread_mutex_unlock(&pipeline_cache_mutex);return result;
+    pthread_rwlock_rdlock(&pipeline_cache_mutex);VkResult result=vkCreateGraphicsPipelines(device,pipeline_cache,1,info,NULL,pipeline);pipeline_cache_changed_locked(result);pthread_rwlock_unlock(&pipeline_cache_mutex);return result;
 }
 static VkResult pipeline_create_compute(const VkComputePipelineCreateInfo *info,VkPipeline *pipeline) {
-    pthread_mutex_lock(&pipeline_cache_mutex);VkResult result=vkCreateComputePipelines(device,pipeline_cache,1,info,NULL,pipeline);pipeline_cache_changed_locked(result);pthread_mutex_unlock(&pipeline_cache_mutex);return result;
+    pthread_rwlock_rdlock(&pipeline_cache_mutex);VkResult result=vkCreateComputePipelines(device,pipeline_cache,1,info,NULL,pipeline);pipeline_cache_changed_locked(result);pthread_rwlock_unlock(&pipeline_cache_mutex);return result;
 }
 static void pipeline_cache_initialize(const VkPhysicalDeviceProperties *properties) {
     pipeline_disk_properties=*properties;
