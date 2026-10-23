@@ -68,6 +68,11 @@ jobs:
         env:
           DM_CI_WORK: ${{ runner.temp }}/dm-ci
         run: bash ci/scripts/ci.sh host
+      - name: Android rewrite signal-stack regression
+        run: |
+          python3 -m venv "${{ runner.temp }}/rewrite-venv"
+          "${{ runner.temp }}/rewrite-venv/bin/python" -m pip install capstone==5.0.7 unicorn==2.1.4
+          "${{ runner.temp }}/rewrite-venv/bin/python" dm/android/tests/patch_stack_test.py
       - name: Upload sanitized evidence
         if: always()
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
@@ -92,6 +97,11 @@ jobs:
         env:
           DM_CI_WORK: ${{ runner.temp }}/dm-ci
         run: bash ci/scripts/ci.sh host
+      - name: Android rewrite signal-stack regression
+        run: |
+          python3 -m venv "${{ runner.temp }}/rewrite-venv"
+          "${{ runner.temp }}/rewrite-venv/bin/python" -m pip install capstone==5.0.7 unicorn==2.1.4
+          "${{ runner.temp }}/rewrite-venv/bin/python" dm/android/tests/patch_stack_test.py
       - name: Upload sanitized evidence
         if: always()
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
