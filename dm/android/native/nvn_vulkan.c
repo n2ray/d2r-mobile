@@ -152,6 +152,8 @@ static VkQueryPool draw_queries;
 static VkQueryPool batch_times;
 static uint32_t gpu_timestamp_bits;
 static double gpu_timestamp_period,gpu_total_ns,fence_wait_total_ns;
+static _Atomic uint64_t quality_gpu_ns;
+double dm_3d_scale_gpu_ms(void) { uint64_t ns=atomic_load(&quality_gpu_ns);return ns?ns/1e6:-1; }
 // queue_lock 保护累计值；worker 发布与前台重叠，不是额外的帧耗时。
 // queue_lock protects totals; worker publication overlaps foreground work, not extra frame time.
 static uint64_t stability_ring_wait_ns,stability_worker_publish_ns;
@@ -535,7 +537,7 @@ driver_retry:;
     pipeline_cache_initialize(&properties);
     VkQueryPoolCreateInfo qci={.sType=VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,.queryType=VK_QUERY_TYPE_OCCLUSION,.queryCount=1024};VK_CHECK(vkCreateQueryPool(device,&qci,NULL,&draw_queries));
     gpu_timestamp_period=properties.limits.timestampPeriod;
-    if(dm_diagnostics_enabled()&&gpu_timestamp_bits&&gpu_timestamp_period>0){
+    if((dm_diagnostics_enabled()||dm_3d_scale_gpu_tracking())&&gpu_timestamp_bits&&gpu_timestamp_period>0){
         qci.queryType=VK_QUERY_TYPE_TIMESTAMP;qci.queryCount=2;
         VK_CHECK(vkCreateQueryPool(device,&qci,NULL,&batch_times));
         LOG("[vulkan] GPU timestamps bits=%u period=%.6f ns",gpu_timestamp_bits,gpu_timestamp_period);
@@ -1168,6 +1170,12 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     static uint64_t perf_time,perf_submit,perf_bytes,perf_allocations,perf_hits,perf_passes,perf_barriers,perf_create_wall,perf_create_cpu;
     static double perf_gpu,perf_wait;
     uint64_t now=dm_android_clock_ns(CLOCK_MONOTONIC);
+    static uint64_t quality_frame;static double quality_total;
+    if(batch_times&&ticket-quality_frame>=30){
+        pthread_mutex_lock(&queue_lock);double total=gpu_total_ns;pthread_mutex_unlock(&queue_lock);
+        if(quality_frame&&total>quality_total)atomic_store(&quality_gpu_ns,(uint64_t)((total-quality_total)/(ticket-quality_frame)));
+        quality_frame=ticket;quality_total=total;
+    }
     display_timing_poll(now);
     if(!dm_diagnostics_enabled()) {
         pthread_mutex_lock(&queue_lock);pipeline_disk_poll();pthread_mutex_unlock(&queue_lock);

@@ -60,6 +60,7 @@ static void pso_key_normalize(pipeline_key *out,const pipeline_key *in) {
     memcpy(out->blend,in->blend,sizeof in->blend);
     out->polygon=in->polygon;out->depth=in->depth;out->multisample=in->multisample;
 }
+#include "nvn_vulkan_pso_jobs.inc"
 static int pso_user_file(void) {
     if(pso_user_checked)return pso_user_fd;
     pso_user_checked=1;
@@ -171,16 +172,7 @@ static int pso_warm_one(const pso_record *record) {
     // skip that record without interrupting the whole warm-up.
     if(!pass)return 0;
     VkPipelineLayout layout=graphics_layout_get(vs,fs);
-    VkPipeline pipeline=VK_NULL_HANDLE;
-    uint64_t begin=dm_android_clock_ns(CLOCK_MONOTONIC);
-    VkResult result=graphics_pipeline_create(&record->key,vs,fs,pass,layout,&pipeline,0);
-    uint64_t wall=dm_android_clock_ns(CLOCK_MONOTONIC)-begin;
-    if(result!=VK_SUCCESS)return 0;
-    if(wall>50000000)LOG("[vulkan-pso-warm] slow vs=%s fs=%s wall_ms=%.1f",record->vs,record->fs,wall/1e6);
-    // 建后即毁：编译结果留在驱动管线缓存里，游戏线程首次用到时是缓存命中而不是现编。
-    // Create then destroy: the compilation stays in the driver pipeline cache, so the game's first use is a cache hit, not a compile.
-    vkDestroyPipeline(device,pipeline,NULL);
-    return 1;
+    return pso_pipeline_get(&record->key,vs,fs,pass,layout,NULL,0)==VK_SUCCESS;
 }
 static void *pso_warm_main(void *unused) {
     (void)unused;pthread_setname_np(pthread_self(),"D2R PSO warm");
@@ -188,11 +180,11 @@ static void *pso_warm_main(void *unused) {
     uint64_t begin=dm_android_clock_ns(CLOCK_MONOTONIC),built=0,skipped=0;
     for(size_t i=0;i<pso_record_count;i++){
         if(pso_warm_one(&pso_records[i]))built++;else skipped++;
-        if((i&15)==15)LOG("[vulkan-pso-warm] progress=%zu/%zu built=%llu skipped=%llu",i+1,pso_record_count,(unsigned long long)built,(unsigned long long)skipped);
+        if((i&15)==15)LOG("[vulkan-pso-warm] progress=%zu/%zu queued=%llu rejected=%llu",i+1,pso_record_count,(unsigned long long)built,(unsigned long long)skipped);
     }
-    LOG("[vulkan-pso-warm] done records=%zu built=%llu skipped=%llu wall_ms=%.1f",pso_record_count,(unsigned long long)built,(unsigned long long)skipped,(dm_android_clock_ns(CLOCK_MONOTONIC)-begin)/1e6);
+    LOG("[vulkan-pso-warm] queued records=%zu queued=%llu rejected=%llu wall_ms=%.1f",pso_record_count,(unsigned long long)built,(unsigned long long)skipped,(dm_android_clock_ns(CLOCK_MONOTONIC)-begin)/1e6);
     free(pso_records);pso_records=NULL;pso_record_count=0;
-    atomic_store(&pso_warm_running,0);
+    atomic_fetch_sub(&pso_warm_running,1);
     return NULL;
 }
 // initialize() 末尾调用：读清单、建去重集合、后台开预热线程；本地缓存目录或显式清单缺失时不启动。

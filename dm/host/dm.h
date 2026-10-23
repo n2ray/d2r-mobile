@@ -96,6 +96,9 @@ int dm_ingame_now(void);              // 是否在局内（diag.c） | Whether w
 void dm_3d_scale_feed(double iv_ms);   // 出图线程每帧报实际上屏间隔（−1 丢弃 / 0 无读数），驱动动态 3D 比例 | The present thread reports the actual present interval every frame (−1 discard / 0 no reading), driving the dynamic 3D scale
 float dm_3d_scale_cur(void);          // 当前生效的 3D 渲染比例（hle_oe.c scale3d_tick）     // 当前累计出图帧数（DM_TICKS 对齐观测） | The 3D render scale currently in effect (hle_oe.c scale3d_tick)     // current cumulative count of presented frames (for DM_TICKS alignment observation)
 void dm_backtrace(uint64_t fp);
+int dm_3d_scale_gpu_tracking(void);
+double dm_3d_scale_gpu_ms(void);
+void dm_3d_scale_resumed(void);
 void crash_watch_progress(uint32_t tick, const char *stage);
 void crash_watch_frame(void);
 void crash_watch_pregame_done(void);

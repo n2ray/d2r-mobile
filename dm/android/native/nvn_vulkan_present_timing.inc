@@ -9,6 +9,7 @@ static void display_timing_reset(void){
     memset(&presented_window,0,sizeof presented_window);memset(&submitted_window,0,sizeof submitted_window);
     display_phase_ns=display_target_ns=display_poll_ns=display_report_ns=0;
     display_refresh_ns=0;
+    atomic_store(&quality_gpu_ns,0);dm_3d_scale_resumed();
     if(get_refresh_duration&&swapchain){VkRefreshCycleDurationGOOGLE duration={0};
         if(get_refresh_duration(device,swapchain,&duration)==VK_SUCCESS)display_refresh_ns=duration.refreshDuration;}
 }
@@ -40,7 +41,8 @@ static void display_timing_poll(uint64_t now){
             VkResult result=get_past_timing(device,swapchain,&count,values);
             if(result==VK_SUCCESS||result==VK_INCOMPLETE){
                 qsort(values,count,sizeof *values,display_timing_compare);
-                for(unsigned i=0;i<count;i++)if(values[i].actualPresentTime){
+                for(unsigned i=0;i<count;i++)if(values[i].actualPresentTime>display_phase_ns){
+                    if(display_phase_ns)dm_3d_scale_feed((values[i].actualPresentTime-display_phase_ns)/1e6);
                     dm_frame_push(&presented_window,values[i].actualPresentTime);
                     display_phase_ns=values[i].actualPresentTime;
                 }
