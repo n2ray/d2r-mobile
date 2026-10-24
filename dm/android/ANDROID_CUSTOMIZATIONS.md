@@ -1,6 +1,6 @@
 # Android customizations on upstream / 上游基础上的 Android 定制
 
-Base: upstream `758f5d41509af5cd38b7eb934bc2334bdb3e3342`.
+Base: upstream `195ae11dc70f1ba7735c6063e1ed81102e1dbf52` (synced 2026-10-24).
 
 本分支沿用上游 Android 渲染和触控实现，增加 Turnip／系统驱动选择、显示比例、简易 FPS，并接通省电模式的 30 帧节拍。旧 Android 分支保留作回退。
 
@@ -36,6 +36,10 @@ For this locally installed test APK, enable Android Auto developer settings and 
 References: [parked app manifest](https://developer.android.com/training/cars/parked/auto), [parked lifecycle](https://developer.android.com/training/cars/platforms/android-auto#parked-apps), [local vehicle testing](https://developer.android.com/training/cars/testing#allow-unknown-sources).
 
 ## Updating upstream / 同步上游
+
+The upstream map-state restoration is included through `195ae11d`. Menu-button pulses are adapted from dodola commit [`573106f3`](https://github.com/dodola/d2r-mobile/commit/573106f3f243cbcb948e5d4029650193390600c4): shared touch state keeps finger ownership but sends a one-sample command (`pulse_hold_s < 0`). Android's production sampling bridge releases it on the next guest poll; iOS/Harmony receivers understand the same marker. Item hold/drag and gameplay skills retain their existing timing. The optional navigation circles remain hidden by default in panel mode; this fix covers that fallback/debug path, not every kind of menu interaction. No game program or overlay-generation inputs change.
+
+已同步上游地图状态恢复，并参考 dodola 的菜单短脉冲修复适配当前触控桥。保留触点归属防止重复路由，游戏采样一次后收回导航键；原有物品长按／拖动和局内技能时序不变。面板导航圆钮默认仍隐藏，本修复针对其备用／调试路径，不代表所有菜单交互均经过该路径。无需重新改写游戏程序或生成覆盖层。
 
 Merge upstream changes into this branch and retain the customization commits. Review conflicts in `DmActivity`, JNI startup and Vulkan initialization rather than copying upstream files over this checkout. Keep the preference filename and keys stable. Verify both aspect modes, touch coordinates, FPS off/on and an APK update preserving preferences after each relevant upstream change. Game import compatibility still follows upstream's product/version checks.
 

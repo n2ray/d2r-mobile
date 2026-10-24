@@ -6,7 +6,7 @@ English: [README.md](README.md)
 
 ## 开发基线
 
-**`main` 是以上游为基础的 Android 定制版**，截至 2026-10-23 基于上游 `758f5d41509af5cd38b7eb934bc2334bdb3e3342`，取代此前独立维护的 Android 实现。
+**`main` 是以上游为基础的 Android 定制版**，截至 2026-10-24 已同步至上游 `195ae11dc70f1ba7735c6063e1ed81102e1dbf52`，取代此前独立维护的 Android 实现。
 
 旧源码保存在 [`archive/android-legacy-20261023`](https://github.com/n2ray/d2r-mobile/tree/archive/android-legacy-20261023)，归档点 `0fa019b02336af144a761668fd4728d8cde6b693`，供查阅和回退，不再继续开发。见[旧 issue／PR 归档](docs/android/LEGACY_ARCHIVE_20261023.md)。关闭代表路线变更，不代表验收全部完成。旧历史可追溯，当前源码树不包含旧版独立实现。
 
@@ -23,6 +23,8 @@ English: [README.md](README.md)
 | Android Auto | 停车游戏入口，[草稿 #131](https://github.com/jhaizhou-ops/d2r-mobile/pull/131)，车机待验证 |
 
 详见 [Android 定制说明](dm/android/ANDROID_CUSTOMIZATIONS.md)。旧版的任意驱动 ZIP 导入／删除及扩展诊断等功能，不能视为新版已具备。
+
+最新输入修复会在关闭面板、切换区域后恢复玩家选择的全屏地图，并让虚拟菜单按钮在游戏取到一次输入后释放，避免重复触发。游戏内技能长按及物品拖动／长按维持原语义。APK 构建和本地回归不代替这些修复的手机／车机实测。
 
 ## 实机证据
 

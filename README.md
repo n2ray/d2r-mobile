@@ -6,7 +6,7 @@ An Android customization of [jhaizhou-ops/d2r-mobile](https://github.com/jhaizho
 
 ## Baseline
 
-**`main` is the upstream-based Android customization**, based on upstream `758f5d41509af5cd38b7eb934bc2334bdb3e3342` as of 2026-10-23. It replaces the previous independent Android implementation.
+**`main` is the upstream-based Android customization**, synced through upstream `195ae11dc70f1ba7735c6063e1ed81102e1dbf52` as of 2026-10-24. It replaces the previous independent Android implementation.
 
 The old source is preserved at [`archive/android-legacy-20261023`](https://github.com/n2ray/d2r-mobile/tree/archive/android-legacy-20261023), commit `0fa019b02336af144a761668fd4728d8cde6b693`, for reference and rollback, not continued development. [Legacy issue/PR archive](docs/android/LEGACY_ARCHIVE_20261023.md). Closed legacy tasks mean a change of direction, not completed acceptance. Git history remains reachable; legacy source is excluded from the active tree.
 
@@ -23,6 +23,8 @@ The old source is preserved at [`archive/android-legacy-20261023`](https://githu
 | Android Auto | Parked-game entry; [draft #131](https://github.com/jhaizhou-ops/d2r-mobile/pull/131), vehicle testing pending |
 
 Details: [Android customization notes](dm/android/ANDROID_CUSTOMIZATIONS.md). Old-app features such as arbitrary driver ZIP import/delete and extended diagnostics must not be assumed to exist here.
+
+Latest input fixes preserve the player's fullscreen-map choice after panels and area changes, and release virtual menu-button commands after one game input sample to avoid repeated activation. Gameplay skill holds and item drag/hold gestures retain their existing behavior. APK build and local regressions are separate from pending phone/car acceptance for these fixes.
 
 ## Device evidence
 
