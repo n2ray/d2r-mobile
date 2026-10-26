@@ -1,6 +1,6 @@
 # Android customizations on upstream / 上游基础上的 Android 定制
 
-Base: upstream `195ae11dc70f1ba7735c6063e1ed81102e1dbf52` (synced 2026-10-24).
+Base: upstream `d93985b7d086c367efa3f01ddb086b8d4e9f334c`, Android 2.0.1 (synced 2026-10-26).
 
 本分支沿用上游 Android 渲染和触控实现，增加 Turnip／系统驱动选择、显示比例、简易 FPS，并接通省电模式的 30 帧节拍。旧 Android 分支保留作回退。
 
@@ -36,6 +36,10 @@ For this locally installed test APK, enable Android Auto developer settings and 
 References: [parked app manifest](https://developer.android.com/training/cars/parked/auto), [parked lifecycle](https://developer.android.com/training/cars/platforms/android-auto#parked-apps), [local vehicle testing](https://developer.android.com/training/cars/testing#allow-unknown-sources).
 
 ## Updating upstream / 同步上游
+
+The 2026-10-26 sync includes widened-stash position restoration, controller-legend cleanup and capacity checks, the upstream adoption of our 30 fps fix, BC4/BC5 filtering fallback, Adreno 740/750 policy and compute-pipeline crash recovery. Adreno 830 keeps its rewrite defaults. Startup preferences, Turnip selection, Android Auto and local controller safeguards are retained. These changes need only an APK update; no game resource reimport is required.
+
+2026-10-26 同步包含加宽储物箱位置恢复、手柄提示清理及条目上限、上游采纳的 30 帧修复、BC4／BC5 过滤兼容、Adreno 740／750 策略及计算管线崩溃恢复。Adreno 830 的改写默认值不变，保留启动设置、Turnip、Android Auto 和本地手柄保护。只需覆盖更新 APK，无需重新导入游戏资源。
 
 The upstream map-state restoration is included through `195ae11d`. Menu-button pulses are adapted from dodola commit [`573106f3`](https://github.com/dodola/d2r-mobile/commit/573106f3f243cbcb948e5d4029650193390600c4): shared touch state keeps finger ownership but sends a one-sample command (`pulse_hold_s < 0`). Android's production sampling bridge releases it on the next guest poll; iOS/Harmony receivers understand the same marker. Item hold/drag and gameplay skills retain their existing timing. The optional navigation circles remain hidden by default in panel mode; this fix covers that fallback/debug path, not every kind of menu interaction. No game program or overlay-generation inputs change.
 
