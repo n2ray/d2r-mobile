@@ -36,6 +36,17 @@ if(NOT DM_GEN_DIR OR NOT EXISTS ${DM_GEN_DIR}/dm_vault_tab.h)
   message(FATAL_ERROR "要 -DDM_GEN_DIR=<由游戏文件生成的宿主表头目录>（dm_vault_tab.h / dm_hud_exp.h / dm_bright_levels.inc，见 dm/host/Makefile）")
 endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(DM_GAME "0100726014352000" CACHE STRING "Registered game Title ID")
+if(NOT DM_GAME STREQUAL "0100726014352000")
+  message(FATAL_ERROR "This extraction currently supports only the D2R profile; other game runtimes are not ported")
+endif()
+set(DM_GAME_TOOL ${DM}/games/game.py)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${DM_GAME_TOOL} ${DM}/games/${DM_GAME}/game.tsv)
+execute_process(COMMAND ${Python3_EXECUTABLE} ${DM_GAME_TOOL} header --game ${DM_GAME}
+  --output ${CMAKE_CURRENT_BINARY_DIR}/dm_selected_game.h RESULT_VARIABLE game_result)
+if(NOT game_result EQUAL 0)
+  message(FATAL_ERROR "Invalid game profile: ${DM_GAME}")
+endif()
 
 # App 与资源共享公开生成源码的指纹；输入清单由同一工具提供，变动会重新生成头文件。
 # The app and resources share a fingerprint of public generator inputs; one tool supplies the dependencies.
@@ -102,6 +113,8 @@ list(APPEND ANDROID_SRCS
 add_library(dmcore STATIC ${HOST_SRCS} ${HLE_SRCS} ${GFX_SRCS} ${LIBDEFLATE_SRCS} ${ASM_SRCS} ${ANDROID_SRCS})
 list(REMOVE_DUPLICATES HOST_SRCS)
 target_include_directories(dmcore PUBLIC ${HOST} ${DM}/gfx/nvn/include ${CMAKE_CURRENT_SOURCE_DIR}/compat/include ${DM_GEN_DIR})
+target_include_directories(dmcore PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
+target_compile_definitions(dmcore PUBLIC DM_GAME_PROFILE_SELECTED=1)
 target_include_directories(dmcore PUBLIC ${DM}/ios/Sources)
 # 与 Makefile 同档优化（-O1 -g）；dm_android_compat.h 强制包含；-fno-strict-aliasing 同苹果 clang 缺省行为下宿主对客体内存的读写习惯
 # Same optimization level as the Makefile (-O1 -g); dm_android_compat.h force-included; -fno-strict-aliasing matches the host's habit of reading and writing guest memory under Apple clang's default behaviour

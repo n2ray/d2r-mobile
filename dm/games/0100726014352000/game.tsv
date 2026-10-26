@@ -1,0 +1,16 @@
+# Diablo II: Resurrected 3.3.94012 / 暗黑破坏神II 狱火重生。
+title_id	0100726014352000
+program_id	0100726014352000
+name	Diablo II: Resurrected
+modules	main sdk
+romfs_marker	data/build_manifest.psv
+ruleset	touch-run-v4
+build	94012	1.0.34.0	main=db0507f36b84200ac05f75d76ed5026f	sdk=2d369d9999e3e10e665106f840ffff9b
+host_argv0	D2R
+save_throttle_offset	0x20cefa8
+save_throttle_original	30
+save_throttle_seconds	3
+seed_offset	0x20a0074
+renderer_offset	0x31e0848
+render_scale_offset	0x66a4
+render_resize_offset	0x8582f0

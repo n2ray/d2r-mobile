@@ -6,6 +6,8 @@ An Android customization of [jhaizhou-ops/d2r-mobile](https://github.com/jhaizho
 
 ## Baseline
 
+This `generic/android` branch starts a per-game profile extraction, following [nxnative's profile organization](https://github.com/seedds/nxnative/tree/c484b13cdbccd89a43733abf28d1185a43ad4917/dm/games). D2R is the only registered Android game. See [game profiles and current limits](dm/games/README.md). `main` remains the playable customization baseline; this branch is not a universal Switch runner and has not had a device regression after extraction.
+
 **`main` is the upstream-based Android customization**, synced through upstream `d93985b7d086c367efa3f01ddb086b8d4e9f334c` (Android 2.0.1) as of 2026-10-26. It replaces the previous independent Android implementation.
 
 The old source is preserved at [`archive/android-legacy-20261023`](https://github.com/n2ray/d2r-mobile/tree/archive/android-legacy-20261023), commit `0fa019b02336af144a761668fd4728d8cde6b693`, for reference and rollback, not continued development. [Legacy issue/PR archive](docs/android/LEGACY_ARCHIVE_20261023.md). Closed legacy tasks mean a change of direction, not completed acceptance. Git history remains reachable; legacy source is excluded from the active tree.

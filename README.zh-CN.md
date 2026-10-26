@@ -6,6 +6,8 @@ English: [README.md](README.md)
 
 ## 开发基线
 
+本分支 `generic/android` 参考 [nxnative 的逐游戏目录结构](https://github.com/seedds/nxnative/tree/c484b13cdbccd89a43733abf28d1185a43ad4917/dm/games)，开始拆出逐游戏配置。目前仅登记 D2R，详见[游戏配置与当前边界](dm/games/README.md)。`main` 继续作为可玩定制版基线；此分支尚不是通用 Switch 运行器，拆分后尚未进行实机回归。
+
 **`main` 是以上游为基础的 Android 定制版**，截至 2026-10-26 已同步至上游 `d93985b7d086c367efa3f01ddb086b8d4e9f334c`（Android 2.0.1），取代此前独立维护的 Android 实现。
 
 旧源码保存在 [`archive/android-legacy-20261023`](https://github.com/n2ray/d2r-mobile/tree/archive/android-legacy-20261023)，归档点 `0fa019b02336af144a761668fd4728d8cde6b693`，供查阅和回退，不再继续开发。见[旧 issue／PR 归档](docs/android/LEGACY_ARCHIVE_20261023.md)。关闭代表路线变更，不代表验收全部完成。旧历史可追溯，当前源码树不包含旧版独立实现。

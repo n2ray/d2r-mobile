@@ -2,6 +2,7 @@
 // Bootstrap: after loading the modules, initialize the SDK runtime in the real order of nn::init::Start (sdk+0x2b0470) in the SDK, then enter nnMain.
 #include "dm.h"
 #include "front.h"
+#include "dm_game_profile.h"
 #include <stdatomic.h>
 #ifdef __APPLE__
 #include <sys/sysctl.h>
@@ -14,7 +15,7 @@ static void *req(const char *n){ void *p=guest_sym(n); if(!p) die("缺符号 %s"
 
 // 游戏参数：argv[0] 固定为 "D2R"，"--" 之后的原样追加（真机由 nn::init 从进程参数区取，经 SetHostArgc/Argv 交给 SDK）
 // Game arguments: argv[0] is fixed to "D2R", and whatever follows "--" is appended as is (on a real device nn::init takes them from the process argument area and hands them to the SDK through SetHostArgc/Argv)
-static char *g_argv[64] = {"D2R"}; static int g_argc = 1;
+static char *g_argv[64] = {DM_GAME_HOST_ARGV0}; static int g_argc = 1;
 
 void crash_sample_self(void);
 // 存档落盘节流：游戏把脏了的存档容器写盘并提交的「非强制刷新」每拍调一次（main+0x2497ac → main+0xdff8a4，强制 = 0），
@@ -26,13 +27,13 @@ void crash_sample_self(void);
 // so a newly created character is first committed only after about 30 seconds, and if the process is ended before that (being reclaimed by the system after switching away is normal on a phone) the character is gone. Changed to 3 seconds.
 // Only non-forced writes are affected (new character, key bindings, rename); in-run character saves, settings etc. are forced writes anyway and do not go through the throttle. DM_SAVE_THROTTLE=seconds can change it (30 = the original game).
 static void save_throttle_patch(void) {
-    const char *v = getenv("DM_SAVE_THROTTLE"); int sec = v ? atoi(v) : 3;
+    const char *v = getenv("DM_SAVE_THROTTLE"); int sec = v ? atoi(v) : DM_GAME_SAVE_THROTTLE_SECONDS;
     module_t *m = NULL;
     for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) m = &g_mod[i];
     if (!m) return;
-    int32_t *p = (int32_t *)(m->base + 0x20cefa8);
-    if (*p != 30) { LOG("【红】存档落盘节流：main+0x20cefa8 原值 %d ≠ 30（构建号不符？），不改", *p); return; }
-    if (sec == 30) return;
+    int32_t *p = (int32_t *)(m->base + DM_GAME_SAVE_THROTTLE_OFFSET);
+    if (*p != DM_GAME_SAVE_THROTTLE_ORIGINAL) { LOG("【红】存档落盘节流：main+0x20cefa8 原值 %d ≠ 30（构建号不符？），不改", *p); return; }
+    if (sec == DM_GAME_SAVE_THROTTLE_ORIGINAL) return;
     *p = sec < 1 ? 1 : sec;
     LOG("存档落盘节流：main+0x20cefa8 30 → %d 秒", *p);
 }
@@ -48,7 +49,7 @@ static void game_seed_maybe(void) {
     module_t *m = NULL;
     for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) m = &g_mod[i];
     if (!m) die("DM_GAME_SEED：没有 main 模块");
-    uint32_t *p = (uint32_t *)(m->base + 0x20a0074);
+    uint32_t *p = (uint32_t *)(m->base + DM_GAME_SEED_OFFSET);
     if (*p != 0xffffffffu) die("DM_GAME_SEED：main+0x20a0074 原值 %#x ≠ 0xffffffff（构建号不符？）", *p);
     *p = (uint32_t)strtoull(v, NULL, 0);
     LOG("DM_GAME_SEED：main+0x20a0074 ← %#x", *p);

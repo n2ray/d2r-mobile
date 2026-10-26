@@ -23,10 +23,10 @@
 # It does the same as d2rm_pack.py (the iOS shell): the game program is rewritten for the Android target, and the shaders become the bundles Vulkan uses (dm/gfx/tools/dmsh_vk.py) instead of a Metal library.
 # HarmonyOS: d2rm_android.py --target ohos <game files directory> <output directory> writes <output directory>/harmony/dm/: the game program is rewritten for HarmonyOS (out/ cannot be shared with Android), the shader bundles are the same as Android's,
 #   plus ui-art/ (9 skill-button labels lbl_* and 9 skill silhouettes sil_*, taken from the bottom-bar art generator's output); copy the dm folder into a "D2R Mobile" folder on the phone next to the data folder with the game resources, and pick that folder when the app asks to import.
-import hashlib, os, shutil, subprocess, sys, time
+import argparse, os, shutil, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__)); DM = os.path.dirname(HERE); IOS = os.path.join(DM, 'ios'); GT = os.path.join(DM, 'gfx', 'tools')
-sys.path.insert(0, HERE); from d2rm_pack import ROOT, PY, MODS, say, die, run, step   # 共用 iOS 壳工具的执行与跳步框架（含 Windows 换行处理） | the run-and-skip framework shared with the iOS shell tool (including the Windows line-ending handling)
+sys.path.insert(0, HERE); from d2rm_pack import ROOT, PY, say, die, run, step   # 共用 iOS 壳工具的执行与跳步框架（含 Windows 换行处理） | the run-and-skip framework shared with the iOS shell tool (including the Windows line-ending handling)
 
 
 def check_env(game):
@@ -55,14 +55,29 @@ def check_env(game):
 
 
 def main():
-    args = sys.argv[1:]; T = 'android'
-    if args[:1] == ['--target'] and len(args) >= 2: T = args[1]; args = args[2:]
-    if len(args) != 2 or T not in ('android', 'ohos'): sys.exit('用法：d2rm_android.py [--target ohos] <游戏文件目录> <输出目录>')
-    game, dst = (os.path.abspath(x) for x in args)
+    from d2rm_pack import game_profiles
+    parser = argparse.ArgumentParser(description='Prepare a registered game profile for Android / HarmonyOS')
+    parser.add_argument('--target', choices=('android', 'ohos'), default='android')
+    parser.add_argument('--game', default=None)
+    parser.add_argument('source')
+    parser.add_argument('output')
+    args = parser.parse_args()
+    try: profile = game_profiles.load(args.game)
+    except (OSError, ValueError, KeyError) as error: parser.error(str(error))
+    os.environ['DM_GAME'] = profile.id
+    modules = profile.words('modules')
+    T = args.target
+    game, dst = os.path.abspath(args.source), os.path.abspath(args.output)
     for st in (sys.stdout, sys.stderr):
         try: st.reconfigure(errors='replace')
         except Exception: pass
     if not os.path.isdir(game): die('没有这个游戏文件目录：%s' % game)
+    try:
+        for module in modules:
+            with open(os.path.join(game, 'ExeFS', module), 'rb') as f: header = f.read(0x50)
+            if header[:4] != b'NSO0' or len(header) != 0x50: raise ValueError(f'invalid NSO: {module}')
+            profile.validate_module(module, header[0x40:0x50].hex())
+    except (OSError, ValueError) as error: die(str(error))
     dotnet = check_env(game)
     P = open(os.path.join(DM, 'PRODUCT')).readline().strip()
     romfs = os.path.join(game, 'RomFS'); stage = os.path.join(ROOT, 'build', 'pack', T); shutil.rmtree(stage, ignore_errors=True); os.makedirs(stage)
@@ -73,15 +88,15 @@ def main():
     # 1. Rewrite the game program (Android / HarmonyOS target)
     out = os.path.join(ROOT, 'build', 'cache', 'dm', 'out', P + '-' + T); os.makedirs(out, exist_ok=True)
     def patch():
-        for m in MODS: run([PY, os.path.join(HERE, 'patch_nso.py'), os.path.join(game, 'ExeFS', m), out, m], env={'DM_TARGET': T, 'DM_RULESET': 'touch-run-v4'},
+        for m in modules: run([PY, os.path.join(HERE, 'patch_nso.py'), os.path.join(game, 'ExeFS', m), out, m], env={'DM_TARGET': T, 'DM_RULESET': profile.get('ruleset')},
                            log=os.path.join(out, m + '.patch.log'), what='改写 ' + m)
-    # 做过的标准：产物齐，且产物记下的改写器指纹（build_src.sha256）就是这份源码的 patch_nso.py——改写器更新过（产物代号可能没变）就重做
-    # Done means: the products are complete and the rewriter fingerprint they record (build_src.sha256) is this source's patch_nso.py -- redo it when the rewriter was updated (the product code may not have changed)
-    src = hashlib.sha256(open(os.path.join(HERE, 'patch_nso.py'), 'rb').read()).hexdigest()
+    # 指纹包含公共改写器和游戏配置／补丁；迁出补丁后也必须使旧缓存失效。
+    # Fingerprint shared rewriting and game configuration/patches, so extracted patch changes invalidate old caches too.
+    src = profile.rewrite_digest()
     def patched():
         try: rec = open(os.path.join(out, 'build_src.sha256')).read().split()[0]
         except (OSError, IndexError): return False
-        return rec == src and all(os.path.isfile(os.path.join(out, m + '.patched.bin')) and os.path.isfile(os.path.join(out, m + '.gates.tsv')) for m in MODS)
+        return rec == src and all(os.path.isfile(os.path.join(out, m + '.patched.bin')) and os.path.isfile(os.path.join(out, m + '.gates.tsv')) for m in modules)
     step('改写游戏程序', patched, patch)
     os.makedirs(os.path.join(stage, 'out'))
     for f in sorted(os.listdir(out)):
@@ -132,7 +147,7 @@ def main():
 
     # 五、放到输出目录：先写在旁边，齐了再换上（中途失败不留半份）
     # 5. Put it in the output directory: write it alongside first and swap it in once complete (a failure halfway leaves no half copy)
-    with open(os.path.join(stage, 'pack_info.txt'), 'w', encoding='utf-8', newline='\n') as f: f.write('PRODUCT=%s\nTARGET=%s\nMADE=%s\n' % (P, T, time.strftime('%Y-%m-%dT%H:%M:%S')))
+    with open(os.path.join(stage, 'pack_info.txt'), 'w', encoding='utf-8', newline='\n') as f: f.write('PRODUCT=%s\nTARGET=%s\nGAME=%s\nREWRITE_SHA256=%s\nMADE=%s\n' % (P, T, profile.id, src, time.strftime('%Y-%m-%dT%H:%M:%S')))
     part = final + '.part'
     shutil.rmtree(part, ignore_errors=True); os.makedirs(part)
     for x in ('out', 'shaders', 'overlay') + (('ui-art',) if T == 'ohos' else ()): shutil.copytree(os.path.join(stage, x), os.path.join(part, x))

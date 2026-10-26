@@ -27,7 +27,10 @@ HERE = os.path.dirname(os.path.abspath(__file__)); DM = os.path.dirname(HERE); I
 ROOT = os.path.abspath(os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work'))
 PY = sys.executable
 WINLF = os.path.join(HERE, 'winlf'); runpy.run_path(os.path.join(WINLF, 'sitecustomize.py'))   # Windows 上统一用 \n 换行（见该目录的说明）：本进程在这里加载，子脚本经 PYTHONPATH 自动加载 | Use LF line endings on Windows (see the note in that directory): loaded here for this process, and automatically through PYTHONPATH for child scripts
-MODS = ['main', 'sdk']
+sys.path.insert(0, os.path.join(DM, 'games'))
+import game as game_profiles
+GAME_PROFILE = game_profiles.load()
+MODS = GAME_PROFILE.words('modules')
 
 
 def say(s): print('[%s] %s' % (time.strftime('%H:%M:%S'), s), flush=True)
@@ -135,7 +138,12 @@ def main():
     out = os.path.join(ROOT, 'build', 'cache', 'dm', 'out', P + '-touch'); os.makedirs(out, exist_ok=True)
     def patch():
         for m in MODS: run([PY, os.path.join(HERE, 'patch_nso.py'), os.path.join(game, 'ExeFS', m), out, m], env={'DM_RULESET': 'touch-run-v4'}, log=os.path.join(out, m + '.patch.log'), what='改写 ' + m)
-    step('改写游戏程序', lambda: all(os.path.isfile(os.path.join(out, m + '.patched.bin')) and os.path.isfile(os.path.join(out, m + '.gates.tsv')) for m in MODS), patch)
+    def patched():
+        try:
+            with open(os.path.join(out, 'build_src.sha256')) as f: recorded = f.read().split()[0]
+        except (OSError, IndexError): return False
+        return recorded == GAME_PROFILE.rewrite_digest() and all(os.path.isfile(os.path.join(out, m + '.patched.bin')) and os.path.isfile(os.path.join(out, m + '.gates.tsv')) for m in MODS)
+    step('改写游戏程序', patched, patch)
 
     # 二、界面素材与几张数据表（与 ios/run.sh build 开头相同）
     # 2. UI assets and a few data tables (same as the beginning of ios/run.sh build)

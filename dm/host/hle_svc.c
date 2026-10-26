@@ -3,6 +3,7 @@
 // Horizon kernel system calls (triggered by the SDK runtime once the SDK is loaded). Only what the P1 boot chain needs is implemented: memory layout + heap + query + debug output + timing.
 // Register convention: inputs w1.. / outputs w0=Result, x1=value (GetInfo / SetHeapSize), consistent with the public Horizon ABI.
 #include "dm.h"
+#include "dm_game_profile.h"
 #include "hle.h"
 #include <stdatomic.h>
 #include <sys/mman.h>
@@ -243,7 +244,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         case I_SysResTotal: v = 0x2000000; break; case I_SysResUsed: v = 0x400000; break;
         case I_DebuggerAttached: v = 0; break;
         case I_RandomEntropy: { uint64_t dm_entropy64(void); v = dm_entropy64(); break; }   // DM_DETCLOCK 开时为确定流（hle_os.c） | a deterministic stream when DM_DETCLOCK is on (hle_os.c)
-        case I_ProgramId: v = 0x0100726014352000ull; break;
+        case I_ProgramId: v = DM_GAME_PROGRAM_ID; break;
         case I_IsApplication: v = 1; break;
         case I_UserExcAddr: v = 0; break;
         default: v = 0; break;
