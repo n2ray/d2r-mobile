@@ -15,6 +15,7 @@ The old source is preserved at [`archive/android-legacy-20261023`](https://githu
 | Addition | Behavior |
 | --- | --- |
 | Startup settings | Persistent driver, aspect and optional simple FPS |
+| Save backups | Startup-only ZIP export/import through the system picker; validated restore with a local pre-import backup (device validation pending) |
 | Driver | Bundled Turnip by default; selectable system Vulkan |
 | Aspect | Centered 16:9 at 1280×720, or aspect-aware fullscreen at height 720 |
 | FPS | Submitted frames; not a guarantee of evenly spaced scanout |
