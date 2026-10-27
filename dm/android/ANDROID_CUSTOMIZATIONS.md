@@ -1,6 +1,6 @@
 # Android customizations on upstream / 上游基础上的 Android 定制
 
-Base: upstream `d93985b7d086c367efa3f01ddb086b8d4e9f334c`, Android 2.0.1 (synced 2026-10-26).
+Base: upstream `f1e4b081`, Android 2.0.2 (development branch; device validation pending).
 
 本分支沿用上游 Android 渲染和触控实现，增加 Turnip／系统驱动选择、显示比例、简易 FPS，并接通省电模式的 30 帧节拍。旧 Android 分支保留作回退。
 

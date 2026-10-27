@@ -6,7 +6,7 @@ An Android customization of [jhaizhou-ops/d2r-mobile](https://github.com/jhaizho
 
 ## Baseline
 
-**`main` is the upstream-based Android customization**, synced through upstream `d93985b7d086c367efa3f01ddb086b8d4e9f334c` (Android 2.0.1) as of 2026-10-26. It replaces the previous independent Android implementation.
+This development branch syncs upstream `f1e4b081` (Android 2.0.2); device validation is pending. `main` remains the upstream-based Android customization. It replaces the previous independent Android implementation.
 
 The old source is preserved at [`archive/android-legacy-20261023`](https://github.com/n2ray/d2r-mobile/tree/archive/android-legacy-20261023), commit `0fa019b02336af144a761668fd4728d8cde6b693`, for reference and rollback, not continued development. [Legacy issue/PR archive](docs/android/LEGACY_ARCHIVE_20261023.md). Closed legacy tasks mean a change of direction, not completed acceptance. Git history remains reachable; legacy source is excluded from the active tree.
 
