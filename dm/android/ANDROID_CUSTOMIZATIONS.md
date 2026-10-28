@@ -1,6 +1,14 @@
 # Android customizations on upstream / 上游基础上的 Android 定制
 
-Base: upstream `f1e4b081`, Android 2.0.2 (development branch; device validation pending).
+Base: upstream `1e0e7934`, Android 2.1.0 (development branch; device validation pending).
+
+The upstream act-change automatic minimap reopening is disabled on Android for now because this fork permits manually hiding the minimap. Act-change restoration needs separate integration and device validation.
+
+上游跨幕小地图自动重开在 Android 暂时停用：本分支支持手动关闭小地图，直接重开会覆盖玩家选择。跨幕恢复仍需独立适配和实机验证。
+
+The upstream camera changes touch-layout generator inputs, so this build requires a matching regenerated overlay; an older overlay may fail the startup contract check. Do not replace a working phone's data until a backup and compatible overlay have been prepared and tested.
+
+上游新镜头更改了触屏布局生成代码，因此此版本需要重新生成与 APK 匹配的覆盖层；旧覆盖层可能无法通过启动校验。部署前先备份并准备匹配资源。
 
 本分支沿用上游 Android 渲染和触控实现，增加 Turnip／系统驱动选择、显示比例、简易 FPS，并接通省电模式的 30 帧节拍。旧 Android 分支保留作回退。
 

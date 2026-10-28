@@ -6,7 +6,7 @@ An Android customization of [jhaizhou-ops/d2r-mobile](https://github.com/jhaizho
 
 ## Baseline
 
-This development branch syncs upstream `f1e4b081` (Android 2.0.2); device validation is pending. `main` remains the upstream-based Android customization. It replaces the previous independent Android implementation.
+This development branch syncs upstream `1e0e7934` (Android 2.1.0); device validation is pending. `main` remains the upstream-based Android customization. It replaces the previous independent Android implementation.
 
 The old source is preserved at [`archive/android-legacy-20261023`](https://github.com/n2ray/d2r-mobile/tree/archive/android-legacy-20261023), commit `0fa019b02336af144a761668fd4728d8cde6b693`, for reference and rollback, not continued development. [Legacy issue/PR archive](docs/android/LEGACY_ARCHIVE_20261023.md). Closed legacy tasks mean a change of direction, not completed acceptance. Git history remains reachable; legacy source is excluded from the active tree.
 
@@ -16,6 +16,7 @@ The old source is preserved at [`archive/android-legacy-20261023`](https://githu
 | --- | --- |
 | Startup settings | Persistent driver, aspect and optional simple FPS |
 | Save backups | Startup-only ZIP export/import through the system picker; validated restore with a local pre-import backup (device validation pending) |
+| Camera | Upstream optional shoulder and first-person modes; device validation pending |
 | Driver | Bundled Turnip by default; selectable system Vulkan |
 | Aspect | Centered 16:9 at 1280×720, or aspect-aware fullscreen at height 720 |
 | FPS | Submitted frames; not a guarantee of evenly spaced scanout |
