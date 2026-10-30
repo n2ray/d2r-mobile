@@ -6,7 +6,9 @@ English: [README.md](README.md)
 
 ## 开发基线
 
-本开发分支同步至上游 `1e0e7934`（Android 2.1.0），待实机验证。`main` 仍是以上游为基础的 Android 定制版，取代此前独立维护的 Android 实现。
+本开发分支同步至上游 `6bd4004b`（Android 2.2.1），待实机验证。`main` 仍是以上游为基础的 Android 定制版，取代此前独立维护的 Android 实现。
+
+上游 2.2.1 需要使用同版本源码重新生成导入包；更新前请备份存档，并保留已有游戏数据。
 
 旧源码保存在 [`archive/android-legacy-20261023`](https://github.com/n2ray/d2r-mobile/tree/archive/android-legacy-20261023)，归档点 `0fa019b02336af144a761668fd4728d8cde6b693`，供查阅和回退，不再继续开发。见[旧 issue／PR 归档](docs/android/LEGACY_ARCHIVE_20261023.md)。关闭代表路线变更，不代表验收全部完成。旧历史可追溯，当前源码树不包含旧版独立实现。
 

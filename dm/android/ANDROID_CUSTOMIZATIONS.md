@@ -1,10 +1,10 @@
 # Android customizations on upstream / 上游基础上的 Android 定制
 
-Base: upstream `1e0e7934`, Android 2.1.0 (development branch; device validation pending).
+Base: upstream `6bd4004b`, Android 2.2.1 (development branch; device validation pending).
 
-The upstream act-change automatic minimap reopening is disabled on Android for now because this fork permits manually hiding the minimap. Act-change restoration needs separate integration and device validation.
+Android now follows upstream's act-change minimap reopening behavior; device validation is pending.
 
-上游跨幕小地图自动重开在 Android 暂时停用：本分支支持手动关闭小地图，直接重开会覆盖玩家选择。跨幕恢复仍需独立适配和实机验证。
+Android 已恢复上游跨幕小地图自动重开行为，尚待实机验证。
 
 The upstream camera changes touch-layout generator inputs, so this build requires a matching regenerated overlay; an older overlay may fail the startup contract check. Do not replace a working phone's data until a backup and compatible overlay have been prepared and tested.
 

@@ -6,7 +6,9 @@ An Android customization of [jhaizhou-ops/d2r-mobile](https://github.com/jhaizho
 
 ## Baseline
 
-This development branch syncs upstream `1e0e7934` (Android 2.1.0); device validation is pending. `main` remains the upstream-based Android customization. It replaces the previous independent Android implementation.
+This development branch syncs upstream `6bd4004b` (Android 2.2.1); device validation is pending. `main` remains the upstream-based Android customization. It replaces the previous independent Android implementation.
+
+Upstream 2.2.1 requires an import pack generated from matching 2.2.1 source; back up saves before updating and retain the existing game data.
 
 The old source is preserved at [`archive/android-legacy-20261023`](https://github.com/n2ray/d2r-mobile/tree/archive/android-legacy-20261023), commit `0fa019b02336af144a761668fd4728d8cde6b693`, for reference and rollback, not continued development. [Legacy issue/PR archive](docs/android/LEGACY_ARCHIVE_20261023.md). Closed legacy tasks mean a change of direction, not completed acceptance. Git history remains reachable; legacy source is excluded from the active tree.
 
